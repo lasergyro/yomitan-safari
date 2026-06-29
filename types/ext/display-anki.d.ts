@@ -32,10 +32,10 @@ export type AnkiRenderStateLogData = {
     isSafariWebExtension: boolean;
     isAnkiAvailable: boolean;
     rootDatasetAnkiEnabled: string | undefined;
-    cardFormats: {name: string; type: Settings.AnkiCardFormat['type']; deck: string; model: string}[];
+    cardFormats: {name: string, type: Settings.AnkiCardFormat['type'], deck: string, model: string}[];
     dictionaryEntryDetailsReady: boolean;
     saveButtonCount: number;
-    saveButtons: {hidden: boolean; disabled: boolean; cardFormatIndex: string | null; title: string}[];
+    saveButtons: {hidden: boolean, disabled: boolean, cardFormatIndex: string | null, title: string}[];
     viewNoteButtonCount: number;
 };
 
