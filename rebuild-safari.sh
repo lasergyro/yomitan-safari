@@ -52,7 +52,15 @@ mkdir -p "$APP"
 # removing stale files, without ever deleting the bundle directory itself.
 rsync -a --delete "$BUILT_APP/" "$APP/"
 
-# 4. Launch once so Safari picks up the updated extension (stays enabled).
+# 4. Unregister the DerivedData build copy from LaunchServices. xcodebuild's output
+# bundle is otherwise auto-registered, so Safari would list a SECOND Yomitan
+# extension (one in the build folder, one in /Applications). Keep only the
+# installed copy registered.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSREGISTER" -u "$BUILT_APP" 2>/dev/null || true
+"$LSREGISTER" -f "$APP" 2>/dev/null || true
+
+# 5. Launch once so Safari picks up the updated extension (stays enabled).
 open "$APP"
 
 printf 'Done. Installed app: %s\n' "$APP"
