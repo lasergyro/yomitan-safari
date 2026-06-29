@@ -31,10 +31,30 @@ xcodebuild \
     build
 
 # 3. Install into a stable location so the app doesn't depend on the build folder.
-rm -rf "$APP"
-cp -R "$BUILT_APP" "$APP"
+#
+# Update the bundle IN PLACE rather than `rm -rf` + `cp`. Removing the installed
+# app makes Safari treat the extension as UNINSTALLED, and Safari purges the
+# extension's website data (IndexedDB) on uninstall -- which discards imported
+# dictionaries on every rebuild. Syncing into the existing bundle keeps the
+# extension registered, so Safari treats it as an update and preserves the data.
+#
+# Safari must not be running while the bundle it has loaded is swapped, otherwise
+# it can observe a partially-updated app and re-register (also purging data). Quit
+# it gracefully first, then relaunch the app afterwards so the new code loads.
+if pgrep -xq Safari; then
+    osascript -e 'tell application "Safari" to quit' || true
+    # Wait for Safari to fully exit before touching the bundle.
+    while pgrep -xq Safari; do sleep 1; done
+fi
+
+mkdir -p "$APP"
+# rsync makes $APP byte-identical to the freshly signed build (incl. _CodeSignature),
+# removing stale files, without ever deleting the bundle directory itself.
+rsync -a --delete "$BUILT_APP/" "$APP/"
 
 # 4. Launch once so Safari picks up the updated extension (stays enabled).
 open "$APP"
 
 printf 'Done. Installed app: %s\n' "$APP"
+printf 'If this was the first in-place rebuild, re-import your dictionary once;\n'
+printf 'it should now survive subsequent rebuilds.\n'
