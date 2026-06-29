@@ -330,9 +330,19 @@ export class PopupInline extends EventDispatcher {
      * @returns {Promise<void>}
      */
     async showContent(details, displayDetails) {
-        const optionsContext = this._normalizeOptionsContext(details.optionsContext);
-        if (this._optionsContext === null || JSON.stringify(this._optionsContext) !== JSON.stringify(optionsContext)) {
-            await this.setOptionsContext(optionsContext);
+        // Only (re)apply options when the caller actually provides a context. The scroll/
+        // resize reposition path (frontend `_updatePopupPosition`) calls showContent with a
+        // null optionsContext purely to re-place the popup. Re-deriving {current:true} there
+        // used to re-run setOptionsContext on every scroll, which reset the container to the
+        // configured popupWidth/popupHeight; combined with the visible-popup guard below
+        // skipping `_position`, a full-width bar collapsed to popupWidth. Match the standard
+        // popup (popup.js) and skip on null.
+        const {optionsContext} = details;
+        if (optionsContext !== null) {
+            const normalizedOptionsContext = this._normalizeOptionsContext(optionsContext);
+            if (this._optionsContext === null || JSON.stringify(this._optionsContext) !== JSON.stringify(normalizedOptionsContext)) {
+                await this.setOptionsContext(normalizedOptionsContext);
+            }
         }
 
         this.stopHideDelayed();
@@ -875,10 +885,18 @@ export class PopupInline extends EventDispatcher {
 
     /** @returns {void} */
     _updateContainerSize() {
-        this._container.style.width = `${this._initialWidth}px`;
-        this._container.style.maxWidth = `${this._initialWidth}px`;
+        // Mirror the width/height that `_position`/`_positionFullWidth` would apply, so that
+        // re-applying options while the popup is visible (when the visible-popup guard skips
+        // repositioning) never leaves the container at an inconsistent size -- e.g. a
+        // full-width bar collapsed to popupWidth, or a height that ignores the viewport clamp.
+        const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
+        const width = this._displayModeIsFullWidth ?
+            window.innerWidth :
+            Math.min(this._initialWidth, Math.max(160, window.innerWidth - 16));
+        this._container.style.width = `${width}px`;
+        this._container.style.maxWidth = `${width}px`;
         this._container.style.minHeight = '0';
-        this._container.style.maxHeight = `${this._initialHeight}px`;
+        this._container.style.maxHeight = `${height}px`;
     }
 
     /** @returns {Promise<void>} */
