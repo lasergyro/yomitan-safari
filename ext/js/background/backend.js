@@ -343,6 +343,10 @@ export class Backend {
                 log.error(e);
             }
 
+            // Ensure storage is marked persistent on every startup, not only on first install,
+            // so existing installs (with dictionaries already imported) are protected from eviction.
+            void this._requestPersistentStorage();
+
             void this._translator.prepare();
 
             await this._optionsUtil.prepare();
@@ -3009,14 +3013,19 @@ export class Backend {
         try {
             if (await navigator.storage.persisted()) { return; }
 
-            const {vendor, version} = await browser.runtime.getBrowserInfo();
-            if (vendor !== 'Mozilla') { return; }
-
-            const match = /^\d+/.exec(version);
-            if (match === null) { return; }
-
-            const versionNumber = Number.parseInt(match[0], 10);
-            if (!(Number.isFinite(versionNumber) && versionNumber >= 77)) { return; }
+            // Firefox only grants persistent storage from version 77 onwards and exposes the
+            // version via the Mozilla-only getBrowserInfo API. Other browsers (Chrome, Safari)
+            // grant persistent storage to extensions without a prompt, so attempt it directly.
+            // Note: Safari evicts non-persistent IndexedDB (e.g. imported dictionaries), so this
+            // must run on Safari too rather than being gated behind a Firefox-only check.
+            if (typeof browser !== 'undefined' && typeof browser.runtime?.getBrowserInfo === 'function') {
+                const {vendor, version} = await browser.runtime.getBrowserInfo();
+                if (vendor === 'Mozilla') {
+                    const match = /^\d+/.exec(version);
+                    const versionNumber = match === null ? Number.NaN : Number.parseInt(match[0], 10);
+                    if (!(Number.isFinite(versionNumber) && versionNumber >= 77)) { return; }
+                }
+            }
 
             await navigator.storage.persist();
         } catch (e) {
