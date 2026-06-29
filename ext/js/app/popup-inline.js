@@ -1009,6 +1009,10 @@ export class PopupInline extends EventDispatcher {
         return css
             .replaceAll("url('/", `url('${extensionRoot}`)
             .replaceAll('url("/', `url("${extensionRoot}`)
+            // Unquoted root-relative urls, e.g. material.css's `url(/images/kebab-menu.svg)`.
+            // Without this they resolve against the host page's origin and 404 in the inline
+            // popup (which runs in the page context), leaving broken/missing action icons.
+            .replaceAll('url(/', `url(${extensionRoot}`)
             .replaceAll(':root', ':host')
             .replaceAll('html[data-page-type=popup]', ':host')
             .replaceAll('html[data-page-type="popup"]', ':host')
