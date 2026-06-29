@@ -142,6 +142,8 @@ export class PopupInline extends EventDispatcher {
         this._setupPromise = null;
         /** @type {?import('settings').ProfileOptions} */
         this._options = null;
+        /** @type {boolean} */
+        this._displayModeIsFullWidth = false;
         /** @type {?string} */
         this._ankiFieldTemplates = null;
         /** @type {TemplateRendererProxy} */
@@ -210,6 +212,7 @@ export class PopupInline extends EventDispatcher {
         const options = await this._application.api.optionsGet(optionsContext2);
         this._options = options;
         const {general, scanning} = options;
+        this._displayModeIsFullWidth = (general.popupDisplayMode === 'full-width');
         this._initialWidth = general.popupWidth;
         this._initialHeight = general.popupHeight;
         this._horizontalOffset = general.popupHorizontalOffset;
@@ -429,6 +432,8 @@ export class PopupInline extends EventDispatcher {
      */
     _onDragStart(e) {
         if (e.button !== 0) { return; }
+        // A full-width bar is pinned to a viewport edge and is not draggable.
+        if (this._displayModeIsFullWidth) { return; }
         const target = /** @type {Element?} */ (e.composedPath()[0] ?? null);
         if (target !== null && target.closest('a, button, input, select, textarea, summary')) { return; }
 
@@ -486,6 +491,10 @@ export class PopupInline extends EventDispatcher {
      * @returns {void}
      */
     _position(sourceRects) {
+        if (this._displayModeIsFullWidth) {
+            this._positionFullWidth(sourceRects);
+            return;
+        }
         const width = Math.min(this._initialWidth, Math.max(160, window.innerWidth - 16));
         const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
         this._container.style.width = `${width}px`;
@@ -502,6 +511,42 @@ export class PopupInline extends EventDispatcher {
             ({left, top} = this._getSourcePosition(sourceRects, popupRect.width, popupRect.height));
         }
         this._applyPosition(left, top);
+
+        const finalRect = this._container.getBoundingClientRect();
+        this._frameRect = {
+            left: finalRect.left,
+            top: finalRect.top,
+            right: finalRect.right,
+            bottom: finalRect.bottom,
+            valid: true,
+        };
+    }
+
+    /**
+     * Positions the popup as a full-width bar pinned to the top or bottom edge of the
+     * viewport, mirroring the standard popup's `full-width` display mode. The saved drag
+     * position and horizontal clamping are intentionally ignored in this mode.
+     * @param {import('popup').Rect[]} sourceRects
+     * @returns {void}
+     */
+    _positionFullWidth(sourceRects) {
+        const width = window.innerWidth;
+        const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
+        this._container.style.width = `${width}px`;
+        this._container.style.maxWidth = `${width}px`;
+        this._container.style.maxHeight = `${height}px`;
+        this._container.style.display = 'block';
+        this._container.hidden = false;
+
+        const popupHeight = this._container.getBoundingClientRect().height || height;
+        // Pin to the edge that keeps the bar clear of the selection: bottom when the
+        // selection sits in the upper part of the viewport (room below), top otherwise.
+        const sourceRect = this._getBoundingSourceRect(sourceRects);
+        const hasArea = sourceRects.length > 0 && sourceRect.right > sourceRect.left && sourceRect.bottom > sourceRect.top;
+        const spaceBelow = window.innerHeight - sourceRect.bottom;
+        const below = !hasArea || spaceBelow >= popupHeight || spaceBelow >= sourceRect.top;
+        const top = below ? Math.max(0, window.innerHeight - popupHeight) : 0;
+        this._applyPosition(0, Math.round(top));
 
         const finalRect = this._container.getBoundingClientRect();
         this._frameRect = {
