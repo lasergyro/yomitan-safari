@@ -88,7 +88,9 @@ class DisplayController {
 
     // Private
 
-    /** */
+    /**
+     * @param {boolean} [safariInlineScanEnabled]
+     */
     _updateDisplayModifierKey(safariInlineScanEnabled = false) {
         const {profiles, profileCurrent} = /** @type {import('settings').Options} */ (this._optionsFull);
         /** @type {NodeListOf<HTMLElement>} */
@@ -241,7 +243,7 @@ class DisplayController {
     async _setupOptions({options}) {
         const extensionEnabled = options.general.enable;
         const safariInlineScanEnabled = this._isSafariBrowser ? await this._api.getSafariInlineScanEnabledForActiveTab() : false;
-        const onToggleChanged = (e) => {
+        const onToggleChanged = (/** @type {Event} */ e) => {
             const toggle = /** @type {HTMLInputElement} */ (e.currentTarget);
             if (this._isSafariBrowser) {
                 void this._api.setSafariInlineScanEnabledForActiveTab(toggle.checked);
@@ -368,7 +370,7 @@ class DisplayController {
     }
 
     /**
-     * @param {import('settings').ProfileOptions} options
+     * @param {import('settings').ProfileOptions} _options
      */
     async _updatePermissionsWarnings(_options) {
         // Intentionally no-op in the action popup.

@@ -38,7 +38,7 @@ export class DisplayAnki {
         this._display = display;
         /** @type {import('./display-audio.js').DisplayAudio} */
         this._displayAudio = displayAudio;
-        /** @type {import('../comm/api.js').API|{injectAnkiNoteMedia: Function, parseText: Function}} */
+        /** @type {import('anki-note-builder').MinimalApi} */
         this._ankiApi = this._createAnkiApi();
         /** @type {?string} */
         this._ankiFieldTemplates = null;
@@ -146,7 +146,7 @@ export class DisplayAnki {
     async getLogData(dictionaryEntry) {
         const dictionaryEntryIndex = this._display.dictionaryEntries.indexOf(dictionaryEntry);
         const entry = dictionaryEntryIndex >= 0 ? this._getEntry(dictionaryEntryIndex) : null;
-        const saveButtons = entry !== null ? [...entry.querySelectorAll('.action-button[data-action=save-note]')] : [];
+        const saveButtons = entry !== null ? /** @type {HTMLButtonElement[]} */ ([...entry.querySelectorAll('.action-button[data-action=save-note]')]) : [];
         const viewNoteButtons = entry !== null ? [...entry.querySelectorAll('.action-button[data-action=view-note]')] : [];
         const documentElement = document.documentElement;
 
@@ -182,14 +182,14 @@ export class DisplayAnki {
                 errors = [toError(e)];
             }
             /** @type {import('display-anki').AnkiNoteLogData} */
-            const entry = {cardFormatIndex, note};
+            const noteLogEntry = {cardFormatIndex, note};
             if (Array.isArray(errors) && errors.length > 0) {
-                entry.errors = errors;
+                noteLogEntry.errors = errors;
             }
             if (Array.isArray(requirements) && requirements.length > 0) {
-                entry.requirements = requirements;
+                noteLogEntry.requirements = requirements;
             }
-            ankiNotes.push(entry);
+            ankiNotes.push(noteLogEntry);
         }
 
         return {
@@ -289,7 +289,7 @@ export class DisplayAnki {
     /** */
     _onContentUpdateComplete() {
         if (this._isSafariWebExtension()) {
-            console.log('[Yomitan][Safari][DefinitionPopup][Anki] contentUpdateComplete', {
+            log.log('[Yomitan][Safari][DefinitionPopup][Anki] contentUpdateComplete', {
                 entryCount: this._display.dictionaryEntries.length,
                 cardFormatCount: this._cardFormats.length,
                 ankiEnabled: this._display.getOptions()?.anki.enable ?? null,
@@ -405,7 +405,7 @@ export class DisplayAnki {
             }
         }
         if (this._isSafariWebExtension()) {
-            console.log('[Yomitan][Safari][DefinitionPopup][Anki] ensureSaveButtons', {
+            log.log('[Yomitan][Safari][DefinitionPopup][Anki] ensureSaveButtons', {
                 entryCount: dictionaryEntries.length,
                 cardFormatCount: this._cardFormats.length,
                 saveButtonCount: document.querySelectorAll('.action-button[data-action=save-note]').length,
@@ -473,7 +473,7 @@ export class DisplayAnki {
             this._dictionaryEntryDetails = dictionaryEntryDetails;
             this._updateSaveButtons(dictionaryEntryDetails);
             if (this._isSafariWebExtension()) {
-                console.log('[Yomitan][Safari][DefinitionPopup][Anki] updateDictionaryEntryDetails complete', {
+                log.log('[Yomitan][Safari][DefinitionPopup][Anki] updateDictionaryEntryDetails complete', {
                     dictionaryEntryDetailsCount: dictionaryEntryDetails.length,
                     saveButtonCount: document.querySelectorAll('.action-button[data-action=save-note]').length,
                     viewNoteButtonCount: document.querySelectorAll('.action-button[data-action=view-note]').length,
@@ -683,7 +683,7 @@ export class DisplayAnki {
     }
 
     /**
-     * @returns {import('../comm/api.js').API|{injectAnkiNoteMedia: Function, parseText: Function}}
+     * @returns {import('anki-note-builder').MinimalApi}
      */
     _createAnkiApi() {
         return {
@@ -733,9 +733,9 @@ export class DisplayAnki {
     _debugLog(message, details) {
         if (!this._isSafariWebExtension()) { return; }
         if (typeof details === 'undefined') {
-            console.info('[Yomitan][Safari][Popup][Anki]', message);
+            log.log('[Yomitan][Safari][Popup][Anki]', message);
         } else {
-            console.info('[Yomitan][Safari][Popup][Anki]', message, details);
+            log.log('[Yomitan][Safari][Popup][Anki]', message, details);
         }
     }
 
@@ -750,12 +750,12 @@ export class DisplayAnki {
         if (this._useContentOriginAnkiRelay()) {
             this._debugLog('Relaying popup Anki request through content origin', {action, params});
             try {
-                return await this._display.invokeContentOrigin(
+                return /** @type {T} */ (await this._display.invokeContentOrigin(
                     /** @type {import('cross-frame-api').ApiNames} */ (action),
                     /** @type {import('cross-frame-api').ApiParams<import('cross-frame-api').ApiNames>} */ (params),
-                );
+                ));
             } catch (e) {
-                console.error('[Yomitan][Safari][Popup][Anki] Relay failed', {action, params, error: toError(e)});
+                log.error(toError(e));
                 throw e;
             }
         }
@@ -1141,6 +1141,7 @@ export class DisplayAnki {
         }
 
         const noteInfoList = (await Promise.all(notePromises));
+        /** @type {import('anki').Note[]} */
         const validNotes = [];
         /** @type {(import('anki').NoteInfoWrapper?)[]} */
         const invalidAndPlaceholderNotes = [];
@@ -1175,10 +1176,7 @@ export class DisplayAnki {
                 ankiError = isAnkiConnected ? null : new Error('Anki not connected');
             }
         } catch (e) {
-            console.error('[Yomitan][Safari][Popup][Anki] Failed to fetch popup note info', {error: toError(e)});
-            if (this._isSafariWebExtension()) {
-                console.error('[Yomitan][Safari][DefinitionPopup][Anki] getDictionaryEntryDetails failed', toError(e));
-            }
+            log.error(toError(e));
             infos = this._getAnkiNoteInfoForceValueIfValid(validNotes, false);
             ankiError = (e instanceof ExtensionError && e.message.includes('Anki connection failure')) ?
                 new Error('Anki not connected') :

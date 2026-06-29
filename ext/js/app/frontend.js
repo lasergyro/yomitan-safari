@@ -54,16 +54,12 @@ class InlineSelectionTextSource {
 
     /**
      * @param {number} length
-     * @param {boolean} fromEnd
+     * @param {boolean} _fromEnd Unsupported for inline selection sources; the offset is always measured from the start.
      * @returns {number}
      */
-    setEndOffset(length, fromEnd) {
+    setEndOffset(length, _fromEnd) {
         const previousLength = this._content.length;
-        if (fromEnd) {
-            this._content = this._content.substring(0, Math.min(previousLength, length));
-        } else {
-            this._content = this._content.substring(0, Math.min(previousLength, length));
-        }
+        this._content = this._content.substring(0, Math.min(previousLength, length));
         return previousLength - this._content.length;
     }
 
@@ -435,66 +431,53 @@ export class Frontend {
         };
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendGetDefaultAnkiFieldTemplates'>} */
     _onApiGetDefaultAnkiFieldTemplates() {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendGetDefaultAnkiFieldTemplates');
         return this._application.api.getDefaultAnkiFieldTemplates();
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendIsAnkiConnected'>} */
     _onApiIsAnkiConnected() {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendIsAnkiConnected');
         return this._application.api.isAnkiConnected();
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendGetAnkiNoteInfo'>} */
     _onApiGetAnkiNoteInfo({notes, fetchAdditionalInfo}) {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendGetAnkiNoteInfo', {noteCount: notes.length, fetchAdditionalInfo});
         return this._application.api.getAnkiNoteInfo(notes, fetchAdditionalInfo);
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendAddAnkiNote'>} */
     _onApiAddAnkiNote({note}) {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendAddAnkiNote', {deckName: note.deckName, modelName: note.modelName});
         return this._application.api.addAnkiNote(note);
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendUpdateAnkiNote'>} */
     _onApiUpdateAnkiNote({noteWithId}) {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendUpdateAnkiNote', {noteId: noteWithId.id});
         return this._application.api.updateAnkiNote(noteWithId);
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendViewNotes'>} */
     _onApiViewNotes({noteIds, mode, allowFallback}) {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendViewNotes', {noteCount: noteIds.length, mode, allowFallback});
         return this._application.api.viewNotes(noteIds, mode, allowFallback);
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendSuspendAnkiCardsForNote'>} */
     _onApiSuspendAnkiCardsForNote({noteId}) {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendSuspendAnkiCardsForNote', {noteId});
         return this._application.api.suspendAnkiCardsForNote(noteId);
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendForceSync'>} */
     _onApiForceSync() {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendForceSync');
         return this._application.api.forceSync();
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendInjectAnkiNoteMedia'>} */
     _onApiInjectAnkiNoteMedia({timestamp, definitionDetails, audioDetails, screenshotDetails, clipboardDetails, dictionaryMediaDetails}) {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendInjectAnkiNoteMedia', {
-            timestamp,
-            hasDefinitionDetails: definitionDetails !== null,
-            hasAudioDetails: audioDetails !== null,
-            hasScreenshotDetails: screenshotDetails !== null,
-            hasClipboardDetails: clipboardDetails !== null,
-            dictionaryMediaCount: dictionaryMediaDetails.length,
-        });
         return this._application.api.injectAnkiNoteMedia(timestamp, definitionDetails, audioDetails, screenshotDetails, clipboardDetails, dictionaryMediaDetails);
     }
 
+    /** @type {import('cross-frame-api').ApiHandler<'frontendParseText'>} */
     _onApiParseText({text, optionsContext, scanLength, useInternalParser, useMecabParser}) {
-        console.info('[Yomitan][Safari][Frontend][Anki]', 'frontendParseText', {
-            textLength: text.length,
-            optionsContext,
-            scanLength,
-            useInternalParser,
-            useMecabParser,
-        });
         return this._application.api.parseText(text, optionsContext, scanLength, useInternalParser, useMecabParser);
     }
 
@@ -912,7 +895,7 @@ export class Frontend {
      * @returns {import('input').Modifier[]}
      */
     _splitModifiers(value) {
-        return value.split(/[,;\s]+/).map((v) => v.trim().toLowerCase()).filter((v) => v.length > 0);
+        return /** @type {import('input').Modifier[]} */ (value.split(/[,;\s]+/).map((v) => v.trim().toLowerCase()).filter((v) => v.length > 0));
     }
 
     /**
@@ -1506,7 +1489,8 @@ export class Frontend {
         const selectionText = selection !== null ? selection.toString() : '';
         let source;
         if (this._isSafariInlinePopupMode() && selectionText.length > 0) {
-            source = new InlineSelectionTextSource(selectionText);
+            // InlineSelectionTextSource is a minimal Safari-only TextSource duck-type.
+            source = /** @type {import('text-source').TextSource} */ (/** @type {unknown} */ (new InlineSelectionTextSource(selectionText)));
         } else {
             const range = this._getFirstSelectionRange(allowEmptyRange);
             if (range === null) { return false; }
@@ -1528,7 +1512,7 @@ export class Frontend {
     async _searchSelectedTextDirect(selectionText) {
         if (selectionText.length === 0) { return; }
 
-        const textSource = new InlineSelectionTextSource(selectionText);
+        const textSource = /** @type {import('text-source').TextSource} */ (/** @type {unknown} */ (new InlineSelectionTextSource(selectionText)));
         this._textScanner.setCurrentTextSource(textSource);
 
         const {optionsContext, detail} = await this._getSearchContext();

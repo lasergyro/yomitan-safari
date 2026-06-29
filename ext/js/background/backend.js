@@ -3117,7 +3117,8 @@ export class Backend {
         const domain = this._getUrlDomain(url);
         if (domain === null) { return; }
 
-        for (const {tab} of await this._findTabs(2000, true, async ({url: tabUrl}) => this._getUrlDomain(tabUrl ?? '') === domain, true)) {
+        const tabs = /** @type {import('backend').TabInfo[]} */ (await this._findTabs(2000, true, async ({url: tabUrl}) => this._getUrlDomain(tabUrl ?? '') === domain, true));
+        for (const {tab} of tabs) {
             const {id} = tab;
             if (typeof id !== 'number') { continue; }
             this._sendMessageTabIgnoreResponse(id, {action: 'frontendUpdateSafariInlineScanEnabled'}, {});

@@ -699,11 +699,13 @@ export class AnkiConnect {
     _sendNativeMessageSingle(application, message) {
         return new Promise((resolve, reject) => {
             let handled = false;
+            /** @param {unknown} value */
             const onResolve = (value) => {
                 if (handled) { return; }
                 handled = true;
                 resolve(value);
             };
+            /** @param {unknown} error */
             const onReject = (error) => {
                 if (handled) { return; }
                 handled = true;
@@ -711,14 +713,16 @@ export class AnkiConnect {
             };
 
             try {
-                const maybePromise = chrome.runtime.sendNativeMessage(application, message, (response) => {
+                // Safari may return a Promise from sendNativeMessage even when a callback is given;
+                // the Chrome types declare a void return, so widen it to handle both forms.
+                const maybePromise = /** @type {?Promise<unknown>} */ (/** @type {unknown} */ (chrome.runtime.sendNativeMessage(application, message, (response) => {
                     const error = chrome.runtime.lastError;
                     if (error) {
                         onReject(new Error(error.message));
                     } else {
                         onResolve(response);
                     }
-                });
+                })));
 
                 if (typeof maybePromise === 'object' && maybePromise !== null && typeof maybePromise.then === 'function') {
                     maybePromise.then(onResolve, (error) => {
