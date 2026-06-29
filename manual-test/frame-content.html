@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eingebetteter Rahmen</title>
+<style>
+  html, body { margin: 0; }
+  body {
+    font: 17px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #102a43;
+    background: #eef4ff;
+    padding: 14px 16px;
+  }
+  h2 { font-size: 16px; margin: 0 0 8px; }
+  .tag { color: #486581; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h2>Inhalt im eingebetteten Rahmen (iframe)</h2>
+  <p class="tag">Dieser Text lebt in einem iframe, nicht im Hauptdokument.</p>
+  <p>
+    Scanne ein Wort <strong>hier drinnen</strong>: <strong>finit</strong>,
+    <strong>Gerechtigkeit</strong>, <strong>Verständnis</strong>,
+    <strong>Entscheidung</strong>, <strong>Wahrscheinlichkeit</strong>,
+    <strong>schöne</strong>, <strong>Zusammenarbeit</strong>.
+  </p>
+  <p>
+    Das Popup sollte im Hauptdokument (Root-Frame) erscheinen, korrekt
+    positioniert und in voller Breite — nicht auf den Rahmen beschränkt.
+  </p>
+</body>
+</html>

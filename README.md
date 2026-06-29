@@ -2,8 +2,6 @@
 
 This extension supports scanning live text in images, the native OCR model for macOS. However, extensions cannot run in local files, so you will need a web based image viewer for local files. See [https://github.com/uAIex/image-viewer](https://github.com/uAIex/image-viewer)
 
-
-
 ## Building
 
 1. Install [Node.js](https://nodejs.org/) and [npm](https://www.npmjs.com/).
@@ -42,3 +40,17 @@ In Xcode:
 - On Safari for macOS, inline auto-scanning is tracked per domain.
 - Use the toolbar popup toggle to enable or disable inline auto-scanning for the current domain.
 - On Safari for macOS, Live Text in images is supported when you select the text with the mouse.
+
+## Manual test pages
+
+The [`manual-test/`](manual-test/) folder contains static HTML pages for manually
+exercising the Safari inline popup (frame layout, popup sizing, scroll behavior).
+Safari disables extensions on `file://` URLs, so serve them over HTTP:
+
+```sh
+./manual-test/serve.sh
+```
+
+Then open <http://127.0.0.1:8723/test-iframe.html> or
+<http://127.0.0.1:8723/test-plain.html> in Safari. See
+[`manual-test/README.md`](manual-test/README.md) for details.
