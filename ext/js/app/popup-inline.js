@@ -320,7 +320,7 @@ export class PopupInline extends EventDispatcher {
         }, 180);
     }
 
-    _position(_sourceRects) {
+    _position(sourceRects) {
         const width = Math.min(this._initialWidth, Math.max(160, window.innerWidth - 16));
         const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
         this._container.style.width = `${width}px`;
@@ -334,7 +334,7 @@ export class PopupInline extends EventDispatcher {
         if (this._savedPosition !== null) {
             ({left, top} = this._clampPosition(this._savedPosition.left, this._savedPosition.top));
         } else {
-            ({left, top} = this._getDefaultPosition(popupRect.width, popupRect.height));
+            ({left, top} = this._getSourcePosition(sourceRects, popupRect.width, popupRect.height));
         }
         this._applyPosition(left, top);
 
@@ -658,6 +658,24 @@ export class PopupInline extends EventDispatcher {
     _getPositionStorageKey() {
         const host = window.location.hostname || 'default';
         return `popupInlinePosition:${host}`;
+    }
+
+    _getSourcePosition(sourceRects, width, height) {
+        const sourceRect = this._getBoundingSourceRect(sourceRects);
+        const hasArea = sourceRect.right > sourceRect.left && sourceRect.bottom > sourceRect.top;
+        // macOS Live Text selections (and any source without DOM rects) yield no usable rect;
+        // fall back to the default corner placement in that case.
+        if (sourceRects.length === 0 || !hasArea) {
+            return this._getDefaultPosition(width, height);
+        }
+        const gap = 5;
+        // Prefer placing the popup just below the selection, flipping above when there isn't room.
+        const spaceBelow = window.innerHeight - sourceRect.bottom;
+        const top = (spaceBelow >= height + gap || spaceBelow >= sourceRect.top) ?
+            sourceRect.bottom + gap :
+            sourceRect.top - gap - height;
+        // Align the popup's left edge with the selection; _clampPosition keeps it on-screen.
+        return this._clampPosition(sourceRect.left, top);
     }
 
     _getDefaultPosition(width, height) {
