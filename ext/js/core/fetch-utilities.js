@@ -22,9 +22,13 @@ import {readResponseJson} from './json.js';
  * @returns {Promise<Response>}
  */
 async function fetchAsset(url) {
+    // Use CORS mode rather than 'no-cors'. The Safari inline popup runs in the host
+    // page's context, so fetching an extension asset is cross-origin there; 'no-cors'
+    // would return an opaque response (status 0, ok false) and fail. CORS mode is
+    // equivalent for the same-origin extension-page contexts the other callers use.
     const response = await fetch(chrome.runtime.getURL(url), {
         method: 'GET',
-        mode: 'no-cors',
+        mode: 'cors',
         cache: 'default',
         credentials: 'omit',
         redirect: 'follow',
