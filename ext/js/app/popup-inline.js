@@ -144,6 +144,10 @@ export class PopupInline extends EventDispatcher {
         this._options = null;
         /** @type {boolean} */
         this._displayModeIsFullWidth = false;
+        /** @type {string} */
+        this._customCss = '';
+        /** @type {?HTMLStyleElement} */
+        this._customCssStyleNode = null;
         /** @type {?string} */
         this._ankiFieldTemplates = null;
         /** @type {TemplateRendererProxy} */
@@ -221,6 +225,10 @@ export class PopupInline extends EventDispatcher {
         this._verticalOffset2 = general.popupVerticalOffset2;
         this._hidePopupOnCursorExit = scanning.hidePopupOnCursorExit;
         this._hidePopupOnCursorExitDelay = scanning.hidePopupOnCursorExitDelay;
+        // The standard popup receives the user's custom CSS through the Display inside its
+        // iframe; the inline popup has no such Display, so read and apply it here directly.
+        this._customCss = typeof general.customPopupCss === 'string' ? general.customPopupCss : '';
+        this._applyCustomCss();
         this._updateContainerSize();
     }
 
@@ -346,10 +354,25 @@ export class PopupInline extends EventDispatcher {
     }
 
     /**
-     * @param {string} _css The CSS rules.
+     * @param {string} css The CSS rules.
      * @returns {Promise<void>}
      */
-    async setCustomCss(_css) {}
+    async setCustomCss(css) {
+        this._customCss = typeof css === 'string' ? css : '';
+        this._applyCustomCss();
+    }
+
+    /**
+     * Pushes the current custom CSS into the dedicated `<style>` node in the shadow root.
+     * The node is created during renderer setup, so this is a no-op until then; the value
+     * is retained in `_customCss` and applied when the node is created.
+     * @returns {void}
+     */
+    _applyCustomCss() {
+        if (this._customCssStyleNode !== null) {
+            this._customCssStyleNode.textContent = this._customCss;
+        }
+    }
 
     /** @returns {Promise<void>} */
     async clearAutoPlayTimer() {}
@@ -807,6 +830,12 @@ export class PopupInline extends EventDispatcher {
         const style = document.createElement('style');
         style.textContent = `${materialCss}\n${displayCss}\n${displayPronunciationCss}\n${structuredContentCss}\n${this._getInlineCssOverrides()}`;
 
+        // The user's custom CSS lives in its own node placed AFTER the bundled styles, so its
+        // rules win the cascade at equal specificity (matching the standard popup's behavior).
+        const customStyle = document.createElement('style');
+        customStyle.textContent = this._customCss;
+        this._customCssStyleNode = customStyle;
+
         const wrapper = document.createElement('div');
         wrapper.className = 'content-outer';
         wrapper.dataset.browser = 'safari';
@@ -814,7 +843,7 @@ export class PopupInline extends EventDispatcher {
         wrapper.dataset.outerTheme = 'default';
         wrapper.innerHTML = '<div class="content"><div class="content-scroll contain-overscroll scrollbar"><div class="content-body"><div class="content-body-inner"></div></div></div></div>';
 
-        this._shadow.replaceChildren(style, wrapper);
+        this._shadow.replaceChildren(style, customStyle, wrapper);
         this._contentRoot = wrapper.querySelector('.content-body-inner');
         this._displayGenerator = displayGenerator;
         this._displayContentManager = displayContentManager;
