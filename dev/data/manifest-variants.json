@@ -374,6 +374,13 @@
                     ]
                 },
                 {
+                    "action": "remove",
+                    "path": [
+                        "permissions"
+                    ],
+                    "item": "declarativeNetRequest"
+                },
+                {
                     "action": "delete",
                     "path": [
                         "content_scripts",
