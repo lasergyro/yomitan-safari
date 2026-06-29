@@ -29,6 +29,13 @@ import {TextSourceGenerator} from '../dom/text-source-generator.js';
 import {TextSourceRange} from '../dom/text-source-range.js';
 import {TextScanner} from '../language/text-scanner.js';
 
+/**
+ * A minimal Safari-only `TextSource` duck-type backed by the current page selection text,
+ * used when scanning runs in the inline popup path. It is cast to `TextSource` through
+ * `unknown` at its construction sites (it is not part of the `TextSource` union), so the
+ * type checker will not catch interface drift here. See docs/browser-bugs.md (Safari Web
+ * Extension port) and the `PopupInline` class note for the context constraints.
+ */
 class InlineSelectionTextSource {
     /**
      * @param {string} content

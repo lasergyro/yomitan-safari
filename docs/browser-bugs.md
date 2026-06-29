@@ -133,3 +133,44 @@ This page lists several of the browser bugs that have affected Yomichan over the
 - **Browser**: Firefox
 - **Date**: 2022-06-25
 - **Links**: [Report](https://bugzilla.mozilla.org/show_bug.cgi?id=1776555)
+
+# Safari Web Extension port
+
+This fork ports Yomitan to a Safari Web Extension. Safari's extension model differs from
+Chrome/Firefox in ways that are not visible from the shared code, and several of these have
+caused regressions. Keep these invariants in mind when changing shared code.
+
+## The inline popup runs in the host page's context
+
+- **What**: On Safari the dictionary is rendered by `PopupInline` (`ext/js/app/popup-inline.js`)
+  directly in the host page, not in an extension-origin iframe like the standard `Popup`.
+  Its `DisplayGenerator` therefore runs in the page's **content-script context**.
+- **Consequences**:
+  - `document`, `window`, and `fetch` belong to the page, not the extension.
+  - Fetching an extension asset via `chrome.runtime.getURL(...)` is a **cross-origin**
+    request. It must use `mode: 'cors'`; a `mode: 'no-cors'` fetch returns an opaque
+    response (`status 0`, `ok false`) and fails. This is why `fetchAsset`
+    (`ext/js/core/fetch-utilities.js`) uses CORS mode and throws a descriptive error on
+    opaque responses.
+  - `PopupInline` and `InlineSelectionTextSource` (`ext/js/app/frontend.js`) are duck-typed
+    as `Popup`/`TextSource` and cast through `unknown`, so they are invisible to the type
+    checker. Shared utilities that assume an extension-origin page can break here silently.
+
+## declarativeNetRequest crashes Safari on extension activation
+
+- **Browser**: Safari 26.5
+- **What**: Declaring the `declarativeNetRequest` permission makes Safari load its DNR rule
+  store on activation (e.g. opening any extension page) and crash with a null deref in
+  `WebKit::WebExtensionContext::loadDeclarativeNetRequestRules`.
+- **Fix**: The `safari` manifest variant (`dev/data/manifest-variants.json`) removes the
+  `declarativeNetRequest` permission. `RequestBuilder` degrades gracefully (cookieless fetch)
+  when the API is absent.
+
+## Imported dictionaries are discarded on reinstall
+
+- **What**: Safari purges an extension's website data (IndexedDB) when the extension is
+  uninstalled. Deleting and recreating the installed app counts as uninstall + reinstall, so
+  rebuilding wiped imported dictionaries. `navigator.storage.persist()` only guards against
+  automatic eviction, not an uninstall purge.
+- **Fix**: `rebuild-safari.sh` updates the installed app bundle in place (rsync) instead of
+  `rm -rf` + copy, so Safari treats a rebuild as an update and preserves the data.

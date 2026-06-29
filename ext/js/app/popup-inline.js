@@ -17,6 +17,7 @@
  */
 
 import {EventDispatcher} from '../core/event-dispatcher.js';
+import {fetchText} from '../core/fetch-utilities.js';
 import {log} from '../core/log.js';
 import {generateId} from '../core/utilities.js';
 import {AnkiNoteBuilder} from '../data/anki-note-builder.js';
@@ -27,6 +28,19 @@ import {DisplayGenerator} from '../display/display-generator.js';
 import {TemplateRendererProxy} from '../templates/template-renderer-proxy.js';
 
 /**
+ * A Safari-only `Popup` implementation that renders the dictionary inline in the host
+ * page rather than in an extension-origin iframe.
+ *
+ * IMPORTANT CONTEXT: unlike the standard popup, this and its `DisplayGenerator` run in
+ * the HOST PAGE'S content-script context, not an extension page. Consequences to keep
+ * in mind when editing or when reusing shared utilities here:
+ * - `document`/`window`/`fetch` belong to the page, not the extension.
+ * - Fetching an extension asset (via `chrome.runtime.getURL`) is CROSS-ORIGIN, so it
+ *   must use `mode: 'cors'` (the shared `fetchText`/`fetchAsset` helpers do). A
+ *   `mode: 'no-cors'` fetch returns an opaque response (status 0) and fails here.
+ * - This class is duck-typed as a `Popup` (see popup-factory.js) and is invisible to the
+ *   type checker, so shared code that assumes an extension-origin page can break here
+ *   silently. See docs/browser-bugs.md (Safari Web Extension port).
  * @augments EventDispatcher<import('popup').Events>
  */
 export class PopupInline extends EventDispatcher {
@@ -735,10 +749,10 @@ export class PopupInline extends EventDispatcher {
         const displayContentManager = new DisplayContentManager(display);
         const displayGenerator = new DisplayGenerator(displayContentManager, null);
         let [materialCss, displayCss, displayPronunciationCss, structuredContentCss] = await Promise.all([
-            this._fetchExtensionText('/css/material.css'),
-            this._fetchExtensionText('/css/display.css'),
-            this._fetchExtensionText('/css/display-pronunciation.css'),
-            this._fetchExtensionText('/css/structured-content.css'),
+            fetchText('/css/material.css'),
+            fetchText('/css/display.css'),
+            fetchText('/css/display-pronunciation.css'),
+            fetchText('/css/structured-content.css'),
         ]);
         materialCss = this._transformInlineCss(materialCss);
         displayCss = this._transformInlineCss(displayCss);
@@ -783,24 +797,6 @@ export class PopupInline extends EventDispatcher {
             optionsContext :
             {current: true}
         );
-    }
-
-    /**
-     * @param {string} path The extension-relative path to fetch.
-     * @returns {Promise<string>}
-     */
-    async _fetchExtensionText(path) {
-        const response = await fetch(chrome.runtime.getURL(path), {
-            method: 'GET',
-            cache: 'default',
-            credentials: 'omit',
-            redirect: 'follow',
-            referrerPolicy: 'no-referrer',
-        });
-        if (!response.ok) {
-            throw new Error(`Failed to fetch ${path}: ${response.status}`);
-        }
-        return await response.text();
     }
 
     /** @returns {void} */

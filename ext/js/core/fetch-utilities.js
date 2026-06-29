@@ -34,6 +34,13 @@ async function fetchAsset(url) {
         redirect: 'follow',
         referrerPolicy: 'no-referrer',
     });
+    if (response.type === 'opaque' || response.status === 0) {
+        // An opaque response (status 0) means this was a cross-origin fetch made with
+        // mode: 'no-cors'. The usual cause is fetching an extension asset from a context
+        // that is NOT an extension-origin page -- most notably the Safari inline popup,
+        // which runs in the host page's content-script context. Use mode: 'cors'.
+        throw new Error(`Failed to fetch ${url}: opaque response (status 0). This is a cross-origin fetch made with mode:'no-cors' (e.g. an extension asset fetched from the Safari inline popup, which runs in the page context). Use mode:'cors'.`);
+    }
     if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status}`);
     }
