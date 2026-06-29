@@ -137,13 +137,14 @@ export class PopupFactory {
             }
             const popup = (
                 chrome.runtime.getURL('/').startsWith('safari-web-extension://') ?
-                new PopupInline(
+                // PopupInline is a Safari-only duck-typed Popup; treat it as a Popup for the factory.
+                /** @type {Popup} */ (/** @type {unknown} */ (new PopupInline(
                     this._application,
                     id,
                     depth,
                     currentFrameId,
                     childrenSupported,
-                ) :
+                ))) :
                 new Popup(
                     this._application,
                     id,

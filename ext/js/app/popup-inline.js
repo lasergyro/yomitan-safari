@@ -17,6 +17,7 @@
  */
 
 import {EventDispatcher} from '../core/event-dispatcher.js';
+import {log} from '../core/log.js';
 import {generateId} from '../core/utilities.js';
 import {AnkiNoteBuilder} from '../data/anki-note-builder.js';
 import {getDynamicTemplates} from '../data/anki-template-util.js';
@@ -25,17 +26,36 @@ import {DisplayContentManager} from '../display/display-content-manager.js';
 import {DisplayGenerator} from '../display/display-generator.js';
 import {TemplateRendererProxy} from '../templates/template-renderer-proxy.js';
 
+/**
+ * @augments EventDispatcher<import('popup').Events>
+ */
 export class PopupInline extends EventDispatcher {
+    /**
+     * @param {import('../application.js').Application} application The main application instance.
+     * @param {string} id The identifier of the popup.
+     * @param {number} depth The depth of the popup.
+     * @param {number} frameId The frameId of the host frame.
+     * @param {boolean} childrenSupported Whether or not the popup is able to show child popups.
+     */
     constructor(application, id, depth, frameId, childrenSupported) {
         super();
+        /** @type {import('../application.js').Application} */
         this._application = application;
+        /** @type {string} */
         this._id = id;
+        /** @type {number} */
         this._depth = depth;
+        /** @type {number} */
         this._frameId = frameId;
+        /** @type {boolean} */
         this._childrenSupported = childrenSupported;
+        /** @type {?PopupInline} */
         this._parent = null;
+        /** @type {?PopupInline} */
         this._child = null;
+        /** @type {?import('settings').OptionsContext} */
         this._optionsContext = null;
+        /** @type {HTMLDivElement} */
         this._container = document.createElement('div');
         this._container.className = 'yomitan-inline-popup';
         this._container.hidden = true;
@@ -66,57 +86,110 @@ export class PopupInline extends EventDispatcher {
         this._container.addEventListener('mouseleave', this._onMouseLeave.bind(this), false);
         this._container.addEventListener('mousedown', (e) => e.stopPropagation(), false);
         this._container.addEventListener('click', (e) => e.stopPropagation(), false);
+        /** @type {boolean} */
         this._visible = false;
+        /** @type {boolean} */
         this._isPointerOver = false;
+        /** @type {?import('core').Timeout} */
         this._hidePopupTimer = null;
+        /** @type {?import('core').Timeout} */
         this._fadeTimer = null;
+        /** @type {import('popup').ValidRect} */
         this._frameRect = {left: 0, top: 0, right: 0, bottom: 0, valid: false};
+        /** @type {number} */
         this._initialWidth = 300;
+        /** @type {number} */
         this._initialHeight = 400;
+        /** @type {number} */
         this._horizontalOffset = 0;
+        /** @type {number} */
         this._verticalOffset = 10;
+        /** @type {number} */
         this._horizontalOffset2 = 10;
+        /** @type {number} */
         this._verticalOffset2 = 0;
+        /** @type {boolean} */
         this._hidePopupOnCursorExit = false;
+        /** @type {number} */
         this._hidePopupOnCursorExitDelay = 0;
+        /** @type {Map<import('core').TokenString, boolean>} */
         this._visibleOverrides = new Map();
+        /** @type {ShadowRoot} */
         this._shadow = this._container.attachShadow({mode: 'open'});
+        /** @type {?Element} */
         this._contentRoot = null;
+        /** @type {?DisplayGenerator} */
         this._displayGenerator = null;
+        /** @type {?DisplayContentManager} */
         this._displayContentManager = null;
+        /** @type {?import('dictionary-importer').Summary[]} */
         this._dictionaryInfo = null;
+        /** @type {?Promise<void>} */
         this._setupPromise = null;
+        /** @type {?import('settings').ProfileOptions} */
         this._options = null;
+        /** @type {?string} */
         this._ankiFieldTemplates = null;
+        /** @type {TemplateRendererProxy} */
         this._templateRenderer = new TemplateRendererProxy();
+        /** @type {AnkiNoteBuilder} */
         this._ankiNoteBuilder = new AnkiNoteBuilder(this._application.api, this._templateRenderer);
+        /** @type {?import('core').TokenObject} */
         this._renderToken = null;
+        /** @type {?{left: number, top: number}} */
         this._savedPosition = null;
+        /** @type {boolean} */
         this._positionLoaded = false;
+        /** @type {?{offsetX: number, offsetY: number}} */
         this._dragState = null;
+        /** @type {?{left: number, top: number}} */
         this._lastPosition = null;
-        this._onDragMove = this._onDragMove.bind(this);
-        this._onDragEnd = this._onDragEnd.bind(this);
+        /** @type {(event: MouseEvent) => void} */
+        this._onDragMoveBound = this._onDragMove.bind(this);
+        /** @type {() => void} */
+        this._onDragEndBound = this._onDragEnd.bind(this);
 
         this._container.addEventListener('mousedown', this._onDragStart.bind(this), false);
     }
 
+    /** @returns {string} */
     get id() { return this._id; }
+
+    /** @returns {?PopupInline} */
     get parent() { return this._parent; }
+
+    /** @param {?PopupInline} value */
     set parent(value) { this._parent = value; }
+
+    /** @returns {?PopupInline} */
     get child() { return this._child; }
+
+    /** @param {?PopupInline} value */
     set child(value) { this._child = value; }
+
+    /** @returns {number} */
     get depth() { return this._depth; }
+
+    /** @returns {Window} */
     get frameContentWindow() { return window; }
+
+    /** @returns {HTMLDivElement} */
     get container() { return this._container; }
+
+    /** @returns {number} */
     get frameId() { return this._frameId; }
 
+    /** @returns {void} */
     prepare() {
         if (this._container.parentNode === null) {
             document.documentElement.appendChild(this._container);
         }
     }
 
+    /**
+     * @param {import('settings').OptionsContext} optionsContext The options context object.
+     * @returns {Promise<void>}
+     */
     async setOptionsContext(optionsContext) {
         const optionsContext2 = this._normalizeOptionsContext(optionsContext);
         this._optionsContext = optionsContext2;
@@ -134,6 +207,10 @@ export class PopupInline extends EventDispatcher {
         this._updateContainerSize();
     }
 
+    /**
+     * @param {boolean} _changeFocus Whether or not the parent popup or host frame should be focused.
+     * @returns {void}
+     */
     hide(_changeFocus) {
         this.stopHideDelayed();
         this._visible = false;
@@ -146,6 +223,10 @@ export class PopupInline extends EventDispatcher {
         }
     }
 
+    /**
+     * @param {number} delay The delay in milliseconds before hiding.
+     * @returns {void}
+     */
     hideDelayed(delay) {
         if (this.isPointerOverSelfOrChildren() || this._dragState !== null) { return; }
         if (delay > 0) {
@@ -161,6 +242,7 @@ export class PopupInline extends EventDispatcher {
         }
     }
 
+    /** @returns {void} */
     stopHideDelayed() {
         if (this._hidePopupTimer !== null) {
             clearTimeout(this._hidePopupTimer);
@@ -175,10 +257,16 @@ export class PopupInline extends EventDispatcher {
         }
     }
 
+    /** @returns {Promise<boolean>} `true` if the popup is visible, `false` otherwise. */
     async isVisible() {
         return this.isVisibleSync();
     }
 
+    /**
+     * @param {boolean} value Whether or not the popup should be visible.
+     * @param {number} _priority The priority of the override.
+     * @returns {Promise<?import('core').TokenString>} A token which can be passed to `clearVisibleOverride`.
+     */
     async setVisibleOverride(value, _priority) {
         const token = generateId(16);
         this._visibleOverrides.set(token, value);
@@ -193,25 +281,38 @@ export class PopupInline extends EventDispatcher {
         return token;
     }
 
+    /**
+     * @param {import('core').TokenString} token The token returned from `setVisibleOverride`.
+     * @returns {Promise<boolean>} `true` if the override existed and was removed, `false` otherwise.
+     */
     async clearVisibleOverride(token) {
         return this._visibleOverrides.delete(token);
     }
 
+    /**
+     * @param {number} x The x coordinate.
+     * @param {number} y The y coordinate.
+     * @returns {Promise<boolean>} `true` if the point is contained within the popup's rect, `false` otherwise.
+     */
     async containsPoint(x, y) {
         const {left, top, right, bottom, valid} = this._frameRect;
         return valid && x >= left && x < right && y >= top && y < bottom;
     }
 
+    /**
+     * @param {import('popup').ContentDetails} details
+     * @param {?import('display').ContentDetails} displayDetails
+     * @returns {Promise<void>}
+     */
     async showContent(details, displayDetails) {
         const optionsContext = this._normalizeOptionsContext(details.optionsContext);
-        if (this._optionsContext === null) {
-            await this.setOptionsContext(optionsContext);
-        } else if (JSON.stringify(this._optionsContext) !== JSON.stringify(optionsContext)) {
+        if (this._optionsContext === null || JSON.stringify(this._optionsContext) !== JSON.stringify(optionsContext)) {
             await this.setOptionsContext(optionsContext);
         }
 
         this.stopHideDelayed();
         this.prepare();
+        /** @type {import('core').TokenObject} */
         const renderToken = {};
         this._renderToken = renderToken;
         await this._render(displayDetails, renderToken);
@@ -227,19 +328,50 @@ export class PopupInline extends EventDispatcher {
         this._container.style.opacity = '1';
     }
 
+    /**
+     * @param {string} _css The CSS rules.
+     * @returns {Promise<void>}
+     */
     async setCustomCss(_css) {}
+
+    /** @returns {Promise<void>} */
     async clearAutoPlayTimer() {}
+
+    /**
+     * @param {number} scale The scaling factor.
+     * @returns {Promise<void>}
+     */
     async setContentScale(scale) {
         this._container.style.fontSize = `${14 * scale}px`;
     }
+
+    /** @returns {boolean} */
     isVisibleSync() { return this._visible; }
+
+    /** @returns {Promise<void>} */
     async updateTheme() {}
+
+    /**
+     * @param {string} _css The CSS rules.
+     * @param {boolean} _useWebExtensionApi Whether or not web extension APIs should be used to inject the rules.
+     * @returns {Promise<void>}
+     */
     async setCustomOuterCss(_css, _useWebExtensionApi) {}
+
+    /** @returns {import('popup').ValidRect} The rect. */
     getFrameRect() { return this._frameRect; }
+
+    /** @returns {Promise<import('popup').ValidSize>} The size and whether or not it is valid. */
     async getFrameSize() {
         const rect = this._container.getBoundingClientRect();
         return {width: rect.width, height: rect.height, valid: this._visible};
     }
+
+    /**
+     * @param {number} width The desired width of the popup.
+     * @param {number} height The desired height of the popup.
+     * @returns {Promise<boolean>} `true` if the size assignment was successful, `false` otherwise.
+     */
     async setFrameSize(width, height) {
         this._initialWidth = width;
         this._initialHeight = height;
@@ -248,8 +380,11 @@ export class PopupInline extends EventDispatcher {
         this._container.style.maxHeight = `${height}px`;
         return true;
     }
+
+    /** @returns {boolean} */
     isPointerOver() { return this._isPointerOver; }
 
+    /** @returns {boolean} */
     isPointerOverSelfOrChildren() {
         if (this._isPointerOver) { return true; }
         for (let popup = this._child; popup !== null; popup = popup.child) {
@@ -258,12 +393,14 @@ export class PopupInline extends EventDispatcher {
         return false;
     }
 
+    /** @returns {void} */
     _onMouseEnter() {
         this.stopHideDelayed();
         this._isPointerOver = true;
         this.trigger('mouseOver', {});
     }
 
+    /** @returns {void} */
     _onMouseLeave() {
         this._isPointerOver = false;
         this.trigger('mouseOut', {});
@@ -272,6 +409,10 @@ export class PopupInline extends EventDispatcher {
         }
     }
 
+    /**
+     * @param {MouseEvent} e The mousedown event.
+     * @returns {void}
+     */
     _onDragStart(e) {
         if (e.button !== 0) { return; }
         const target = /** @type {Element?} */ (e.composedPath()[0] ?? null);
@@ -283,12 +424,16 @@ export class PopupInline extends EventDispatcher {
             offsetX: e.clientX - rect.left,
             offsetY: e.clientY - rect.top,
         };
-        window.addEventListener('mousemove', this._onDragMove, true);
-        window.addEventListener('mouseup', this._onDragEnd, true);
+        window.addEventListener('mousemove', this._onDragMoveBound, true);
+        window.addEventListener('mouseup', this._onDragEndBound, true);
         e.preventDefault();
         e.stopPropagation();
     }
 
+    /**
+     * @param {MouseEvent} e The mousemove event.
+     * @returns {void}
+     */
     _onDragMove(e) {
         if (this._dragState === null) { return; }
         const {offsetX, offsetY} = this._dragState;
@@ -298,14 +443,16 @@ export class PopupInline extends EventDispatcher {
         this._applyPosition(position.left, position.top);
     }
 
+    /** @returns {void} */
     _onDragEnd() {
         if (this._dragState === null) { return; }
         this._dragState = null;
-        window.removeEventListener('mousemove', this._onDragMove, true);
-        window.removeEventListener('mouseup', this._onDragEnd, true);
+        window.removeEventListener('mousemove', this._onDragMoveBound, true);
+        window.removeEventListener('mouseup', this._onDragEndBound, true);
         void this._savePosition();
     }
 
+    /** @returns {void} */
     _startFadeOut() {
         if (!this._visible || this._dragState !== null) { return; }
         this._container.style.opacity = '0';
@@ -320,6 +467,10 @@ export class PopupInline extends EventDispatcher {
         }, 180);
     }
 
+    /**
+     * @param {import('popup').Rect[]} sourceRects
+     * @returns {void}
+     */
     _position(sourceRects) {
         const width = Math.min(this._initialWidth, Math.max(160, window.innerWidth - 16));
         const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
@@ -348,6 +499,11 @@ export class PopupInline extends EventDispatcher {
         };
     }
 
+    /**
+     * @param {?import('display').ContentDetails} displayDetails The display content details.
+     * @param {import('core').TokenObject} renderToken A token used to detect stale renders.
+     * @returns {Promise<void>}
+     */
     async _render(displayDetails, renderToken) {
         const contentRoot = await this._ensureRenderer();
         if (this._renderToken !== renderToken) { return; }
@@ -392,6 +548,12 @@ export class PopupInline extends EventDispatcher {
         await displayContentManager.executeMediaRequests();
     }
 
+    /**
+     * @param {import('dictionary').DictionaryEntry} dictionaryEntry The dictionary entry being rendered.
+     * @param {HTMLElement} node The rendered entry node.
+     * @param {?import('display').ContentDetails} displayDetails The display content details.
+     * @returns {Promise<void>}
+     */
     async _addAnkiActions(dictionaryEntry, node, displayDetails) {
         const options = this._options;
         if (options === null || !options.anki.enable) { return; }
@@ -427,7 +589,7 @@ export class PopupInline extends EventDispatcher {
                     dictionaryStylesMap,
                 }));
             } catch (e) {
-                console.error('[Yomitan][Safari][InlinePopup][Anki] Failed to build note', e);
+                log.error(e);
                 continue;
             }
 
@@ -443,7 +605,6 @@ export class PopupInline extends EventDispatcher {
                 saveButton.disabled = true;
                 try {
                     const noteId = await this._application.api.addAnkiNote(note);
-                    console.log('[Yomitan][Safari][InlinePopup][Anki] addAnkiNote', {noteId, cardFormat: cardFormat.name});
                     if (typeof noteId === 'number' && noteId > 0) {
                         const viewButton = this._createInlineActionButton('view-note', `View ${cardFormat.name} note`);
                         viewButton.dataset.action = 'view-note';
@@ -457,7 +618,7 @@ export class PopupInline extends EventDispatcher {
                         saveButton.disabled = false;
                     }
                 } catch (error) {
-                    console.error('[Yomitan][Safari][InlinePopup][Anki] addAnkiNote failed', error);
+                    log.error(error);
                     saveButton.disabled = false;
                 }
             }, false);
@@ -477,13 +638,18 @@ export class PopupInline extends EventDispatcher {
                     buttonContainer.replaceChildren(viewButton);
                 }
             } catch (error) {
-                console.error('[Yomitan][Safari][InlinePopup][Anki] getAnkiNoteInfo failed', error);
+                log.error(error);
             }
 
             noteActionsContainer.appendChild(buttonContainer);
         }
     }
 
+    /**
+     * @param {string} icon The icon identifier.
+     * @param {string} title The button title.
+     * @returns {HTMLButtonElement}
+     */
     _createInlineActionButton(icon, title) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -496,6 +662,10 @@ export class PopupInline extends EventDispatcher {
         return button;
     }
 
+    /**
+     * @param {?import('display').ContentDetails} displayDetails The display content details.
+     * @returns {import('anki-templates-internal').Context}
+     */
     _createAnkiContext(displayDetails) {
         const historyState = (typeof displayDetails?.state === 'object' && displayDetails.state !== null) ? displayDetails.state : {};
         const sentence = (typeof historyState.sentence === 'object' && historyState.sentence !== null) ? historyState.sentence : null;
@@ -512,6 +682,10 @@ export class PopupInline extends EventDispatcher {
         };
     }
 
+    /**
+     * @param {import('settings').ProfileOptions} options The profile options.
+     * @returns {Promise<string>}
+     */
     async _getAnkiFieldTemplates(options) {
         if (typeof options.anki.fieldTemplates === 'string') {
             return options.anki.fieldTemplates;
@@ -525,6 +699,10 @@ export class PopupInline extends EventDispatcher {
         return this._ankiFieldTemplates;
     }
 
+    /**
+     * @param {string} text The message text.
+     * @returns {HTMLDivElement}
+     */
     _createMessage(text) {
         const node = document.createElement('div');
         node.className = 'inline-message';
@@ -532,6 +710,7 @@ export class PopupInline extends EventDispatcher {
         return node;
     }
 
+    /** @returns {Promise<Element>} */
     async _ensureRenderer() {
         let setupPromise = this._setupPromise;
         if (setupPromise === null) {
@@ -545,11 +724,14 @@ export class PopupInline extends EventDispatcher {
         return this._contentRoot;
     }
 
+    /** @returns {Promise<void>} */
     async _setupRenderer() {
-        const display = {
+        // DisplayContentManager only reads `display.application` and `display.setContent`, so a
+        // minimal stub suffices here; cast through `unknown` to satisfy the full Display type.
+        const display = /** @type {import('../display/display.js').Display} */ (/** @type {unknown} */ ({
             application: this._application,
             setContent() {},
-        };
+        }));
         const displayContentManager = new DisplayContentManager(display);
         const displayGenerator = new DisplayGenerator(displayContentManager, null);
         let [materialCss, displayCss, displayPronunciationCss, structuredContentCss] = await Promise.all([
@@ -577,9 +759,12 @@ export class PopupInline extends EventDispatcher {
         this._contentRoot = wrapper.querySelector('.content-body-inner');
         this._displayGenerator = displayGenerator;
         this._displayContentManager = displayContentManager;
-        await this._prepareDisplayGenerator(displayGenerator);
+        // `prepare()` loads the display templates (via chrome.runtime.getURL) and updates hotkeys,
+        // which is exactly what the inline popup needs; no need to load templates manually.
+        await displayGenerator.prepare();
     }
 
+    /** @returns {Promise<import('dictionary-importer').Summary[]>} */
     async _getDictionaryInfo() {
         if (this._dictionaryInfo === null) {
             this._dictionaryInfo = await this._application.api.getDictionaryInfo();
@@ -587,6 +772,10 @@ export class PopupInline extends EventDispatcher {
         return this._dictionaryInfo;
     }
 
+    /**
+     * @param {?import('settings').OptionsContext} optionsContext
+     * @returns {import('settings').OptionsContext}
+     */
     _normalizeOptionsContext(optionsContext) {
         return (
             typeof optionsContext === 'object' &&
@@ -596,6 +785,10 @@ export class PopupInline extends EventDispatcher {
         );
     }
 
+    /**
+     * @param {string} path The extension-relative path to fetch.
+     * @returns {Promise<string>}
+     */
     async _fetchExtensionText(path) {
         const response = await fetch(chrome.runtime.getURL(path), {
             method: 'GET',
@@ -610,14 +803,7 @@ export class PopupInline extends EventDispatcher {
         return await response.text();
     }
 
-    async _prepareDisplayGenerator(displayGenerator) {
-        const htmlRaw = await this._fetchExtensionText('/templates-display.html');
-        const domParser = new DOMParser();
-        const templatesDocument = domParser.parseFromString(htmlRaw, 'text/html');
-        displayGenerator._templates.load(templatesDocument);
-        displayGenerator.updateHotkeys();
-    }
-
+    /** @returns {void} */
     _updateContainerSize() {
         this._container.style.width = `${this._initialWidth}px`;
         this._container.style.maxWidth = `${this._initialWidth}px`;
@@ -625,41 +811,50 @@ export class PopupInline extends EventDispatcher {
         this._container.style.maxHeight = `${this._initialHeight}px`;
     }
 
+    /** @returns {Promise<void>} */
     async _ensurePositionLoaded() {
         if (this._positionLoaded) { return; }
         this._positionLoaded = true;
         const key = this._getPositionStorageKey();
-        const store = await new Promise((resolve) => {
+        const store = /** @type {{[key: string]: unknown}} */ (await new Promise((resolve) => {
             chrome.storage.local.get([key], (result) => {
                 resolve(result);
             });
-        });
+        }));
         const value = store[key];
         if (
             typeof value === 'object' &&
             value !== null &&
-            typeof value.left === 'number' &&
-            typeof value.top === 'number'
+            'left' in value && typeof value.left === 'number' &&
+            'top' in value && typeof value.top === 'number'
         ) {
             this._savedPosition = {left: value.left, top: value.top};
         }
     }
 
+    /** @returns {Promise<void>} */
     async _savePosition() {
         if (this._lastPosition === null) { return; }
         const key = this._getPositionStorageKey();
         const value = {left: this._lastPosition.left, top: this._lastPosition.top};
         this._savedPosition = value;
-        await new Promise((resolve) => {
-            chrome.storage.local.set({[key]: value}, resolve);
-        });
+        await /** @type {Promise<void>} */ (new Promise((resolve) => {
+            chrome.storage.local.set({[key]: value}, () => resolve());
+        }));
     }
 
+    /** @returns {string} */
     _getPositionStorageKey() {
         const host = window.location.hostname || 'default';
         return `popupInlinePosition:${host}`;
     }
 
+    /**
+     * @param {import('popup').Rect[]} sourceRects
+     * @param {number} width
+     * @param {number} height
+     * @returns {{left: number, top: number}}
+     */
     _getSourcePosition(sourceRects, width, height) {
         const sourceRect = this._getBoundingSourceRect(sourceRects);
         const hasArea = sourceRect.right > sourceRect.left && sourceRect.bottom > sourceRect.top;
@@ -678,6 +873,11 @@ export class PopupInline extends EventDispatcher {
         return this._clampPosition(sourceRect.left, top);
     }
 
+    /**
+     * @param {number} width
+     * @param {number} height
+     * @returns {{left: number, top: number}}
+     */
     _getDefaultPosition(width, height) {
         return this._clampPosition(
             window.innerWidth - width - 16,
@@ -685,6 +885,11 @@ export class PopupInline extends EventDispatcher {
         );
     }
 
+    /**
+     * @param {number} left
+     * @param {number} top
+     * @returns {{left: number, top: number}}
+     */
     _clampPosition(left, top) {
         const rect = this._container.getBoundingClientRect();
         const width = rect.width || this._initialWidth;
@@ -696,12 +901,21 @@ export class PopupInline extends EventDispatcher {
         };
     }
 
+    /**
+     * @param {number} left
+     * @param {number} top
+     * @returns {void}
+     */
     _applyPosition(left, top) {
         this._lastPosition = {left, top};
         this._container.style.left = `${left}px`;
         this._container.style.top = `${top}px`;
     }
 
+    /**
+     * @param {string} css The raw CSS text.
+     * @returns {string}
+     */
     _transformInlineCss(css) {
         const extensionRoot = chrome.runtime.getURL('/');
         return css
@@ -713,6 +927,7 @@ export class PopupInline extends EventDispatcher {
             .replaceAll('body', '.content-outer');
     }
 
+    /** @returns {string} */
     _getInlineCssOverrides() {
         return `
 :host {
@@ -809,6 +1024,10 @@ export class PopupInline extends EventDispatcher {
 `;
     }
 
+    /**
+     * @param {import('popup').Rect[]} sourceRects
+     * @returns {import('popup').Rect}
+     */
     _getBoundingSourceRect(sourceRects) {
         switch (sourceRects.length) {
             case 0: return {left: 0, top: 0, right: 0, bottom: 0};
