@@ -16,6 +16,7 @@
  */
 
 import type {CrossFrameAPIPort} from '../../ext/js/comm/cross-frame-api.js';
+import type * as Api from './api';
 import type {Response, Timeout, TokenString} from './core';
 import type {ModifierKey} from './input';
 import type {ContentDetails as PopupContentDetails, ValidSize} from './popup';
@@ -113,6 +114,47 @@ export type ApiSurface = {
             url: string;
             documentTitle: string;
         };
+    };
+    // The following actions proxy 1:1 to the corresponding `api` surface methods.
+    frontendGetDefaultAnkiFieldTemplates: {
+        params: void;
+        return: Api.ApiReturn<'getDefaultAnkiFieldTemplates'>;
+    };
+    frontendIsAnkiConnected: {
+        params: void;
+        return: Api.ApiReturn<'isAnkiConnected'>;
+    };
+    frontendGetAnkiNoteInfo: {
+        params: Api.ApiParams<'getAnkiNoteInfo'>;
+        return: Api.ApiReturn<'getAnkiNoteInfo'>;
+    };
+    frontendAddAnkiNote: {
+        params: Api.ApiParams<'addAnkiNote'>;
+        return: Api.ApiReturn<'addAnkiNote'>;
+    };
+    frontendUpdateAnkiNote: {
+        params: Api.ApiParams<'updateAnkiNote'>;
+        return: Api.ApiReturn<'updateAnkiNote'>;
+    };
+    frontendViewNotes: {
+        params: Api.ApiParams<'viewNotes'>;
+        return: Api.ApiReturn<'viewNotes'>;
+    };
+    frontendSuspendAnkiCardsForNote: {
+        params: Api.ApiParams<'suspendAnkiCardsForNote'>;
+        return: Api.ApiReturn<'suspendAnkiCardsForNote'>;
+    };
+    frontendForceSync: {
+        params: void;
+        return: Api.ApiReturn<'forceSync'>;
+    };
+    frontendInjectAnkiNoteMedia: {
+        params: Api.ApiParams<'injectAnkiNoteMedia'>;
+        return: Api.ApiReturn<'injectAnkiNoteMedia'>;
+    };
+    frontendParseText: {
+        params: Api.ApiParams<'parseText'>;
+        return: Api.ApiReturn<'parseText'>;
     };
     frameOffsetForwarderGetChildFrameRect: {
         params: {

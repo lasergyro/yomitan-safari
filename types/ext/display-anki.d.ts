@@ -21,9 +21,22 @@ import type * as AnkiTemplates from './anki-templates';
 import type * as Settings from './settings';
 
 export type LogData = {
+    ankiRenderState?: AnkiRenderStateLogData;
     ankiNoteData: AnkiTemplates.NoteData | undefined;
     ankiNoteDataException: Error | undefined;
     ankiNotes: AnkiNoteLogData[];
+};
+
+export type AnkiRenderStateLogData = {
+    dictionaryEntryIndex: number;
+    isSafariWebExtension: boolean;
+    isAnkiAvailable: boolean;
+    rootDatasetAnkiEnabled: string | undefined;
+    cardFormats: {name: string; type: Settings.AnkiCardFormat['type']; deck: string; model: string}[];
+    dictionaryEntryDetailsReady: boolean;
+    saveButtonCount: number;
+    saveButtons: {hidden: boolean; disabled: boolean; cardFormatIndex: string | null; title: string}[];
+    viewNoteButtonCount: number;
 };
 
 export type AnkiNoteLogData = {

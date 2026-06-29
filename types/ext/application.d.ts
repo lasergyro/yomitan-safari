@@ -109,6 +109,10 @@ export type ApiSurface = {
         params: void;
         return: void;
     };
+    frontendUpdateSafariInlineScanEnabled: {
+        params: void;
+        return: void;
+    };
     frameEndpointReady: {
         params: FrameEndpointReadyDetails;
         return: void;
