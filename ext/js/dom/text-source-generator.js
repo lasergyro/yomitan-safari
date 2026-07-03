@@ -219,7 +219,27 @@ export class TextSourceGenerator {
             }
         }
 
-        const range = this._caretRangeFromPointExt(x, y, deepContentScan ? elements : [], normalizeCssZoom, language);
+        let range = this._caretRangeFromPointExt(x, y, deepContentScan ? elements : [], normalizeCssZoom, language);
+
+        // When not already deep scanning, a null result may mean the point is covered by a
+        // transparent overlay that has no text of its own (e.g. a full-page <canvas> drawing or
+        // annotation layer rendered on top of a PDF text layer). In that case, retry once against
+        // the full element stack so `_caretRangeFromPointExt` can see through the overlay and reach
+        // the text underneath. This is a no-op on ordinary pages, where the first scan already
+        // succeeds or the topmost element is opaque/absent.
+        if (
+            range === null &&
+            imposter === null &&
+            !deepContentScan &&
+            elements.length > 0 &&
+            this._isElementTransparent(elements[0])
+        ) {
+            const stackedElements = this._getElementsFromPoint(x, y, true);
+            if (stackedElements.length > 1) {
+                range = this._caretRangeFromPointExt(x, y, stackedElements, normalizeCssZoom, language);
+            }
+        }
+
         if (range !== null) {
             if (imposter !== null) {
                 this._setImposterStyle(/** @type {HTMLDivElement} */ (imposterContainer).style, 'z-index', '-2147483646');
