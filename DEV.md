@@ -124,6 +124,50 @@ caffeinate -d osascript run.applescript "$JSCODE"   # -d = prevent display sleep
 caffeinate -d -t 3600 &
 ```
 
+## Serving local test pages to iOS Safari over Tailscale (HTTPS)
+
+Some web APIs — notably **OPFS** (`navigator.storage.getDirectory`,
+`createSyncAccessHandle`) — require a **secure context**. Only `https://` and
+`http://localhost` / `http://127.0.0.1` qualify. A plain `http://` URL to a LAN
+or Tailscale IP is **not** secure, so OPFS/SQLite-WASM silently becomes
+unavailable there. To test such pages on a real iPhone you therefore need HTTPS
+with a trusted cert.
+
+The `manual-test/` pages are served over plain HTTP on `127.0.0.1` (see
+`manual-test/serve.sh`). To reach them from an iPhone with a trusted cert, front
+that local server with `tailscale serve`:
+
+1. **One-time:** enable HTTPS certificates for the tailnet at
+   <https://login.tailscale.com/admin/dns> → **HTTPS Certificates → Enable**
+   (MagicDNS must be on). Without this, `tailscale cert` / `tailscale serve`
+   fail with _"your Tailscale account does not support getting TLS certs"_.
+
+2. Start the local HTTP server, then proxy it over HTTPS on the tailnet:
+
+   ```sh
+   ./manual-test/serve.sh &                 # http://127.0.0.1:8723
+   tailscale serve --bg 8723                # https://<host>.<tailnet>.ts.net/ -> :8723
+   tailscale serve status                   # confirm the mapping
+   ```
+
+3. Open `https://<host>.<tailnet>.ts.net/<path>` on the iPhone (Tailscale on).
+   iOS resolves the MagicDNS name and trusts the `*.ts.net` cert automatically,
+   giving a secure context.
+
+4. Tear it down when finished:
+
+   ```sh
+   tailscale serve --https=443 off
+   ```
+
+Notes:
+
+- The Mac's own `curl` may fail to resolve its `*.ts.net` name (local resolver
+  quirk) even though iOS resolves it fine. Validate the proxy locally by forcing
+  the IP: `curl --resolve host.tailnet.ts.net:443:<tailscale-ip> https://host.tailnet.ts.net/...`.
+- iOS OPFS quota is generous in practice (~38 GB observed on iOS 26), not the
+  oft-cited ~1 GB WebView cap. Confirm per-device with `navigator.storage.estimate()`.
+
 ### Hit-testing gotchas found on this page
 
 - Under **pinch-zoom / CSS transforms**, a text span's `getBoundingClientRect`
