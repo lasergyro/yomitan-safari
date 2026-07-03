@@ -54,3 +54,9 @@ Safari disables extensions on `file://` URLs, so serve them over HTTP:
 Then open <http://127.0.0.1:8723/test-iframe.html> or
 <http://127.0.0.1:8723/test-plain.html> in Safari. See
 [`manual-test/README.md`](manual-test/README.md) for details.
+
+## Development notes
+
+See [`DEV.md`](DEV.md) for development learnings, including how to drive a real
+logged-in Safari from the shell to inspect a live page's rendered DOM and
+hit-testing (used to diagnose page-specific scanning bugs).
