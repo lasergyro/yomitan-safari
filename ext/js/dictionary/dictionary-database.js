@@ -319,7 +319,7 @@ export class DictionaryDatabase {
      * @returns {Promise<import('dictionary-database').TermEntry[]>}
      */
     findTermsExactBulk(termList, dictionaries) {
-        /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').TermExactRequest, import('dictionary-database').DatabaseTermEntry>} */
+        /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').TermExactRequest, import('dictionary-database').DatabaseTermEntryWithId>} */
         const predicate = (row, item) => (row.reading === item.reading && dictionaries.has(row.dictionary));
         return this._findMultiBulk('terms', ['expression'], termList, this._createOnlyQuery3, predicate, this._createTermBind1);
     }
@@ -329,7 +329,7 @@ export class DictionaryDatabase {
      * @returns {Promise<import('dictionary-database').TermEntry[]>}
      */
     findTermsBySequenceBulk(items) {
-        /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').DictionaryAndQueryRequest, import('dictionary-database').DatabaseTermEntry>} */
+        /** @type {import('dictionary-database').FindPredicate<import('dictionary-database').DictionaryAndQueryRequest, import('dictionary-database').DatabaseTermEntryWithId>} */
         const predicate = (row, item) => (row.dictionary === item.dictionary);
         return this._findMultiBulk('terms', ['sequence'], items, this._createOnlyQuery2, predicate, this._createTermBind2);
     }
@@ -761,17 +761,22 @@ export class DictionaryDatabase {
      */
     _createTerm(matchSource, matchType, row, index) {
         const {sequence} = row;
+        // New imports store the non-indexed fields positionally under `m`; legacy rows (imported
+        // before this change and not yet re-imported) keep the named fields. Unpack either.
+        const [definitionTags, rules, score, glossary, termTags] = 'm' in row ?
+            row.m :
+            [row.definitionTags || row.tags, row.rules, row.score, row.glossary, row.termTags];
         return {
             index,
             matchType,
             matchSource,
             term: row.expression,
             reading: row.reading,
-            definitionTags: this._splitField(row.definitionTags || row.tags),
-            termTags: this._splitField(row.termTags),
-            rules: this._splitField(row.rules),
-            definitions: row.glossary,
-            score: row.score,
+            definitionTags: this._splitField(definitionTags),
+            termTags: this._splitField(termTags),
+            rules: this._splitField(rules),
+            definitions: glossary,
+            score,
             dictionary: row.dictionary,
             id: row.id,
             sequence: typeof sequence === 'number' ? sequence : -1,

@@ -58,7 +58,36 @@ export type DatabaseTermEntry = {
     dictionary: string;
 };
 
-export type DatabaseTermEntryWithId = DatabaseTermEntry & DatabaseId;
+/**
+ * Positional payload holding the non-indexed fields of a term row, stored under the `m` key so
+ * their property names are not repeated in every record (structured clone stores keys per row).
+ * Order: definitionTags, rules, score, glossary, termTags.
+ */
+export type DatabaseTermEntryPayload = [
+    definitionTags: string | null,
+    rules: string,
+    score: number,
+    glossary: DictionaryData.TermGlossary[],
+    termTags: string | undefined,
+];
+
+/**
+ * Compact on-disk term row. The indexed fields (expression, reading, dictionary, sequence) and the
+ * optional reverse-lookup fields stay top-level so their IndexedDB indexes keep working; everything
+ * else lives in {@link DatabaseTermEntryPayload}. New imports write this shape; `_createTerm` reads
+ * both this and the legacy {@link DatabaseTermEntry}.
+ */
+export type DatabaseTermEntryPacked = {
+    expression: string;
+    reading: string;
+    expressionReverse?: string;
+    readingReverse?: string;
+    sequence?: number;
+    dictionary: string;
+    m: DatabaseTermEntryPayload;
+};
+
+export type DatabaseTermEntryWithId = (DatabaseTermEntry | DatabaseTermEntryPacked) & DatabaseId;
 
 export type TermEntry = {
     index: number;
@@ -204,7 +233,7 @@ export type ObjectStoreName = (
 
 export type ObjectStoreData<T extends ObjectStoreName> = (
     T extends 'dictionaries' ? DictionaryImporter.Summary :
-    T extends 'terms' ? DatabaseTermEntry :
+    T extends 'terms' ? DatabaseTermEntry | DatabaseTermEntryPacked :
     T extends 'termMeta' ? DatabaseTermMeta :
     T extends 'kanji' ? DatabaseKanjiEntry :
     T extends 'kanjiMeta' ? DatabaseKanjiMeta :

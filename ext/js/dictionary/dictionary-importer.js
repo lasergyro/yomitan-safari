@@ -216,7 +216,7 @@ export class DictionaryImporter {
 
                 this._progress();
 
-                await bulkAdd('terms', termList);
+                await bulkAdd('terms', termList.map((entry) => this._packTermEntry(entry)));
                 counts.terms.total += termList.length;
 
                 this._progress();
@@ -825,6 +825,29 @@ export class DictionaryImporter {
         let [expression, reading, definitionTags, rules, score, glossary, sequence, termTags] = entry;
         reading = reading.length > 0 ? reading : expression;
         return {expression, reading, definitionTags, rules, score, glossary, sequence, termTags, dictionary};
+    }
+
+    /**
+     * Packs the non-indexed fields of a term row into a positional payload (`m`) so their property
+     * names are not repeated in every stored record. The indexed fields (expression, reading,
+     * dictionary, sequence) and the optional reverse-lookup fields stay top-level so their IndexedDB
+     * indexes keep working. This reverses the object-inflation done by the bank converters above;
+     * `DictionaryDatabase._createTerm` unpacks it on read.
+     * @param {import('dictionary-database').DatabaseTermEntry} entry
+     * @returns {import('dictionary-database').DatabaseTermEntryPacked}
+     */
+    _packTermEntry(entry) {
+        /** @type {import('dictionary-database').DatabaseTermEntryPacked} */
+        const packed = {
+            expression: entry.expression,
+            reading: entry.reading,
+            dictionary: entry.dictionary,
+            m: [entry.definitionTags, entry.rules, entry.score, entry.glossary, entry.termTags],
+        };
+        if (typeof entry.sequence !== 'undefined') { packed.sequence = entry.sequence; }
+        if (typeof entry.expressionReverse !== 'undefined') { packed.expressionReverse = entry.expressionReverse; }
+        if (typeof entry.readingReverse !== 'undefined') { packed.readingReverse = entry.readingReverse; }
+        return packed;
     }
 
     /**
