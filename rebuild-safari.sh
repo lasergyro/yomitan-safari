@@ -16,7 +16,8 @@ INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 APP="$INSTALL_DIR/Yomitan Safari.app"
 
 # 1. Rebuild the JS/extension bundle and regenerate the web extension + Xcode project.
-npm run build
+# Build only the safari variant; the default `npm run build` builds every browser target.
+npm run build -- --target safari
 "$ROOT_DIR/build-safari.sh" --version "$VERSION"
 
 # 2. Compile + sign the app (signing supplied here, not stored in the project).
