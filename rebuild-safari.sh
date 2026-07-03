@@ -64,5 +64,3 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 open "$APP"
 
 printf 'Done. Installed app: %s\n' "$APP"
-printf 'If this was the first in-place rebuild, re-import your dictionary once;\n'
-printf 'it should now survive subsequent rebuilds.\n'
