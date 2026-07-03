@@ -354,7 +354,11 @@ export class PopupInline extends EventDispatcher {
         if (this._renderToken !== renderToken) { return; }
         await this._ensurePositionLoaded();
         if (this._renderToken !== renderToken) { return; }
-        if (!this._visible || !this._frameRect.valid) {
+        // A full-width bar is anchored to the visible (visual) viewport, so it must be
+        // re-placed on every reposition call - including the scroll/resize/zoom path that
+        // runs while the popup is already visible. Otherwise pinch-zoom leaves the bar
+        // pinned to the layout viewport and it drifts out of the visible area.
+        if (!this._visible || !this._frameRect.valid || this._displayModeIsFullWidth) {
             this._position(details.sourceRects);
         }
         this._visible = true;
@@ -524,6 +528,7 @@ export class PopupInline extends EventDispatcher {
      * @returns {void}
      */
     _position(sourceRects) {
+        sourceRects = this._toFixedRects(sourceRects);
         if (this._displayModeIsFullWidth) {
             this._positionFullWidth(sourceRects);
             return;
@@ -532,6 +537,8 @@ export class PopupInline extends EventDispatcher {
         const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
         this._container.style.width = `${width}px`;
         this._container.style.maxWidth = `${width}px`;
+        // Grow to fit the content (up to the configured height) when not full-width.
+        this._container.style.height = 'auto';
         this._container.style.maxHeight = `${height}px`;
         this._container.style.display = 'block';
         this._container.hidden = false;
@@ -563,10 +570,24 @@ export class PopupInline extends EventDispatcher {
      * @returns {void}
      */
     _positionFullWidth(sourceRects) {
-        const width = window.innerWidth;
-        const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
+        // Measure against the visual viewport, not the layout viewport: under Safari
+        // pinch-zoom the two diverge, and a `position: fixed` bar is laid out relative to
+        // the layout viewport. Sizing/offsetting by the visual viewport keeps the bar
+        // filling the visible width and pinned to the visible edge as the user zooms/pans.
+        const viewport = this._getViewport();
+        const width = viewport.width;
+        // The container is sized in CSS (layout) pixels, which Safari magnifies by the
+        // pinch-zoom scale on screen. Divide the configured height by the scale so the bar
+        // keeps a constant *on-screen* height instead of growing as the user zooms in.
+        // (`width` needs no such adjustment: it already tracks the shrinking visible width
+        // and renders edge-to-edge at every zoom level.)
+        const {scale} = viewport;
+        const height = Math.min(this._initialHeight / scale, Math.max(120 / scale, viewport.height - 16 / scale));
         this._container.style.width = `${width}px`;
         this._container.style.maxWidth = `${width}px`;
+        // Occupy a fixed vertical range: the bar always spans this height and scrolls its
+        // content internally, rather than growing with the number of results.
+        this._container.style.height = `${height}px`;
         this._container.style.maxHeight = `${height}px`;
         this._container.style.display = 'block';
         this._container.hidden = false;
@@ -576,10 +597,12 @@ export class PopupInline extends EventDispatcher {
         // selection sits in the upper part of the viewport (room below), top otherwise.
         const sourceRect = this._getBoundingSourceRect(sourceRects);
         const hasArea = sourceRects.length > 0 && sourceRect.right > sourceRect.left && sourceRect.bottom > sourceRect.top;
-        const spaceBelow = window.innerHeight - sourceRect.bottom;
-        const below = !hasArea || spaceBelow >= popupHeight || spaceBelow >= sourceRect.top;
-        const top = below ? Math.max(0, window.innerHeight - popupHeight) : 0;
-        this._applyPosition(0, Math.round(top));
+        const viewportBottom = viewport.top + viewport.height;
+        const spaceBelow = viewportBottom - sourceRect.bottom;
+        const spaceAbove = sourceRect.top - viewport.top;
+        const below = !hasArea || spaceBelow >= popupHeight || spaceBelow >= spaceAbove;
+        const top = below ? Math.max(viewport.top, viewportBottom - popupHeight) : viewport.top;
+        this._applyPosition(Math.round(viewport.left), Math.round(top));
 
         const finalRect = this._container.getBoundingClientRect();
         this._frameRect = {
@@ -889,13 +912,26 @@ export class PopupInline extends EventDispatcher {
         // re-applying options while the popup is visible (when the visible-popup guard skips
         // repositioning) never leaves the container at an inconsistent size -- e.g. a
         // full-width bar collapsed to popupWidth, or a height that ignores the viewport clamp.
+        if (this._displayModeIsFullWidth) {
+            const viewport = this._getViewport();
+            const {scale} = viewport;
+            // Match `_positionFullWidth`: a fixed on-screen height (scaled against pinch-zoom)
+            // spanning the visible width.
+            const height = Math.min(this._initialHeight / scale, Math.max(120 / scale, viewport.height - 16 / scale));
+            this._container.style.width = `${viewport.width}px`;
+            this._container.style.maxWidth = `${viewport.width}px`;
+            this._container.style.minHeight = '0';
+            this._container.style.height = `${height}px`;
+            this._container.style.maxHeight = `${height}px`;
+            return;
+        }
         const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
-        const width = this._displayModeIsFullWidth ?
-            window.innerWidth :
-            Math.min(this._initialWidth, Math.max(160, window.innerWidth - 16));
+        const width = Math.min(this._initialWidth, Math.max(160, window.innerWidth - 16));
         this._container.style.width = `${width}px`;
         this._container.style.maxWidth = `${width}px`;
         this._container.style.minHeight = '0';
+        // The standard popup grows to fit its content (up to the configured height).
+        this._container.style.height = 'auto';
         this._container.style.maxHeight = `${height}px`;
     }
 
@@ -1114,6 +1150,47 @@ export class PopupInline extends EventDispatcher {
     color: var(--text-color);
 }
 `;
+    }
+
+    /**
+     * Returns the visible viewport in client coordinates. Falls back to the layout
+     * viewport when the `visualViewport` API is unavailable. Under pinch-zoom the visual
+     * viewport is a (possibly offset) subset of the layout viewport, which is what a
+     * `position: fixed` element is measured against.
+     * @returns {{left: number, top: number, width: number, height: number, scale: number}}
+     */
+    _getViewport() {
+        const {visualViewport} = window;
+        if (typeof visualViewport !== 'undefined' && visualViewport !== null) {
+            return {
+                left: visualViewport.offsetLeft,
+                top: visualViewport.offsetTop,
+                width: visualViewport.width,
+                height: visualViewport.height,
+                scale: visualViewport.scale || 1,
+            };
+        }
+        return {left: 0, top: 0, width: window.innerWidth, height: window.innerHeight, scale: 1};
+    }
+
+    /**
+     * Shifts client rects into the coordinate space used to place `position: fixed` elements.
+     * On Safari, `Range.getClientRects()` is reported relative to the visual viewport, while a
+     * `position: fixed` element is laid out relative to the layout viewport; the two diverge
+     * under pinch-zoom. Adding the visual-viewport offset keeps a fixed popup anchored to the
+     * selection as the user zooms and pans. This is a no-op at the default (unzoomed) offset.
+     * @param {import('popup').Rect[]} sourceRects
+     * @returns {import('popup').Rect[]}
+     */
+    _toFixedRects(sourceRects) {
+        const {left, top} = this._getViewport();
+        if (left === 0 && top === 0) { return sourceRects; }
+        return sourceRects.map((rect) => ({
+            left: rect.left + left,
+            top: rect.top + top,
+            right: rect.right + left,
+            bottom: rect.bottom + top,
+        }));
     }
 
     /**

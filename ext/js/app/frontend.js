@@ -30,6 +30,12 @@ import {TextSourceRange} from '../dom/text-source-range.js';
 import {TextScanner} from '../language/text-scanner.js';
 
 /**
+ * Name registered with `CSS.highlights` for the Safari inline-popup scan highlight, and
+ * referenced by the injected `::highlight()` style rule.
+ */
+const SCAN_HIGHLIGHT_NAME = 'yomitan-scan';
+
+/**
  * A minimal Safari-only `TextSource` duck-type backed by the current page selection text,
  * used when scanning runs in the inline popup path. It is cast to `TextSource` through
  * `unknown` at its construction sites (it is not part of the `TextSource` union), so the
@@ -203,6 +209,10 @@ export class Frontend {
         this._optionsContextOverride = null;
         /** @type {?HTMLDivElement} */
         this._textIndicatorContainer = null;
+        /** @type {?boolean} */
+        this._scanHighlightSupported = null;
+        /** @type {boolean} */
+        this._scanHighlightActive = false;
         /** @type {boolean} */
         this._safariInlineScanEnabled = false;
         /** @type {?import('input').ModifierKey} */
@@ -1306,11 +1316,101 @@ export class Frontend {
             return;
         }
 
+        // Prefer the native CSS Custom Highlight API for live DOM ranges: the highlight is
+        // painted as part of the text's own layout, so it tracks the word exactly on scroll
+        // and zoom with no JS repositioning. Unlike a real text selection it does not populate
+        // `window.getSelection()`, so it does not interfere with the user-selection / Live Text
+        // detection in `_ignorePoint`.
+        if (this._setScanHighlight(textSource)) {
+            this._clearTextIndicatorOverlay();
+            return;
+        }
+
+        // Fallback for sources without a connected range (imposter form fields, removed Live
+        // Text image text): draw a `position: fixed` overlay from the cached client rects.
+        this._clearScanHighlight();
+        this._drawTextIndicatorOverlay(textSource, rects);
+    }
+
+    /**
+     * Highlights the scanned text using the CSS Custom Highlight API.
+     * @param {import('text-source').TextSource} textSource
+     * @returns {boolean} `true` if the highlight was applied, `false` if this source can't use it.
+     */
+    _setScanHighlight(textSource) {
+        if (!this._isScanHighlightSupported() || textSource.type !== 'range') { return false; }
+        const {range} = textSource;
+        // The Highlight API only renders ranges whose nodes are in the live document; an
+        // imposter's range is disconnected once its temporary element is removed.
+        if (!range.startContainer.isConnected) { return false; }
+        try {
+            // A clone snapshots the current bounds (the scanner may later mutate the source
+            // range) while still anchoring to the live nodes, so it keeps tracking on scroll.
+            CSS.highlights.set(SCAN_HIGHLIGHT_NAME, new Highlight(range.cloneRange()));
+        } catch (e) {
+            return false;
+        }
+        this._scanHighlightActive = true;
+        return true;
+    }
+
+    /** @returns {void} */
+    _clearScanHighlight() {
+        if (!this._scanHighlightActive) { return; }
+        this._scanHighlightActive = false;
+        if (typeof CSS !== 'undefined' && typeof CSS.highlights !== 'undefined') {
+            CSS.highlights.delete(SCAN_HIGHLIGHT_NAME);
+        }
+    }
+
+    /**
+     * Detects (and memoizes) support for the CSS Custom Highlight API, injecting the
+     * `::highlight()` style rule into the page document on first positive check.
+     * @returns {boolean}
+     */
+    _isScanHighlightSupported() {
+        if (this._scanHighlightSupported !== null) { return this._scanHighlightSupported; }
+        const supported = (
+            typeof CSS !== 'undefined' &&
+            typeof CSS.highlights !== 'undefined' &&
+            typeof Highlight === 'function'
+        );
+        if (supported) { this._ensureScanHighlightStyle(); }
+        this._scanHighlightSupported = supported;
+        return supported;
+    }
+
+    /**
+     * Injects the `::highlight()` rule that styles the scan highlight. The rule must live in
+     * the page document (same document as the highlighted text), not the popup's shadow root.
+     * @returns {void}
+     */
+    _ensureScanHighlightStyle() {
+        const id = 'yomitan-inline-scan-highlight-style';
+        if (document.getElementById(id) !== null) { return; }
+        const style = document.createElement('style');
+        style.id = id;
+        style.textContent = `::highlight(${SCAN_HIGHLIGHT_NAME}){text-decoration:underline dotted #990020;text-decoration-skip-ink:none;}`;
+        (document.head ?? document.documentElement).appendChild(style);
+    }
+
+    /**
+     * @param {import('text-source').TextSource} textSource
+     * @param {DOMRect[]} rects
+     * @returns {void}
+     */
+    _drawTextIndicatorOverlay(textSource, rects) {
         const container = this._getTextIndicatorContainer();
         container.replaceChildren();
 
         const writingMode = textSource.getWritingMode();
         const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+
+        // `getRects()` (Range.getClientRects) is reported relative to the visual viewport on
+        // Safari, while these indicator lines are `position: fixed` (laid out relative to the
+        // layout viewport). The two diverge under pinch-zoom, so without this offset the
+        // underline drifts away from the word as the user zooms and pans. No-op when unzoomed.
+        const {left: offsetLeft, top: offsetTop} = this._getVisualViewportOffset();
 
         for (const {left, top, right, bottom} of rects) {
             const inlineSize = vertical ? Math.max(0, bottom - top) : Math.max(0, right - left);
@@ -1320,8 +1420,8 @@ export class Frontend {
             if (vertical) {
                 Object.assign(line.style, {
                     position: 'fixed',
-                    left: `${left}px`,
-                    top: `${top}px`,
+                    left: `${left + offsetLeft}px`,
+                    top: `${top + offsetTop}px`,
                     width: '0',
                     height: `${inlineSize}px`,
                     borderLeft: '2px dotted #990020',
@@ -1331,8 +1431,8 @@ export class Frontend {
             } else {
                 Object.assign(line.style, {
                     position: 'fixed',
-                    left: `${left}px`,
-                    top: `${Math.max(0, bottom - 2)}px`,
+                    left: `${left + offsetLeft}px`,
+                    top: `${Math.max(0, bottom - 2) + offsetTop}px`,
                     width: `${inlineSize}px`,
                     height: '0',
                     borderBottom: '2px dotted #990020',
@@ -1342,6 +1442,20 @@ export class Frontend {
             }
             container.appendChild(line);
         }
+    }
+
+    /**
+     * Returns the offset of the visual viewport from the layout viewport. Used to convert
+     * client coordinates (visual-viewport-relative on Safari) into the layout-viewport space
+     * that `position: fixed` elements use, so overlays stay aligned under pinch-zoom.
+     * @returns {{left: number, top: number}}
+     */
+    _getVisualViewportOffset() {
+        const {visualViewport} = window;
+        if (typeof visualViewport !== 'undefined' && visualViewport !== null) {
+            return {left: visualViewport.offsetLeft, top: visualViewport.offsetTop};
+        }
+        return {left: 0, top: 0};
     }
 
     /**
@@ -1370,9 +1484,18 @@ export class Frontend {
     }
 
     /**
+     * Clears both indicator representations (the CSS highlight and the overlay).
      * @returns {void}
      */
     _clearTextIndicator() {
+        this._clearScanHighlight();
+        this._clearTextIndicatorOverlay();
+    }
+
+    /**
+     * @returns {void}
+     */
+    _clearTextIndicatorOverlay() {
         const {_textIndicatorContainer: container} = this;
         if (container === null) { return; }
         container.replaceChildren();
