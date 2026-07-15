@@ -29,7 +29,32 @@ Living status of the storage-backend refactor. Update this every work session. F
 - `ext/js/dictionary/dictionary-backend-config.js`: `export const USE_SQLITE_BACKEND = false`.
 - `types/ext/dictionary-database.d.ts`: added `PayloadCodecName = 'identity'|'deflate'|'zstd'`.
 
-## Stage 1 — IN PROGRESS
+## Stage 2 — DONE (node-verified; worker wiring still pending, see Stage 4/5)
+
+- **Full backend parity** (`DictionaryDatabaseSqlite`): every public method the importer and
+  translator use is implemented — `bulkAdd` for all stores (terms/termMeta/kanji/kanjiMeta/tagMeta/
+  media/dictionaries, one prepared statement per batch inside a transaction), `addWithResult`
+  (returns a minimal IndexedDB-style request the importer awaits), `bulkUpdate('dictionaries')`,
+  `findTermsBulk`/`findTermsExactBulk`/`findTermsBySequenceBulk`, `findTermMetaBulk`,
+  `findKanjiBulk`/`findKanjiMetaBulk`, `findTagMetaBulk`/`findTagForTitle`, `getMedia`, and admin
+  (`prepare`/`isPrepared`/`close`/`purge`/`dictionaryExists`/`getDictionaryInfo`/
+  `getDictionaryCounts`/`deleteDictionary`). Result builders mirror `DictionaryDatabase._create*`.
+  Meta/tag rows use plain columns + `data_json`; kanji/term payloads go through the codec BLOB.
+- **End-to-end fixture parity** (`test/translator-sqlite.test.js`, 49 tests): the real
+  `DictionaryImporter` imports the `Test Dictionary 2` fixture into the SQLite backend and the
+  `Translator` runs every `translator-test-inputs.json` case; `dictionaryEntries` match the
+  canonical `translator-test-results.json` exactly. `test/fixtures/translator-test.js` gained a
+  `backend: 'indexeddb'|'sqlite'` parameter (default unchanged).
+- **jsdom caveat:** the SQLite parity test runs in the **plain node env**. vitest's jsdom setup
+  swaps the global typed-array constructors mid-test, which breaks sqlite-wasm's WASM heap views
+  (`jstrcpy() target must be an Int8Array or Uint8Array`). findTerms/findKanji don't need the DOM,
+  so this test skips the jsdom fixture. (The worker runs in a real Worker, not jsdom, so this is a
+  test-harness-only constraint.)
+- **Not yet done in Stage 2 scope:** perf tuning of the import path (per-batch prepared statements
+  are in place, but no ANALYZE/VACUUM/PRAGMA tuning yet — Stage 4), and no compression yet (codec
+  is still identity — Stage 3).
+
+## Stage 1 — DONE
 
 ### Done
 

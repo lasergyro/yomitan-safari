@@ -16,11 +16,13 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import {IDBKeyRange, indexedDB} from 'fake-indexeddb';
 import {expect, vi} from 'vitest';
 import {createDictionaryArchiveData} from '../../dev/dictionary-archive-util.js';
 import {DictionaryDatabase} from '../../ext/js/dictionary/dictionary-database.js';
 import {DictionaryImporter} from '../../ext/js/dictionary/dictionary-importer.js';
+import {DictionaryDatabaseSqlite} from '../../ext/js/dictionary/sqlite/dictionary-database-sqlite.js';
 import {Translator} from '../../ext/js/language/translator.js';
 import {chrome, fetch} from '../mocks/common.js';
 import {DictionaryImporterMediaLoader} from '../mocks/dictionary-importer-media-loader.js';
@@ -32,19 +34,41 @@ vi.stubGlobal('fetch', fetch);
 vi.stubGlobal('chrome', chrome);
 
 /**
+ * Builds a prepared dictionary database of the requested backend. `'indexeddb'` (default) uses the
+ * production IndexedDB store; `'sqlite'` uses the SQLite-WASM backend with an in-memory VFS, so the
+ * same fixtures/importer/translator exercise both backends.
+ * The SQLite backend is cast to `DictionaryDatabase` at this seam: it implements the same public
+ * methods the importer and translator use, but the two are separate classes (no shared interface
+ * yet — unifying them is a Stage 5 concern).
+ * @param {'indexeddb'|'sqlite'} backend
+ * @returns {Promise<DictionaryDatabase>}
+ */
+async function createDictionaryDatabaseBackend(backend) {
+    if (backend === 'sqlite') {
+        const sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
+        const database = new DictionaryDatabaseSqlite();
+        await database.prepare({sqlite3, vfs: 'memory'});
+        return /** @type {DictionaryDatabase} */ (/** @type {unknown} */ (database));
+    }
+    const database = new DictionaryDatabase();
+    await database.prepare();
+    return database;
+}
+
+/**
  * @param {string} dictionaryDirectory
  * @param {string} dictionaryName
+ * @param {'indexeddb'|'sqlite'} [backend]
  * @returns {Promise<{translator: Translator, styles: string}>}
  */
-export async function createTranslatorContext(dictionaryDirectory, dictionaryName) {
+export async function createTranslatorContext(dictionaryDirectory, dictionaryName, backend = 'indexeddb') {
     // Dictionary
     const testDictionaryData = await createDictionaryArchiveData(dictionaryDirectory, dictionaryName);
 
     // Setup database
     const dictionaryImporterMediaLoader = new DictionaryImporterMediaLoader();
     const dictionaryImporter = new DictionaryImporter(dictionaryImporterMediaLoader);
-    const dictionaryDatabase = new DictionaryDatabase();
-    await dictionaryDatabase.prepare();
+    const dictionaryDatabase = await createDictionaryDatabaseBackend(backend);
 
     const {errors, result} = await dictionaryImporter.importDictionary(
         dictionaryDatabase,
@@ -68,11 +92,12 @@ export async function createTranslatorContext(dictionaryDirectory, dictionaryNam
  * @param {string|undefined} htmlFilePath
  * @param {string} dictionaryDirectory
  * @param {string} dictionaryName
+ * @param {'indexeddb'|'sqlite'} [backend]
  * @returns {Promise<import('vitest').TestAPI<{window: import('jsdom').DOMWindow, translator: Translator, styles: string}>>}
  */
-export async function createTranslatorTest(htmlFilePath, dictionaryDirectory, dictionaryName) {
+export async function createTranslatorTest(htmlFilePath, dictionaryDirectory, dictionaryName, backend = 'indexeddb') {
     const test = createDomTest(htmlFilePath);
-    const {translator, styles} = await createTranslatorContext(dictionaryDirectory, dictionaryName);
+    const {translator, styles} = await createTranslatorContext(dictionaryDirectory, dictionaryName, backend);
     /** @type {import('vitest').TestAPI<{window: import('jsdom').DOMWindow, translator: Translator, styles: string}>} */
     // eslint-disable-next-line sonarjs/prefer-immediate-return
     const result = test.extend({
