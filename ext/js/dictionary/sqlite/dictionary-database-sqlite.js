@@ -48,18 +48,32 @@ const STORE_TABLE = {
  */
 export class DictionaryDatabaseSqlite {
     /**
-     * @param {import('payload-codec').PayloadCodec} [codec] Defaults to the identity (JSON, no
-     *   compression) codec; a compressing codec is swapped in later (Stage 3).
+     * @param {import('payload-codec').PayloadCodec} [codec] The codec used to write new imports.
+     *   Defaults to the identity (JSON, no compression) codec.
+     * @param {import('payload-codec').PayloadCodec[]} [decodeCodecs] Extra codecs available for
+     *   decoding rows written by a different codec (rows are self-describing via the `codec`
+     *   column). The write codec and an identity codec are always registered.
      */
-    constructor(codec = new IdentityPayloadCodec()) {
+    constructor(codec = new IdentityPayloadCodec(), decodeCodecs = []) {
         /** @type {import('sqlite-wasm').SqliteDatabaseHandle?} */
         this._db = null;
-        /** @type {import('payload-codec').PayloadCodec} */
+        /** @type {import('payload-codec').PayloadCodec} The write/default codec for new imports. */
         this._codec = codec;
+        /** @type {import('payload-codec').PayloadCodec} Always-available fallback for decode. */
+        this._identityCodec = new IdentityPayloadCodec();
+        /** @type {Map<string, import('payload-codec').PayloadCodec>} name -> codec, for decode. */
+        this._codecRegistry = new Map();
+        for (const registered of [this._identityCodec, codec, ...decodeCodecs]) {
+            this._codecRegistry.set(registered.name, registered);
+        }
+        /** @type {Map<number, {codec: import('payload-codec').PayloadCodec, dict: ?Uint8Array}>} */
+        this._dictCodec = new Map();
         /** @type {Map<string, number>} */
         this._titleToId = new Map();
         /** @type {Map<number, string>} */
         this._idToTitle = new Map();
+        /** How many payloads to sample when training a per-dictionary codec dictionary. */
+        this._trainSampleSize = 4000;
     }
 
     /**
@@ -85,6 +99,7 @@ export class DictionaryDatabaseSqlite {
         this._db = null;
         this._titleToId.clear();
         this._idToTitle.clear();
+        this._dictCodec.clear();
     }
 
     /**
@@ -101,6 +116,7 @@ export class DictionaryDatabaseSqlite {
         db.exec('VACUUM');
         this._titleToId.clear();
         this._idToTitle.clear();
+        this._dictCodec.clear();
         return true;
     }
 
@@ -124,6 +140,13 @@ export class DictionaryDatabaseSqlite {
     async bulkAdd(objectStoreName, items, start, count) {
         const end = Math.min(start + count, items.length);
         if (end <= start) { return; }
+        // Payload-bearing stores need their per-dictionary write codec resolved (and trained, which
+        // is async) before the synchronous insert transaction.
+        if (objectStoreName === 'terms') {
+            await this._ensureWriteCodecs(/** @type {import('dictionary-database').DatabaseTermEntryPacked[]} */ (items), start, end, (term) => term.m);
+        } else if (objectStoreName === 'kanji') {
+            await this._ensureWriteCodecs(/** @type {import('dictionary-database').DatabaseKanjiEntry[]} */ (items), start, end, (kanji) => [kanji.onyomi, kanji.kunyomi, kanji.tags, kanji.meanings, kanji.stats]);
+        }
         const db = this._require();
         db.transaction((tx) => {
             switch (objectStoreName) {
@@ -463,6 +486,7 @@ export class DictionaryDatabaseSqlite {
         onProgress(progressData);
         this._titleToId.delete(dictionaryName);
         this._idToTitle.delete(dictionaryId);
+        this._dictCodec.delete(dictionaryId);
     }
 
     // Private — inserts (one prepared statement per batch; dictionary ids resolved from the title)
@@ -479,8 +503,10 @@ export class DictionaryDatabaseSqlite {
         try {
             for (let i = start; i < end; ++i) {
                 const term = items[i];
+                const dictionaryId = this._resolveDictionaryId(term.dictionary);
+                const {codec, dict} = this._writeCodecFor(dictionaryId);
                 const sequence = typeof term.sequence === 'number' ? term.sequence : null;
-                statement.bind([this._resolveDictionaryId(term.dictionary), term.expression, term.reading, sequence, this._codec.encode(term.m, null)]).stepReset();
+                statement.bind([dictionaryId, term.expression, term.reading, sequence, codec.encode(term.m, dict)]).stepReset();
             }
         } finally {
             statement.finalize();
@@ -518,8 +544,10 @@ export class DictionaryDatabaseSqlite {
         try {
             for (let i = start; i < end; ++i) {
                 const kanji = items[i];
-                const payload = this._codec.encode([kanji.onyomi, kanji.kunyomi, kanji.tags, kanji.meanings, kanji.stats], null);
-                statement.bind([this._resolveDictionaryId(kanji.dictionary), kanji.character, payload]).stepReset();
+                const dictionaryId = this._resolveDictionaryId(kanji.dictionary);
+                const {codec, dict} = this._writeCodecFor(dictionaryId);
+                const payload = codec.encode([kanji.onyomi, kanji.kunyomi, kanji.tags, kanji.meanings, kanji.stats], dict);
+                statement.bind([dictionaryId, kanji.character, payload]).stepReset();
             }
         } finally {
             statement.finalize();
@@ -610,9 +638,10 @@ export class DictionaryDatabaseSqlite {
      */
     _createTerm(matchSource, matchType, row, index) {
         const dictionaryId = /** @type {number} */ (row.dictionary_id);
+        const {codec, dict} = this._getDictCodec(dictionaryId);
         // The codec always returns an array; cast the positional payload to its tuple shape.
         const [definitionTags, rules, score, glossary, termTags] = /** @type {import('dictionary-database').DatabaseTermEntryPayload} */ (
-            this._codec.decode(/** @type {Uint8Array} */ (row.payload), null)
+            codec.decode(/** @type {Uint8Array} */ (row.payload), dict)
         );
         const {sequence} = row;
         return {
@@ -638,9 +667,10 @@ export class DictionaryDatabaseSqlite {
      * @returns {import('dictionary-database').KanjiEntry}
      */
     _createKanji(row, index) {
+        const {codec, dict} = this._getDictCodec(/** @type {number} */ (row.dictionary_id));
         // Kanji payload shape: [onyomi, kunyomi, tags, meanings, stats]; see _insertKanji.
         const [onyomi, kunyomi, tags, meanings, stats] = /** @type {[string, string, string, string[], {[name: string]: string}|undefined]} */ (
-            this._codec.decode(/** @type {Uint8Array} */ (row.payload), null)
+            codec.decode(/** @type {Uint8Array} */ (row.payload), dict)
         );
         return {
             index,
@@ -726,6 +756,105 @@ export class DictionaryDatabaseSqlite {
     // Private — helpers
 
     /**
+     * Resolves (training if necessary) the write codec for every distinct dictionary in a batch,
+     * before the synchronous insert transaction. Identity leaves the row's `codec` column null;
+     * a compressing codec trains a per-dictionary dictionary from a sample of the batch's payloads
+     * and persists `codec` + `codec_dict` so the rows are self-describing on read.
+     * @template T
+     * @param {T[]} items
+     * @param {number} start
+     * @param {number} end
+     * @param {(item: T) => unknown[]} toPayload
+     * @returns {Promise<void>}
+     */
+    async _ensureWriteCodecs(items, start, end, toPayload) {
+        /** @type {Map<string, unknown[][]>} */
+        const samplesByTitle = new Map();
+        for (let i = start; i < end; ++i) {
+            const title = /** @type {{dictionary: string}} */ (items[i]).dictionary;
+            let samples = samplesByTitle.get(title);
+            if (typeof samples === 'undefined') {
+                samples = [];
+                samplesByTitle.set(title, samples);
+            }
+            if (samples.length < this._trainSampleSize) { samples.push(toPayload(items[i])); }
+        }
+        for (const [title, samples] of samplesByTitle) {
+            await this._ensureWriteCodec(this._resolveDictionaryId(title), samples);
+        }
+    }
+
+    /**
+     * @param {number} dictionaryId
+     * @param {unknown[][]} samples
+     * @returns {Promise<void>}
+     */
+    async _ensureWriteCodec(dictionaryId, samples) {
+        if (this._dictCodec.has(dictionaryId)) { return; }
+        const db = this._require();
+        const codecName = db.selectValue('SELECT codec FROM dictionaries WHERE id = ?', [dictionaryId]);
+        if (typeof codecName === 'string' && codecName.length > 0) {
+            this._loadDictCodec(dictionaryId, codecName);
+            return;
+        }
+        if (this._codec.name === 'identity') {
+            // Leave the `codec` column null (== identity on read); keeps identity byte-identical.
+            this._dictCodec.set(dictionaryId, {codec: this._codec, dict: null});
+            return;
+        }
+        const trained = await this._codec.train(samples);
+        const dict = trained.length > 0 ? trained : null;
+        const statement = db.prepare('UPDATE dictionaries SET codec = ?, codec_dict = ? WHERE id = ?');
+        try {
+            statement.bind([this._codec.name, dict, dictionaryId]).stepReset();
+        } finally {
+            statement.finalize();
+        }
+        this._dictCodec.set(dictionaryId, {codec: this._codec, dict});
+    }
+
+    /**
+     * Returns the write codec resolved by `_ensureWriteCodecs`; falls back to the default codec.
+     * @param {number} dictionaryId
+     * @returns {{codec: import('payload-codec').PayloadCodec, dict: ?Uint8Array}}
+     */
+    _writeCodecFor(dictionaryId) {
+        return this._dictCodec.get(dictionaryId) ?? {codec: this._codec, dict: null};
+    }
+
+    /**
+     * Returns the codec a dictionary's rows were written with (self-describing via the `codec`
+     * column), for decoding. Null/absent `codec` means identity.
+     * @param {number} dictionaryId
+     * @returns {{codec: import('payload-codec').PayloadCodec, dict: ?Uint8Array}}
+     */
+    _getDictCodec(dictionaryId) {
+        const cached = this._dictCodec.get(dictionaryId);
+        if (typeof cached !== 'undefined') { return cached; }
+        const codecName = this._require().selectValue('SELECT codec FROM dictionaries WHERE id = ?', [dictionaryId]);
+        if (typeof codecName === 'string' && codecName.length > 0) {
+            this._loadDictCodec(dictionaryId, codecName);
+            return /** @type {{codec: import('payload-codec').PayloadCodec, dict: ?Uint8Array}} */ (this._dictCodec.get(dictionaryId));
+        }
+        const entry = {codec: this._identityCodec, dict: null};
+        this._dictCodec.set(dictionaryId, entry);
+        return entry;
+    }
+
+    /**
+     * Loads and caches the codec instance + `codec_dict` bytes for a dictionary from its row.
+     * @param {number} dictionaryId
+     * @param {string} codecName
+     * @returns {void}
+     */
+    _loadDictCodec(dictionaryId, codecName) {
+        const row = this._require().selectObject('SELECT codec_dict FROM dictionaries WHERE id = ?', [dictionaryId]);
+        const codec = this._codecRegistry.get(codecName) ?? this._identityCodec;
+        const dict = typeof row !== 'undefined' && row.codec_dict instanceof Uint8Array ? row.codec_dict : null;
+        this._dictCodec.set(dictionaryId, {codec, dict});
+    }
+
+    /**
      * Resolves the integer id for a dictionary title, inserting a bare row if the title is not yet
      * known. Term/meta/media rows carry only their dictionary title, so this backfills the id.
      * @param {string} title
@@ -757,6 +886,7 @@ export class DictionaryDatabaseSqlite {
     _loadDictionaryCache() {
         this._titleToId.clear();
         this._idToTitle.clear();
+        this._dictCodec.clear();
         for (const row of this._require().selectObjects('SELECT id, title FROM dictionaries')) {
             this._cacheDictionary(/** @type {number} */ (row.id), /** @type {string} */ (row.title));
         }

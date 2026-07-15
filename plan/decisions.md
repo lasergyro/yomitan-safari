@@ -34,7 +34,16 @@ Condensed record of the decisions behind this refactor. Rationale/measurements i
    zstd WASM build** exposing `ZDICT_trainFromBuffer` (user agreed to build one). — _planned
    (Stage 3)._
 7. **Interim codec: pako deflate + 32 KB preset dictionary** (~3.55×, pure JS). — Lets the
-   backend be built/tested before the zstd build exists; codec is swappable. — _planned._
+   backend be built/tested before the zstd build exists; codec is swappable. — _implemented
+   (`deflate-payload-codec.js`); pako injected + vendored to `ext/lib/pako.js`. The pinned pako is
+   1.0.11 (the transitive version already installed); `deflateRaw`/`inflateRaw` with a `dictionary`
+   preset work there._
+   7b. **Rows are self-describing via the `codec` column + per-dictionary `codec_dict`.** — The
+   backend stores which codec wrote a dictionary's rows (null = identity) and its trained preset
+   dictionary, and decodes with the matching registered codec. A compressing codec is trained once
+   per dictionary from the first term batch (`_ensureWriteCodec`, async, before the insert
+   transaction) so training a preset dict fits the streaming importer. Default write codec is
+   identity (shipped), so existing behavior is byte-identical. — _implemented._
 8. **`PayloadCodec` seam with `IdentityPayloadCodec` (JSON, no compression) first.** — Prove
    backend correctness before adding compression. — _adopted (`payload-codec.js`)._
 

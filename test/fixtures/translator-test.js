@@ -18,8 +18,10 @@
 
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import {IDBKeyRange, indexedDB} from 'fake-indexeddb';
+import * as pako from 'pako';
 import {expect, vi} from 'vitest';
 import {createDictionaryArchiveData} from '../../dev/dictionary-archive-util.js';
+import {DeflatePayloadCodec} from '../../ext/js/dictionary/deflate-payload-codec.js';
 import {DictionaryDatabase} from '../../ext/js/dictionary/dictionary-database.js';
 import {DictionaryImporter} from '../../ext/js/dictionary/dictionary-importer.js';
 import {DictionaryDatabaseSqlite} from '../../ext/js/dictionary/sqlite/dictionary-database-sqlite.js';
@@ -39,14 +41,16 @@ vi.stubGlobal('chrome', chrome);
  * same fixtures/importer/translator exercise both backends.
  * The SQLite backend is cast to `DictionaryDatabase` at this seam: it implements the same public
  * methods the importer and translator use, but the two are separate classes (no shared interface
- * yet — unifying them is a Stage 5 concern).
- * @param {'indexeddb'|'sqlite'} backend
+ * yet — unifying them is a Stage 5 concern). `'sqlite-deflate'` uses the pako deflate codec (with a
+ * trained preset dictionary) to also exercise the compressing-codec path.
+ * @param {'indexeddb'|'sqlite'|'sqlite-deflate'} backend
  * @returns {Promise<DictionaryDatabase>}
  */
 async function createDictionaryDatabaseBackend(backend) {
-    if (backend === 'sqlite') {
+    if (backend === 'sqlite' || backend === 'sqlite-deflate') {
         const sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
-        const database = new DictionaryDatabaseSqlite();
+        const codec = backend === 'sqlite-deflate' ? new DeflatePayloadCodec(pako) : void 0;
+        const database = new DictionaryDatabaseSqlite(codec);
         await database.prepare({sqlite3, vfs: 'memory'});
         return /** @type {DictionaryDatabase} */ (/** @type {unknown} */ (database));
     }
@@ -58,7 +62,7 @@ async function createDictionaryDatabaseBackend(backend) {
 /**
  * @param {string} dictionaryDirectory
  * @param {string} dictionaryName
- * @param {'indexeddb'|'sqlite'} [backend]
+ * @param {'indexeddb'|'sqlite'|'sqlite-deflate'} [backend]
  * @returns {Promise<{translator: Translator, styles: string}>}
  */
 export async function createTranslatorContext(dictionaryDirectory, dictionaryName, backend = 'indexeddb') {

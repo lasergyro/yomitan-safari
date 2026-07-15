@@ -29,6 +29,29 @@ Living status of the storage-backend refactor. Update this every work session. F
 - `ext/js/dictionary/dictionary-backend-config.js`: `export const USE_SQLITE_BACKEND = false`.
 - `types/ext/dictionary-database.d.ts`: added `PayloadCodecName = 'identity'|'deflate'|'zstd'`.
 
+## Stage 3 — DONE for deflate (node-verified); zstd is the documented drop-in successor
+
+- **Codec self-description**: `DictionaryDatabaseSqlite` now takes a write codec + optional decode
+  codecs and keeps a per-dictionary `{codec, dict}` cache. On import it resolves/trains the write
+  codec per dictionary (`_ensureWriteCodecs`/`_ensureWriteCodec`, run **before** the sync insert
+  transaction because `train()` is async), persisting `codec` + `codec_dict` on the dictionaries
+  row. On read, `_getDictCodec` derives the codec from the row's `codec` column (null == identity)
+  and passes the cached `codec_dict`. Identity stays the default and leaves `codec` null, so the
+  identity path is byte-identical to Stage 2.
+- **DeflatePayloadCodec** (`ext/js/dictionary/deflate-payload-codec.js`): raw DEFLATE via pako,
+  optional 32 KB preset dictionary from `train()`; pako injected (`types/ext/pako.d.ts` for types),
+  vendored to `ext/lib/pako.js` via `dev/lib/pako.js` (esbuild), `pako` pinned in package.json.
+- **Tests**: `deflate-payload-codec.test.js` (round-trips all payload shapes ± trained dict,
+  compression vs identity, dict size cap); `dictionary-database-sqlite-codec.test.js` (self-
+  description: reads still decode after dropping the write-time codec cache, i.e. derived from the
+  `codec` column); `translator-sqlite.test.js` now runs all 49 fixtures against **both** the
+  identity and the **deflate** SQLite backends (98 tests) — full end-to-end parity with compression.
+- **zstd (target, 5.5×) — NOT built here.** It needs a custom zstd WASM build exposing
+  `ZDICT_trainFromBuffer` + dict compress/decompress, which needs an emscripten/zstd toolchain not
+  available in this environment. The codec seam is proven by deflate; a `ZstdPayloadCodec`
+  implementing the same `PayloadCodec` interface is a drop-in (register it + make it the default
+  write codec). No real-data size measurement (kty-de-en) was possible here either.
+
 ## Stage 2 — DONE (node-verified; worker wiring still pending, see Stage 4/5)
 
 - **Full backend parity** (`DictionaryDatabaseSqlite`): every public method the importer and

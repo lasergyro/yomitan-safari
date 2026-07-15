@@ -38,40 +38,46 @@ setupStubs();
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const dictionaryName = 'Test Dictionary 2';
-const {translator} = await createTranslatorContext(path.join(dirname, 'data/dictionaries/valid-dictionary1'), dictionaryName, 'sqlite');
+const dictionaryDirectory = path.join(dirname, 'data/dictionaries/valid-dictionary1');
 
-describe('Dictionary data (SQLite backend)', () => {
-    const testInputsFilePath = path.join(dirname, 'data/translator-test-inputs.json');
-    /** @type {import('test/translator').TranslatorTestInputs} */
-    const {optionsPresets, tests} = parseJson(readFileSync(testInputsFilePath, {encoding: 'utf8'}));
+const testInputsFilePath = path.join(dirname, 'data/translator-test-inputs.json');
+/** @type {import('test/translator').TranslatorTestInputs} */
+const {optionsPresets, tests} = parseJson(readFileSync(testInputsFilePath, {encoding: 'utf8'}));
 
-    const testResults1FilePath = path.join(dirname, 'data/translator-test-results.json');
-    /** @type {import('test/translator').TranslatorTestResults} */
-    const expectedResults1 = parseJson(readFileSync(testResults1FilePath, {encoding: 'utf8'}));
+const testResults1FilePath = path.join(dirname, 'data/translator-test-results.json');
+/** @type {import('test/translator').TranslatorTestResults} */
+const expectedResults1 = parseJson(readFileSync(testResults1FilePath, {encoding: 'utf8'}));
 
-    const testCases = tests.map((data, i) => ({data, expected1: expectedResults1[i]}));
+const testCases = tests.map((data, i) => ({data, expected1: expectedResults1[i]}));
 
-    describe.each(testCases)('Test %#: $data.name', ({data, expected1}) => {
-        test('Test', async () => {
-            switch (data.func) {
-                case 'findTerms':
-                    {
-                        const {mode, text} = data;
-                        const options = createFindTermsOptions(dictionaryName, optionsPresets, data.options);
-                        const {dictionaryEntries, originalTextLength} = await translator.findTerms(mode, text, options);
-                        expect.soft(originalTextLength).toStrictEqual(expected1.originalTextLength);
-                        expect.soft(dictionaryEntries).toStrictEqual(expected1.dictionaryEntries);
-                    }
-                    break;
-                case 'findKanji':
-                    {
-                        const {text} = data;
-                        const options = createFindKanjiOptions(dictionaryName, optionsPresets, data.options);
-                        const dictionaryEntries = await translator.findKanji(text, options);
-                        expect.soft(dictionaryEntries).toStrictEqual(expected1.dictionaryEntries);
-                    }
-                    break;
-            }
+// Run the fixtures against the identity-codec SQLite backend and the deflate-codec one, proving
+// both produce the same dictionaryEntries as the canonical IndexedDB results.
+for (const backend of /** @type {const} */ (['sqlite', 'sqlite-deflate'])) {
+    const {translator} = await createTranslatorContext(dictionaryDirectory, dictionaryName, backend);
+
+    describe(`Dictionary data (${backend} backend)`, () => {
+        describe.each(testCases)('Test %#: $data.name', ({data, expected1}) => {
+            test('Test', async () => {
+                switch (data.func) {
+                    case 'findTerms':
+                        {
+                            const {mode, text} = data;
+                            const options = createFindTermsOptions(dictionaryName, optionsPresets, data.options);
+                            const {dictionaryEntries, originalTextLength} = await translator.findTerms(mode, text, options);
+                            expect.soft(originalTextLength).toStrictEqual(expected1.originalTextLength);
+                            expect.soft(dictionaryEntries).toStrictEqual(expected1.dictionaryEntries);
+                        }
+                        break;
+                    case 'findKanji':
+                        {
+                            const {text} = data;
+                            const options = createFindKanjiOptions(dictionaryName, optionsPresets, data.options);
+                            const dictionaryEntries = await translator.findKanji(text, options);
+                            expect.soft(dictionaryEntries).toStrictEqual(expected1.dictionaryEntries);
+                        }
+                        break;
+                }
+            });
         });
     });
-});
+}
