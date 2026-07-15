@@ -58,6 +58,9 @@ export type DatabaseTermEntry = {
     dictionary: string;
 };
 
+/** Identifier of the codec used to (de)serialize a term row's payload blob. See payload-codec.js. */
+export type PayloadCodecName = 'identity' | 'deflate' | 'zstd';
+
 /**
  * Positional payload holding the non-indexed fields of a term row, stored under the `m` key so
  * their property names are not repeated in every record (structured clone stores keys per row).

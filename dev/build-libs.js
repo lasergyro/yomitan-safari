@@ -40,6 +40,19 @@ async function copyWasm(out) {
     fs.copyFileSync(wasmPath, path.join(out, 'resvg.wasm'));
 }
 
+/**
+ * Vendors the SQLite-WASM ESM build for the dictionary storage backend. The ESM entry is
+ * copied verbatim as `sqlite3.js`; it locates `sqlite3.wasm` next to itself at runtime, so
+ * both must sit in the same directory (`ext/lib`). Used from the DB worker via the OPFS
+ * SAH-Pool VFS. See plan.md.
+ * @param {string} out
+ */
+async function copySqlite(out) {
+    const distDir = path.dirname(require.resolve('@sqlite.org/sqlite-wasm'));
+    fs.copyFileSync(path.join(distDir, 'index.mjs'), path.join(out, 'sqlite3.js'));
+    fs.copyFileSync(path.join(distDir, 'sqlite3.wasm'), path.join(out, 'sqlite3.wasm'));
+}
+
 
 /**
  * @param {string} scriptPath
@@ -95,4 +108,5 @@ export async function buildLibs() {
     fs.writeFileSync(path.join(extDir, 'lib/validate-schemas.js'), patchedModuleCode);
 
     await copyWasm(path.join(extDir, 'lib'));
+    await copySqlite(path.join(extDir, 'lib'));
 }
