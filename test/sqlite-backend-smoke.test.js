@@ -17,6 +17,8 @@
 
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import {describe, expect, test} from 'vitest';
+import {DICTIONARY_SQLITE_SCHEMA_VERSION, DICTIONARY_SQLITE_TABLES} from '../ext/js/dictionary/sqlite/dictionary-sqlite-schema.js';
+import {openDictionaryDatabaseHandle} from '../ext/js/dictionary/sqlite/open-sqlite.js';
 import {IdentityPayloadCodec} from '../ext/js/dictionary/payload-codec.js';
 
 // Stage 1 de-risk (plan.md §10/§11): confirm the SQLite-WASM backend can run under the vitest
@@ -70,6 +72,25 @@ describe('sqlite-wasm backend smoke test', () => {
                 ['wort', 'wort￿'],
             );
             expect(prefixCount).toBe(payloads.length);
+        } finally {
+            db.close();
+        }
+    });
+
+    test('openDictionaryDatabaseHandle creates the full dictionary schema (memory VFS)', async () => {
+        // The package ships its own (browser-oriented) types; the backend uses the narrow
+        // `Sqlite3Module` surface, so cast the injected module at this boundary.
+        const sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
+        const db = await openDictionaryDatabaseHandle(sqlite3, {vfs: 'memory'});
+        try {
+            const tables = db.selectObjects("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .map((row) => row.name);
+            for (const expected of DICTIONARY_SQLITE_TABLES) {
+                expect(tables).toContain(expected);
+            }
+            expect(db.selectValue('PRAGMA user_version')).toBe(DICTIONARY_SQLITE_SCHEMA_VERSION);
+            // Schema creation is idempotent (re-open path).
+            expect(() => openDictionaryDatabaseHandle(sqlite3, {vfs: 'memory'})).not.toThrow();
         } finally {
             db.close();
         }
