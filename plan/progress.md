@@ -32,6 +32,27 @@ Living status of the storage-backend refactor. Update this every work session. F
 
 ### Done
 
+- **Term backend core** (`ext/js/dictionary/sqlite/dictionary-database-sqlite.js`,
+  `DictionaryDatabaseSqlite`): `prepare({sqlite3, vfs})` (opens handle, loads the dictionary
+  id<->title cache), `isPrepared`, `close`, `dictionaryExists`, `bulkAdd('terms'|'dictionaries')`,
+  `findTermsBulk` (exact/prefix/suffix), `findTermsExactBulk`. `bulkAdd('terms')` resolves/creates
+  the integer `dictionary_id` from the row's title, `codec.encode(m)` → payload BLOB, prepared
+  insert inside one `transaction()` per batch; ids autoincrement in insertion order. Reads decode
+  the payload and rebuild the `TermEntry` with the exact shaping of `_createTerm` (incl. the
+  `visited`-by-id dedup and matchSource/matchType rules of `_createTermGeneric`). Prefix uses the
+  inclusive `expression >= ? AND expression <= ? || char(65535)` bound (BMP-valid); suffix filters
+  in JS (no reverse column yet). Only `terms`/`dictionaries` stores are wired — other stores throw
+  `bulkAdd not implemented` (Stage 2).
+- **PayloadCodec type promoted** to `types/ext/payload-codec.d.ts` (was an inline `@typedef` in
+  payload-codec.js) so both the codec and the backend import one `import('payload-codec').PayloadCodec`.
+  Note: reference it as a **direct** `import('payload-codec').PayloadCodec` — a local
+  `@typedef {import(...)} PayloadCodec` alias resolves to `any` under typescript-eslint (tsc is fine,
+  but the type-aware lint rules see `error`/`any`).
+- **Parity test** (`test/dictionary-database-sqlite.test.js`, 6 tests): imports the fixture into the
+  real IndexedDB backend, copies the exact packed term rows (in id order) into an in-memory SQLite
+  backend, and asserts `findTermsExactBulk` + `findTermsBulk` exact/prefix/suffix match. Compared
+  order-insensitively; matchSource is a don't-care where a row matches on both columns (deduped to
+  whichever the backend visited first), so it is normalized/dropped in those cases.
 - **Test harness de-risked** (`test/sqlite-backend-smoke.test.js`): SQLite-WASM inits in-memory
   under the vitest (node) runner; BLOB columns round-trip as `Uint8Array`; `IdentityPayloadCodec`
   survives a store/load through a BLOB; prefix range-scan works; the opener builds the full
@@ -52,28 +73,24 @@ kanji_meta, tag_meta, media`) and sets `PRAGMA user_version = DICTIONARY_SQLITE_
 
 ### Next steps (in order)
 
-1. **Read the current implementations to match semantics exactly** before porting:
-   - Importer insert path: the `bulkAdd` closure in `ext/js/dictionary/dictionary-importer.js`
-     (~line 80) and its call sites (`bulkAdd('terms', …)` ~line 219, plus media/termMeta/kanji/
-     tagMeta/dictionaries). Terms are already packed by `_packTermEntry` (~line 830) into
-     `DatabaseTermEntryPacked` (`{expression, reading, dictionary, sequence?, m}`).
-   - `DictionaryDatabase.findTermsBulk` (~line 288), `findTermsExactBulk` (~321), and
-     `_createTerm` (~762, the sole term result builder) in
-     `ext/js/dictionary/dictionary-database.js`.
-2. **Implement `bulkAdd('terms')` on SQLite**: resolve/insert the `dictionary_id` for the
-   dictionary title (upsert into `dictionaries`), `codec.encode(m)` → BLOB, prepared-statement
-   insert `(dictionary_id, expression, reading, sequence, payload)`. Use a transaction per batch.
-3. **Implement `findTermsBulk` exact**: `SELECT id, dictionary_id, expression, reading, sequence,
-payload FROM terms WHERE expression = ?` (or reading), filter to the enabled dictionary ids,
-   `codec.decode(payload)` → `[definitionTags, rules, score, glossary, termTags]`, then build the
-   `TermEntry` with the SAME shaping as `_createTerm` (split tag/rule fields, etc.). Map
-   `dictionary_id` back to the title string for the `TermEntry.dictionary` field.
-4. **Backend selection**: introduce a `DictionaryDatabaseSqlite` class (mirrors the public API)
-   or a branch, chosen by `USE_SQLITE_BACKEND`. The DB worker
+Steps 1–3 and the parity test are **done** (see "Done" above). Remaining Stage 1 / Stage 2 work:
+
+1. **Rest of the read/query surface on SQLite** (Stage 2): `findTermsBySequenceBulk`,
+   `findTermMetaBulk`, `findKanjiBulk`, `findKanjiMetaBulk`, `findTagMetaBulk`, `findTagForTitle`,
+   `getMedia`/`drawMedia`, `getDictionaryInfo`, `getDictionaryCounts`, `deleteDictionary`,
+   `dictionaryCounts`, plus the remaining `bulkAdd` stores (`termMeta`, `kanji`, `kanjiMeta`,
+   `tagMeta`, `media`) and `addWithResult`/`bulkUpdate('dictionaries')` so the real
+   `DictionaryImporter` runs end-to-end against it. Then drive the full `dictionary-data.test.js`
+   translator fixtures through the SQLite backend.
+2. **Backend selection + worker wiring** (needs device verify): branch on `USE_SQLITE_BACKEND` to
+   pick `DictionaryDatabaseSqlite`; the DB worker
    (`ext/js/dictionary/dictionary-database-worker-main.js`) inits sqlite via
-   `import sqlite3InitModule from '../../lib/sqlite3.js'` and passes `vfs:'opfs'`.
-5. **Parity test**: reuse `test/dictionary-data.test.js` fixtures; import via `DictionaryImporter`
-   into the SQLite backend and assert exact `findTermsBulk` results match the IndexedDB backend.
+   `import sqlite3InitModule from '../../lib/sqlite3.js'` and passes `vfs:'opfs'`. Verify on
+   `./rebuild-safari.sh` (worker import of the vendored browser build; `import.meta.url` →
+   `sqlite3.wasm` at extension origin; `.wasm` MIME fallback). Flag stays `false` until Stage 5.
+
+Note: `addWithResult` in the current importer returns an **IDBRequest** (`.onsuccess`/`.result`);
+the SQLite backend will need a small non-IDB shim or an importer tweak when wiring step 1.
 
 ### Open questions / watch-outs
 
@@ -96,13 +113,16 @@ payload FROM terms WHERE expression = ?` (or reading), filter to the enabled dic
 
 ```
 plan/                                   design.md, README.md, decisions.md, progress.md
-ext/js/dictionary/payload-codec.js      PayloadCodec + IdentityPayloadCodec
+ext/js/dictionary/payload-codec.js      IdentityPayloadCodec (type now in types/ext)
 ext/js/dictionary/dictionary-backend-config.js   USE_SQLITE_BACKEND flag
 ext/js/dictionary/sqlite/open-sqlite.js          openDictionaryDatabaseHandle()
 ext/js/dictionary/sqlite/dictionary-sqlite-schema.js  DDL + createDictionarySchema()
+ext/js/dictionary/sqlite/dictionary-database-sqlite.js  DictionaryDatabaseSqlite (term core)
 types/ext/sqlite-wasm.d.ts              narrow sqlite oo1 type surface
+types/ext/payload-codec.d.ts            PayloadCodec type
 types/ext/dictionary-database.d.ts      + PayloadCodecName (and Layer 1's Packed/Payload types)
 test/sqlite-backend-smoke.test.js       harness + opener/schema tests
+test/dictionary-database-sqlite.test.js  term parity vs IndexedDB backend
 dev/build-libs.js                       + copySqlite() vendoring
 dev/data/manifest-variants.json         safari CSP -> wasm-unsafe-eval
 package.json                            + @sqlite.org/sqlite-wasm
