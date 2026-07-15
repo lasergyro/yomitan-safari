@@ -1,9 +1,21 @@
 # Plan: replace the dictionary storage backend with SQLite-WASM + zstd
 
-Status: **design approved, not yet started.** Layer 1 (positional payload) is already
-shipped. Feasibility of the SQLite/OPFS backend is fully confirmed on macOS + iOS. This
-document is the full implementation plan; it is written to survive a context reset, so it
-repeats context, measurements, and decisions in full.
+Status: **Stage 0 complete** (branch `safari-refactor`, commit `d677eb89`). Layer 1
+(positional payload) is shipped. Feasibility of the SQLite/OPFS backend is fully confirmed on
+macOS + iOS + the extension worker. This document is the full implementation plan; it is
+written to survive a context reset, so it repeats context, measurements, and decisions in full.
+
+Progress against §9:
+
+- **Stage 0 (done):** `@sqlite.org/sqlite-wasm` added + vendored into `ext/lib`
+  (`sqlite3.js`, `sqlite3.wasm`) via `dev/build-libs.js`; safari CSP fixed to
+  `'wasm-unsafe-eval'`; `PayloadCodec` interface + `IdentityPayloadCodec` added
+  (`ext/js/dictionary/payload-codec.js`); `USE_SQLITE_BACKEND` flag added
+  (`ext/js/dictionary/dictionary-backend-config.js`, off); `PayloadCodecName` type added.
+- **Stage 1 (next):** vertical slice — SQLite init in the DB worker, schema, `bulkAdd('terms')`
+  - `findTermsBulk` exact, one fixture test green. **Resolve the node test harness first**
+    (run the SQLite backend under vitest via the package's node build / an in-memory VFS) — this
+    is the flagged early risk (§10/§11).
 
 ---
 
