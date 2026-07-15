@@ -7,6 +7,7 @@ Living status of the storage-backend refactor. Update this every work session. F
 
 - Branch **`safari-refactor`** (off `master`). Tag **`stage-1`** marks the start of Stage 1.
 - Storage-work commits (newest first):
+  - `a7ba6f19` Stage 1: SQLite term backend (bulkAdd + findTermsBulk) with IndexedDB parity test
   - `4bdef82f` Stage 1: env-aware SQLite opener + dictionary schema
   - `c17abdd5` Stage 1: prove SQLite-WASM runs under vitest (harness de-risk)
   - `fa0bd435` plan.md: mark Stage 0 complete
@@ -14,7 +15,7 @@ Living status of the storage-backend refactor. Update this every work session. F
   - `864b8d23` Add plan.md
   - `7edfb9b2` (pre-refactor) Store non-indexed term fields as a positional payload (Layer 1)
 - Everything below is green: `tsc` (main + test), repo-wide `eslint`, full `vitest`
-  (4065 pass / 46 skipped).
+  (4071 pass / 46 skipped).
 
 ## Stage 0 — DONE
 

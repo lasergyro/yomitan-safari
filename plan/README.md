@@ -10,11 +10,13 @@ Target: ~1.2 GB → ~100 MB. Branch: **`safari-refactor`**.
 - **Read order:** this file → [progress.md](progress.md) (what's done + exact next step) →
   [decisions.md](decisions.md) (why) → [design.md](design.md) (full reference: schema, measured
   numbers, feasibility, staged plan).
-- **Status:** Stage 0 done; Stage 1 in progress. Scaffolding (vendored SQLite, CSP, codec seam,
-  flag, env-aware opener, schema, node/vitest test harness) is committed and green. **Not yet
-  done:** the actual backend query/import logic (`bulkAdd('terms')`, `findTermsBulk`) and a
-  fixture test proving parity. See progress.md → "Next steps".
-- **Latest commit:** `4bdef82f`. **Tag:** `stage-1` (marks start of Stage 1).
+- **Status:** Stage 0 done; Stage 1 in progress. The **term backend core**
+  (`DictionaryDatabaseSqlite`: `bulkAdd('terms'|'dictionaries')`, `findTermsBulk`,
+  `findTermsExactBulk`) is committed and green, with a fixture-driven parity test against the
+  IndexedDB backend. **Not yet done:** the rest of the query/import surface (meta/kanji/media
+  stores, full importer run) and worker wiring behind `USE_SQLITE_BACKEND`. See progress.md →
+  "Next steps".
+- **Latest commit:** `a7ba6f19`. **Tag:** `stage-1` (marks start of Stage 1).
 - **Feature flag:** `USE_SQLITE_BACKEND` in `ext/js/dictionary/dictionary-backend-config.js`
   (currently `false` — the IndexedDB path is still the only live one).
 
