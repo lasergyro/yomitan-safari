@@ -17,6 +17,7 @@
 
 import {ExtensionError} from '../core/extension-error.js';
 import {log} from '../core/log.js';
+import {createDictionaryDatabase} from './dictionary-database-factory.js';
 import {DictionaryDatabase} from './dictionary-database.js';
 
 export class DictionaryDatabaseWorkerHandler {
@@ -29,7 +30,7 @@ export class DictionaryDatabaseWorkerHandler {
      *
      */
     async prepare() {
-        this._dictionaryDatabase = new DictionaryDatabase();
+        this._dictionaryDatabase = createDictionaryDatabase();
         try {
             await this._dictionaryDatabase.prepare();
         } catch (e) {

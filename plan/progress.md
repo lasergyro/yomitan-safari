@@ -29,6 +29,44 @@ Living status of the storage-backend refactor. Update this every work session. F
 - `ext/js/dictionary/dictionary-backend-config.js`: `export const USE_SQLITE_BACKEND = false`.
 - `types/ext/dictionary-database.d.ts`: added `PayloadCodecName = 'identity'|'deflate'|'zstd'`.
 
+## Stage 4/5 — wiring DONE, flag still OFF (the flip is device-gated)
+
+- **Backend selection** (`ext/js/dictionary/dictionary-database-factory.js`):
+  `createDictionaryDatabase()` returns the backend chosen by `USE_SQLITE_BACKEND`. Wired into all
+  three sites that construct the real database: `background/backend.js` (non-offscreen path),
+  `background/offscreen.js`, and `dictionary/dictionary-database-worker-handler.js` (the DB worker).
+  With the flag **off** these return exactly `new DictionaryDatabase()` — behavior is unchanged and
+  no SQLite/WASM is touched at runtime.
+- **`DictionaryDatabaseSqlite.prepare()` is now a drop-in**: called with no arguments it
+  dynamically imports the vendored `ext/lib/sqlite3.js`, opens the OPFS SAH-Pool VFS, and calls
+  `navigator.storage.persist()`. Tests still inject `sqlite3` + `vfs: 'memory'`. The dynamic import
+  keeps the WASM out of the graph unless the SQLite backend is actually selected.
+- **Migration helpers** (`ext/js/dictionary/sqlite/dictionary-storage-migration.js`):
+  `legacyIndexedDbDictionaryExists()` (probes without leaving an empty DB behind),
+  `deleteLegacyIndexedDbDictionary()` (reclaims the ~1.2 GB after re-import), and
+  `requestPersistentStorage()`. Tested against fake-indexeddb.
+- **Tuning**: `finalizeImport()` (ANALYZE + VACUUM) on the backend; `PRAGMA page_size = 8192` set
+  in the opener before the schema (fresh DBs only, so no VACUUM needed).
+- **Build verified**: `npm run build -- --target safari` succeeds and ships `lib/sqlite3.js`,
+  `lib/sqlite3.wasm` (865 KB), `lib/pako.js`; the safari manifest CSP has `'wasm-unsafe-eval'`.
+  `copySqlite` now prepends `// @ts-nocheck` (the file is copied verbatim, not esbuild-bundled, and
+  the backend's dynamic import pulls it into the tsc graph).
+
+### What is still required before flipping `USE_SQLITE_BACKEND` to true (Stage 5)
+
+1. **On-device Safari verification** (cannot be done in node): `./rebuild-safari.sh`, import a
+   dictionary, scan German text, check popup/Anki/audio. Confirm the DB worker resolves
+   `ext/lib/sqlite3.js` + `sqlite3.wasm` at the extension origin, and that OPFS SAH-Pool opens.
+2. **Settings-page migration UX**: call `legacyIndexedDbDictionaryExists()` on startup, prompt for
+   re-import, then `deleteLegacyIndexedDbDictionary()`. Only the helpers exist today; no UI.
+3. **Call `finalizeImport()`** after an import completes (the importer does not call it yet).
+4. **Real-data measurement** on `kty-de-en` (the 1.2 GB → ~100 MB claim is unverified in-tree).
+5. **Pick the shipped codec.** The factory constructs the backend with the default identity codec;
+   for compression it must pass `DeflatePayloadCodec` (with vendored pako) or the future zstd codec.
+6. **SAH-Pool capacity growth** for large DBs (`initialCapacity` default is 8 files).
+7. Then: remove the IndexedDB path for `dict` + the flag, and unify the two backends behind one
+   interface (today the SQLite backend is cast to `DictionaryDatabase` at the factory/test seams).
+
 ## Stage 3 — DONE for deflate (node-verified); zstd is the documented drop-in successor
 
 - **Codec self-description**: `DictionaryDatabaseSqlite` now takes a write codec + optional decode

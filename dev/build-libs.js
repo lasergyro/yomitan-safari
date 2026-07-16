@@ -49,7 +49,10 @@ async function copyWasm(out) {
  */
 async function copySqlite(out) {
     const distDir = path.dirname(require.resolve('@sqlite.org/sqlite-wasm'));
-    fs.copyFileSync(path.join(distDir, 'index.mjs'), path.join(out, 'sqlite3.js'));
+    // Copied verbatim (not bundled), so prepend the same `@ts-nocheck` banner the esbuild-bundled
+    // libs get — the backend dynamically imports this from the tsc project graph.
+    const source = fs.readFileSync(path.join(distDir, 'index.mjs'), {encoding: 'utf8'});
+    fs.writeFileSync(path.join(out, 'sqlite3.js'), `// @ts-nocheck\n${source}`);
     fs.copyFileSync(path.join(distDir, 'sqlite3.wasm'), path.join(out, 'sqlite3.wasm'));
 }
 

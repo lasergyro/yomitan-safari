@@ -10,13 +10,14 @@ Target: ~1.2 GB → ~100 MB. Branch: **`safari-refactor`**.
 - **Read order:** this file → [progress.md](progress.md) (what's done + exact next step) →
   [decisions.md](decisions.md) (why) → [design.md](design.md) (full reference: schema, measured
   numbers, feasibility, staged plan).
-- **Status:** Stage 0 done; Stage 1 in progress. The **term backend core**
-  (`DictionaryDatabaseSqlite`: `bulkAdd('terms'|'dictionaries')`, `findTermsBulk`,
-  `findTermsExactBulk`) is committed and green, with a fixture-driven parity test against the
-  IndexedDB backend. **Not yet done:** the rest of the query/import surface (meta/kanji/media
-  stores, full importer run) and worker wiring behind `USE_SQLITE_BACKEND`. See progress.md →
-  "Next steps".
-- **Latest commit:** `a7ba6f19`. **Tag:** `stage-1` (marks start of Stage 1).
+- **Status:** Stages 0–4 are implemented and green in node; **the flag is still off**, so the
+  extension still runs the IndexedDB backend and nothing user-visible has changed.
+  `DictionaryDatabaseSqlite` has full API parity (all stores + queries + admin), passes the real
+  importer/translator fixtures end-to-end (identity **and** deflate codecs), and is wired behind
+  `createDictionaryDatabase()`. **Two things are explicitly NOT done:** the zstd codec (needs a
+  custom WASM build) and on-device Safari verification — both are prerequisites for the Stage 5
+  flip. See progress.md → "What is still required before flipping".
+- **Latest commit:** see `git log`. **Tag:** `stage-1` (marks start of Stage 1).
 - **Feature flag:** `USE_SQLITE_BACKEND` in `ext/js/dictionary/dictionary-backend-config.js`
   (currently `false` — the IndexedDB path is still the only live one).
 

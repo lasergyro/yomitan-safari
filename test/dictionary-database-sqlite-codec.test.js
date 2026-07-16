@@ -70,4 +70,11 @@ describe('DictionaryDatabaseSqlite deflate codec self-description', () => {
         const all = await backend.findTermsBulk(['いぬ', 'ねこ', 'とり'], dictionaries, 'exact');
         expect(all.map((entry) => entry.term).sort()).toStrictEqual(['いぬ', 'とり', 'ねこ']);
     });
+
+    test('finalizeImport (ANALYZE + VACUUM) leaves the data queryable', async () => {
+        await backend.finalizeImport();
+        const results = await backend.findTermsBulk(['とり'], dictionaries, 'exact');
+        expect(results).toHaveLength(1);
+        expect(results[0].definitions).toStrictEqual(['bird']);
+    });
 });

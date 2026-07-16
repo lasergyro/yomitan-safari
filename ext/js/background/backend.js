@@ -32,6 +32,7 @@ import {generateAnkiNoteMediaFileName, INVALID_NOTE_ID, isNoteDataValid} from '.
 import {arrayBufferToBase64} from '../data/array-buffer-util.js';
 import {OptionsUtil} from '../data/options-util.js';
 import {getAllPermissions, hasPermissions, hasRequiredPermissionsForOptions} from '../data/permissions-util.js';
+import {createDictionaryDatabase} from '../dictionary/dictionary-database-factory.js';
 import {DictionaryDatabase} from '../dictionary/dictionary-database.js';
 import {Environment} from '../extension/environment.js';
 import {getTemporaryStorage} from '../extension/temporary-storage.js';
@@ -69,7 +70,7 @@ export class Backend {
             /** @type {?OffscreenProxy} */
             this._offscreen = null;
             /** @type {DictionaryDatabase|DictionaryDatabaseProxy} */
-            this._dictionaryDatabase = new DictionaryDatabase();
+            this._dictionaryDatabase = createDictionaryDatabase();
             /** @type {Translator|TranslatorProxy} */
             this._translator = new Translator(this._dictionaryDatabase);
             /** @type {ClipboardReader|ClipboardReaderProxy} */

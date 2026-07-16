@@ -37,6 +37,9 @@ export async function openDictionaryDatabaseHandle(sqlite3, {vfs, path = '/dict.
     } else {
         db = new sqlite3.oo1.DB(':memory:');
     }
+    // Larger pages suit the big BLOB-heavy rows; must be set before the schema (any write) is
+    // created to take effect on a fresh database without a VACUUM.
+    db.exec('PRAGMA page_size = 8192');
     // Single-connection worker model, and the store is re-importable, so favor import speed.
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec('PRAGMA temp_store = MEMORY');

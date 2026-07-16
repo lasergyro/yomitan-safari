@@ -23,6 +23,7 @@ import {ExtensionError} from '../core/extension-error.js';
 import {log} from '../core/log.js';
 import {sanitizeCSS} from '../core/utilities.js';
 import {arrayBufferToBase64} from '../data/array-buffer-util.js';
+import {createDictionaryDatabase} from '../dictionary/dictionary-database-factory.js';
 import {DictionaryDatabase} from '../dictionary/dictionary-database.js';
 import {WebExtension} from '../extension/web-extension.js';
 import {Translator} from '../language/translator.js';
@@ -37,7 +38,7 @@ export class Offscreen {
      */
     constructor() {
         /** @type {DictionaryDatabase} */
-        this._dictionaryDatabase = new DictionaryDatabase();
+        this._dictionaryDatabase = createDictionaryDatabase();
         /** @type {Translator} */
         this._translator = new Translator(this._dictionaryDatabase);
         /** @type {ClipboardReader} */

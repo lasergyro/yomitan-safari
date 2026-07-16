@@ -17,6 +17,7 @@
 
 import {parseJson} from '../../core/json.js';
 import {IdentityPayloadCodec} from '../payload-codec.js';
+import {requestPersistentStorage} from './dictionary-storage-migration.js';
 import {DICTIONARY_SQLITE_TABLES} from './dictionary-sqlite-schema.js';
 import {openDictionaryDatabaseHandle} from './open-sqlite.js';
 
@@ -77,14 +78,26 @@ export class DictionaryDatabaseSqlite {
     }
 
     /**
-     * Opens the database and loads the dictionary id<->title cache.
-     * @param {{sqlite3: import('sqlite-wasm').Sqlite3Module, vfs?: import('sqlite-wasm').SqliteVfs, path?: string, initialCapacity?: number}} options
+     * Opens the database and loads the dictionary id<->title cache. Called with no arguments (as
+     * `DictionaryDatabase.prepare()` is) it self-initializes sqlite3 from the vendored browser build
+     * on the OPFS SAH-Pool VFS and requests persistent storage — this is the extension/worker path.
+     * Tests inject `sqlite3` and use the in-memory VFS.
+     * @param {{sqlite3?: import('sqlite-wasm').Sqlite3Module, vfs?: import('sqlite-wasm').SqliteVfs, path?: string, initialCapacity?: number}} [options]
      * @returns {Promise<void>}
      */
-    async prepare({sqlite3, vfs = 'memory', path, initialCapacity}) {
+    async prepare(options) {
         if (this._db !== null) { throw new Error('Database already open'); }
+        let {sqlite3} = options ?? {};
+        const {vfs = typeof sqlite3 === 'undefined' ? 'opfs' : 'memory', path, initialCapacity} = options ?? {};
+        if (typeof sqlite3 === 'undefined') {
+            // Vendored ESM build (dev/build-libs.js -> ext/lib/sqlite3.js); dynamic import keeps the
+            // WASM out of the bundle/graph when the SQLite backend is not selected.
+            const {default: sqlite3InitModule} = await import('../../../lib/sqlite3.js');
+            sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
+        }
         this._db = await openDictionaryDatabaseHandle(sqlite3, {vfs, path, initialCapacity});
         this._loadDictionaryCache();
+        if (vfs === 'opfs') { await requestPersistentStorage(); }
     }
 
     /** @returns {boolean} */
@@ -118,6 +131,18 @@ export class DictionaryDatabaseSqlite {
         this._idToTitle.clear();
         this._dictCodec.clear();
         return true;
+    }
+
+    /**
+     * Compacts and re-analyzes the database after a large import: `ANALYZE` refreshes the query
+     * planner statistics and `VACUUM` reclaims free pages and defragments the file. Call once after
+     * an import (or deletion) completes; both are no-ops mid-transaction so run them standalone.
+     * @returns {Promise<void>}
+     */
+    async finalizeImport() {
+        const db = this._require();
+        db.exec('ANALYZE');
+        db.exec('VACUUM');
     }
 
     /**
