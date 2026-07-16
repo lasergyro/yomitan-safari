@@ -1,5 +1,35 @@
 # DEV notes
 
+## Running tests in real Safari without stealing focus
+
+```sh
+npm run test:safari     # SQLite/OPFS dictionary backend, in real Safari, backgrounded
+```
+
+`open -g -a Safari <url>` loads a page in the **real** browser but, thanks to `-g`, never brings
+it to the foreground — so an automated run doesn't interrupt you. Pair it with a loopback HTTP
+server that serves the harness and collects results via `fetch('/results')`, and you have a
+headless-ish Safari runner:
+
+```sh
+open -g -a Safari "http://127.0.0.1:8730/"   # real Safari, no focus change
+```
+
+`127.0.0.1` is a **secure context**, so OPFS works with no COOP/COEP and no HTTPS (see the
+Tailscale section below for why that matters off-localhost).
+
+Why not the obvious alternatives:
+
+- **`safaridriver`** (WebDriver, built into macOS) has **no headless mode** — every session opens
+  a focus-stealing automation window. It also needs `safaridriver --enable` plus _Develop → Allow
+  Remote Automation_.
+- **Playwright's `webkit`** is genuinely headless, but it is a WebKit build from trunk, not the
+  Safari your users run. Fine for engine smoke tests; not evidence about Safari itself.
+
+Caveats: background tabs get their timers throttled (harmless for WASM/promise-driven work, but
+don't build timing assertions on it), and each run leaves a tab open. See
+[test/safari/README.md](test/safari/README.md).
+
 ## Automated Safari inspection (macOS)
 
 How to drive a real, logged-in Safari from the shell to inspect a live page's

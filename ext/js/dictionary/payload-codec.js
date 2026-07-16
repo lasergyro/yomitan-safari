@@ -28,7 +28,7 @@ import {parseJson} from '../core/json.js';
  * alongside the dictionary, and passed back to `encode`/`decode`. Codecs that do not use a
  * dictionary ignore that argument and `train()` returns an empty buffer.
  *
- * See plan/design.md (sections 6 and 8.2) for the rollout: `identity` (no compression,
+ * See plan/01-design.md (sections 6 and 8.2) for the rollout: `identity` (no compression,
  * correctness baseline) -> `deflate` (pako + preset dict) -> `zstd` (trained dict). The
  * `PayloadCodec` type lives in types/ext/payload-codec.d.ts.
  * @typedef {import('payload-codec').PayloadCodec} PayloadCodec

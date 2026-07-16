@@ -37,13 +37,41 @@ const STORE_TABLE = {
 };
 
 /**
+ * Memoized vendored sqlite3 module.
+ *
+ * This MUST be a singleton: `installOpfsSAHPoolVfs` caches its pool per VFS name *inside a single
+ * sqlite3 instance*, and the pool holds exclusive OPFS sync access handles for the whole session.
+ * Calling `sqlite3InitModule()` a second time builds an independent runtime whose pool then tries
+ * to re-acquire handles the first one still owns, which fails with `InvalidStateError` ("The object
+ * is in an invalid state"). That happens on any close/reopen — notably `purge()`, which closes and
+ * re-prepares. Verified against real Safari by `npm run test:safari`.
+ * @type {Promise<import('sqlite-wasm').Sqlite3Module>?}
+ */
+let vendoredSqlite3Promise = null;
+
+/**
+ * @returns {Promise<import('sqlite-wasm').Sqlite3Module>}
+ */
+function loadVendoredSqlite3() {
+    if (vendoredSqlite3Promise === null) {
+        vendoredSqlite3Promise = (async () => {
+            // Vendored ESM build (dev/build-libs.js -> ext/lib/sqlite3.js); the dynamic import keeps
+            // the WASM out of the module graph when the SQLite backend is not selected.
+            const {default: sqlite3InitModule} = await import('../../../lib/sqlite3.js');
+            return /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
+        })();
+    }
+    return vendoredSqlite3Promise;
+}
+
+/**
  * SQLite-WASM implementation of the dictionary store. A drop-in for the IndexedDB
  * `DictionaryDatabase` at the public-API level (same method names/semantics), but stores rows
- * columnar in SQLite (see plan/design.md §8): the heavy non-indexed term/kanji fields live in a
+ * columnar in SQLite (see plan/01-design.md §8): the heavy non-indexed term/kanji fields live in a
  * `payload` BLOB encoded through a payload codec (see payload-codec.js), and the repeated
  * dictionary title becomes an integer `dictionary_id`.
  *
- * The `sqlite3` module is injected (see plan/decisions.md #9): the extension DB worker builds it
+ * The `sqlite3` module is injected (see plan/02-decisions.md #10): the extension DB worker builds it
  * from the vendored browser build and passes `vfs: 'opfs'`; node tests build it from the package
  * and pass `vfs: 'memory'`.
  */
@@ -90,10 +118,7 @@ export class DictionaryDatabaseSqlite {
         let {sqlite3} = options ?? {};
         const {vfs = typeof sqlite3 === 'undefined' ? 'opfs' : 'memory', path, initialCapacity} = options ?? {};
         if (typeof sqlite3 === 'undefined') {
-            // Vendored ESM build (dev/build-libs.js -> ext/lib/sqlite3.js); dynamic import keeps the
-            // WASM out of the bundle/graph when the SQLite backend is not selected.
-            const {default: sqlite3InitModule} = await import('../../../lib/sqlite3.js');
-            sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
+            sqlite3 = await loadVendoredSqlite3();
         }
         this._db = await openDictionaryDatabaseHandle(sqlite3, {vfs, path, initialCapacity});
         this._loadDictionaryCache();
@@ -954,7 +979,7 @@ export class DictionaryDatabaseSqlite {
                     [term, term],
                 );
             case 'suffix': {
-                // No reverse column yet (that is a later schema addition, see plan/progress.md
+                // No reverse column yet (that is a later schema addition, see plan/03-progress.md
                 // "watch-outs"); filter suffix matches in JS over the enabled dictionaries.
                 const rows = db.selectObjects(`${select} WHERE ${idFilter}`);
                 return rows.filter((row) => typeof row[column] === 'string' && /** @type {string} */ (row[column]).endsWith(term));

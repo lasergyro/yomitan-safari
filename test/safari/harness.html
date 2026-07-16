@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<!--
+ * Copyright (C) 2025  Yomitan Authors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Yomitan SQLite backend — Safari checks</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
+        li.ok::marker { content: "✔ "; color: green; }
+        li.fail::marker { content: "✘ "; color: red; }
+        pre { color: #b00; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>Yomitan SQLite backend — Safari checks</h1>
+    <p id="status">Running…</p>
+    <ul id="results"></ul>
+
+    <script type="module">
+        // The OPFS SAH-Pool VFS needs synchronous access handles, which WebKit only exposes in a
+        // worker — so the whole backend runs inside a module worker, exactly like the DB worker
+        // does in the extension.
+        const statusElement = document.querySelector('#status');
+        const resultsElement = document.querySelector('#results');
+
+        /**
+         * @param {{name: string, ok: boolean, error?: string, info?: string}[]} checks
+         */
+        function render(checks) {
+            for (const check of checks) {
+                const item = document.createElement('li');
+                item.className = check.ok ? 'ok' : 'fail';
+                item.textContent = check.name + (check.info ? ` — ${check.info}` : '');
+                if (!check.ok) {
+                    const pre = document.createElement('pre');
+                    pre.textContent = check.error ?? '';
+                    item.append(pre);
+                }
+                resultsElement.append(item);
+            }
+            const failed = checks.filter((check) => !check.ok).length;
+            statusElement.textContent = failed === 0 ?
+                `All ${checks.length} checks passed. You can close this tab.` :
+                `${failed} of ${checks.length} checks failed.`;
+        }
+
+        /**
+         * @param {{name: string, ok: boolean, error?: string, info?: string}[]} checks
+         */
+        async function send(checks) {
+            render(checks);
+            await fetch('/results', {method: 'POST', body: JSON.stringify(checks)});
+        }
+
+        const worker = new Worker('/test/safari/worker.js', {type: 'module'});
+        worker.addEventListener('message', (event) => {
+            void send(event.data);
+            worker.terminate();
+        });
+        worker.addEventListener('error', (event) => {
+            void send([{name: 'worker started', ok: false, error: `${event.message} (${event.filename}:${event.lineno})`}]);
+        });
+    </script>
+</body>
+</html>

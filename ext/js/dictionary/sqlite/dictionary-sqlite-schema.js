@@ -22,7 +22,7 @@
 export const DICTIONARY_SQLITE_SCHEMA_VERSION = 1;
 
 /**
- * The dictionary storage schema (see plan.md §8.1). Columnar tables — no per-row property
+ * The dictionary storage schema (see plan/01-design.md §8.1). Columnar tables — no per-row property
  * names; `dictionary_id` is an integer FK instead of the repeated title string; the heavy,
  * non-indexed term fields live compressed in `terms.payload`. Indexed columns
  * (expression/reading/sequence/character/path/name) let SQLite serve every lookup the legacy

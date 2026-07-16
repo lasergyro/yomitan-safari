@@ -16,7 +16,7 @@
  */
 
 /**
- * Feature flag for the storage-backend migration (see plan.md). When `true`, the dictionary
+ * Feature flag for the storage-backend migration (see plan/01-design.md). When `true`, the dictionary
  * store uses the SQLite-WASM/OPFS backend; when `false`, the legacy IndexedDB backend. Kept as
  * a single module constant so the main-thread facade and the DB worker read the same value.
  * Stays `false` until the SQLite backend reaches parity, then this flag (and the IndexedDB

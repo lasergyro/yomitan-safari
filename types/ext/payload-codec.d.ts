@@ -22,7 +22,7 @@ import type * as DictionaryDatabase from './dictionary-database';
  * positional array `[definitionTags, rules, score, glossary, termTags]` -- into a single byte blob
  * for the SQLite `terms.payload` column, and decodes it back on read. Implementations may use a
  * per-dictionary shared dictionary produced by `train()`; codecs that do not ignore that argument
- * and `train()` returns an empty buffer. See payload-codec.js and plan/design.md §6/§8.2.
+ * and `train()` returns an empty buffer. See payload-codec.js and plan/01-design.md §6/§8.2.
  */
 export type PayloadCodec = {
     name: DictionaryDatabase.PayloadCodecName;

@@ -22,13 +22,13 @@ import {parseJson} from '../core/json.js';
  */
 
 /**
- * Interim compressing codec (see plan/design.md §6): raw DEFLATE via pako with an optional 32 KB
+ * Interim compressing codec (see plan/01-design.md §6): raw DEFLATE via pako with an optional 32 KB
  * preset dictionary trained from a sample of the dictionary's own payloads. Pure JS (no WASM), so
  * it works before the zstd WASM build lands; the payload stays randomly decodable (each row is an
  * independent DEFLATE stream sharing only the preset dictionary).
  *
  * pako is injected (browser: vendored `ext/lib/pako.js`; node tests: the `pako` package), mirroring
- * how sqlite3 is injected — see plan/decisions.md #9.
+ * how sqlite3 is injected — see plan/02-decisions.md #10.
  * @implements {PayloadCodec}
  */
 export class DeflatePayloadCodec {
