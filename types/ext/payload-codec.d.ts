@@ -26,6 +26,14 @@ import type * as DictionaryDatabase from './dictionary-database';
  */
 export type PayloadCodec = {
     name: DictionaryDatabase.PayloadCodecName;
+    /**
+     * Optional async initialization, awaited by `DictionaryDatabaseSqlite.prepare()` for every
+     * registered codec before any row is read or written. It exists because `encode`/`decode` are
+     * synchronous -- they sit inside sqlite's synchronous query and transaction paths -- while a
+     * WASM-backed codec needs to load its module first, and a read of existing rows offers no other
+     * async moment in which to do it. Codecs needing no setup simply omit this.
+     */
+    prepare?: () => Promise<void>;
     train: (payloadSamples: unknown[][]) => Promise<Uint8Array>;
     encode: (payload: unknown[], dictionary: Uint8Array | null) => Uint8Array;
     decode: (blob: Uint8Array, dictionary: Uint8Array | null) => unknown[];

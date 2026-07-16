@@ -58,6 +58,26 @@ async function copySqlite(out) {
 
 
 /**
+ * Vendors the zstd + ZDICT WASM module for the zstd payload codec. Unlike the other libs this one
+ * has no npm package behind it: no published zstd WASM build exposes `ZDICT_trainFromBuffer`, the
+ * dictionary trainer, so it is built from zstd source by `dev/zstd/build.sh` (`npm run build:zstd`)
+ * and the result is committed under `dev/vendor/`. That keeps emscripten out of the normal
+ * build/CI path — this step is only a copy.
+ *
+ * The build embeds the wasm in the .js (`-sSINGLE_FILE`), so there is no sibling `.wasm` to place
+ * and nothing here depends on Safari serving `application/wasm` correctly. See plan/zstd/README.md.
+ * @param {string} out
+ */
+async function copyZstd(out) {
+    const source = path.join(dirname, 'vendor', 'zstd', 'zstd.js');
+    if (!fs.existsSync(source)) {
+        throw new Error(`Missing vendored zstd build at ${source}; run 'npm run build:zstd' to regenerate it.`);
+    }
+    fs.copyFileSync(source, path.join(out, 'zstd.js'));
+}
+
+
+/**
  * @param {string} scriptPath
  */
 async function buildLib(scriptPath) {
@@ -112,4 +132,5 @@ export async function buildLibs() {
 
     await copyWasm(path.join(extDir, 'lib'));
     await copySqlite(path.join(extDir, 'lib'));
+    await copyZstd(path.join(extDir, 'lib'));
 }

@@ -32,6 +32,7 @@ import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import {fileURLToPath} from 'url';
+import {parseJson} from '../../dev/json.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(dirname, '..', '..');
@@ -98,7 +99,7 @@ async function main() {
             void readBody(request).then((body) => {
                 response.setHeader('access-control-allow-origin', '*');
                 response.end('ok');
-                resolveResults(JSON.parse(body));
+                resolveResults(/** @type {SafariCheck[]} */ (parseJson(body)));
             });
             return;
         }
@@ -124,7 +125,9 @@ async function main() {
         fs.createReadStream(filePath).pipe(response);
     });
 
-    await new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(void 0)));
+    await new Promise((resolve) => {
+        server.listen(port, '127.0.0.1', () => { resolve(void 0); });
+    });
 
     const url = `http://127.0.0.1:${port}/?t=${Date.now()}`;
     console.log(`Serving ${repoRoot}\nOpening ${url} in Safari (backgrounded, focus is not taken)…\n`);
@@ -133,7 +136,10 @@ async function main() {
         if (error) { console.error('Failed to open Safari:', error.message); }
     });
 
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
+    /** @type {Promise<null>} */
+    const timeout = new Promise((resolve) => {
+        setTimeout(() => { resolve(null); }, timeoutMs);
+    });
     const checks = await Promise.race([results, timeout]);
     server.close();
 
@@ -143,7 +149,7 @@ async function main() {
         process.exit(1);
     }
 
-    const ok = report(/** @type {SafariCheck[]} */ (checks));
+    const ok = report(checks);
     if (process.env.KEEP_OPEN !== '1') {
         console.log('[2m(The Safari tab stays open; close it or run with KEEP_OPEN=1 to keep quiet about it.)[0m');
     }

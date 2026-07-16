@@ -21,10 +21,12 @@ import {IDBKeyRange, indexedDB} from 'fake-indexeddb';
 import * as pako from 'pako';
 import {expect, vi} from 'vitest';
 import {createDictionaryArchiveData} from '../../dev/dictionary-archive-util.js';
+import zstdInitModule from '../../dev/vendor/zstd/zstd.js';
 import {DeflatePayloadCodec} from '../../ext/js/dictionary/deflate-payload-codec.js';
 import {DictionaryDatabase} from '../../ext/js/dictionary/dictionary-database.js';
 import {DictionaryImporter} from '../../ext/js/dictionary/dictionary-importer.js';
 import {DictionaryDatabaseSqlite} from '../../ext/js/dictionary/sqlite/dictionary-database-sqlite.js';
+import {ZstdPayloadCodec} from '../../ext/js/dictionary/zstd-payload-codec.js';
 import {Translator} from '../../ext/js/language/translator.js';
 import {chrome, fetch} from '../mocks/common.js';
 import {DictionaryImporterMediaLoader} from '../mocks/dictionary-importer-media-loader.js';
@@ -36,21 +38,37 @@ vi.stubGlobal('fetch', fetch);
 vi.stubGlobal('chrome', chrome);
 
 /**
+ * The write codec for a sqlite backend variant; `undefined` leaves the backend on its identity
+ * default. `DictionaryDatabaseSqlite.prepare()` initializes whatever codec it is given.
+ * @param {'sqlite'|'sqlite-deflate'|'sqlite-zstd'|string} backend
+ * @returns {import('payload-codec').PayloadCodec|undefined}
+ */
+function createCodec(backend) {
+    switch (backend) {
+        case 'sqlite-deflate': return new DeflatePayloadCodec(pako);
+        case 'sqlite-zstd': return new ZstdPayloadCodec(/** @type {import('zstd').ZstdInitModule} */ (zstdInitModule));
+        default: return void 0;
+    }
+}
+
+/**
  * Builds a prepared dictionary database of the requested backend. `'indexeddb'` (default) uses the
  * production IndexedDB store; `'sqlite'` uses the SQLite-WASM backend with an in-memory VFS, so the
  * same fixtures/importer/translator exercise both backends.
  * The SQLite backend is cast to `DictionaryDatabase` at this seam: it implements the same public
  * methods the importer and translator use, but the two are separate classes (no shared interface
- * yet — unifying them is a Stage 5 concern). `'sqlite-deflate'` uses the pako deflate codec (with a
- * trained preset dictionary) to also exercise the compressing-codec path.
- * @param {'indexeddb'|'sqlite'|'sqlite-deflate'} backend
+ * yet — unifying them is a Stage 5 concern). `'sqlite-deflate'` uses the pako deflate codec and
+ * `'sqlite-zstd'` the zstd codec (both with a trained dictionary), exercising the compressing-codec
+ * paths end-to-end. The test dictionary is far too small for ZDICT to train on, so the zstd runs
+ * take the empty-dictionary fallback — that is itself the path worth covering, since it is what any
+ * small imported dictionary will hit in production.
+ * @param {'indexeddb'|'sqlite'|'sqlite-deflate'|'sqlite-zstd'} backend
  * @returns {Promise<DictionaryDatabase>}
  */
 async function createDictionaryDatabaseBackend(backend) {
-    if (backend === 'sqlite' || backend === 'sqlite-deflate') {
+    if (backend.startsWith('sqlite')) {
         const sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
-        const codec = backend === 'sqlite-deflate' ? new DeflatePayloadCodec(pako) : void 0;
-        const database = new DictionaryDatabaseSqlite(codec);
+        const database = new DictionaryDatabaseSqlite(createCodec(backend));
         await database.prepare({sqlite3, vfs: 'memory'});
         return /** @type {DictionaryDatabase} */ (/** @type {unknown} */ (database));
     }
@@ -62,7 +80,7 @@ async function createDictionaryDatabaseBackend(backend) {
 /**
  * @param {string} dictionaryDirectory
  * @param {string} dictionaryName
- * @param {'indexeddb'|'sqlite'|'sqlite-deflate'} [backend]
+ * @param {'indexeddb'|'sqlite'|'sqlite-deflate'|'sqlite-zstd'} [backend]
  * @returns {Promise<{translator: Translator, styles: string}>}
  */
 export async function createTranslatorContext(dictionaryDirectory, dictionaryName, backend = 'indexeddb') {

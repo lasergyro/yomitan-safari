@@ -13,12 +13,16 @@ The vitest suite runs the SQLite backend under node with an in-memory VFS. That 
 import semantics, but it cannot touch the parts that actually gate shipping:
 
 - the **OPFS SAH-Pool VFS** (needs a browser, a secure context, and worker sync access handles),
-- the **vendored** `ext/lib/sqlite3.js` + `sqlite3.wasm` loading over HTTP,
+- the **vendored** `ext/lib/sqlite3.js` + `sqlite3.wasm` and `ext/lib/zstd.js` loading over HTTP,
 - WebKit's own WASM behavior and storage quota.
 
-It earns its keep: its first run caught a real bug node could not see — `prepare()` built a second
-sqlite3 runtime on every call, so any close/reopen (including `purge()`) failed with
-`InvalidStateError` because the first runtime's SAH pool still held the OPFS handles.
+It earns its keep — it has caught two real bugs node could not see:
+
+1. `prepare()` built a second sqlite3 runtime on every call, so any close/reopen (including
+   `purge()`) failed with `InvalidStateError` because the first runtime's SAH pool still held the
+   OPFS handles.
+2. The zstd codec handed `TextDecoder` a `subarray` view into the WASM heap, which WebKit rejects
+   with a `TypeError` while node accepts it.
 
 ## How it works
 
@@ -45,10 +49,13 @@ users actually run.
 | `TIMEOUT_MS` | `120000` | How long to wait for results.           |
 | `KEEP_OPEN`  | unset    | Suppress the "tab stays open" reminder. |
 
-Requires `npm run build:libs` to have produced `ext/lib/sqlite3.js`, `ext/lib/sqlite3.wasm` and
-`ext/lib/pako.js`. The test uses its own origin (`127.0.0.1`), so its OPFS data is separate from the
-installed extension's and cannot corrupt your real dictionaries; it purges its own data on entry and
-exit. Each run leaves a Safari tab open.
+Requires `npm run build:libs` to have produced `ext/lib/sqlite3.js`, `ext/lib/sqlite3.wasm`,
+`ext/lib/pako.js` and `ext/lib/zstd.js`. The test uses its own origin (`127.0.0.1`), so its OPFS data
+is separate from the installed extension's and cannot corrupt your real dictionaries; it purges its
+own data on entry and exit. Each run leaves a Safari tab open.
+
+The checks cover the deflate codec and then the zstd codec (module instantiation under WebKit, ZDICT
+training, and a trained dictionary surviving close/reopen).
 
 ## What it does not cover
 

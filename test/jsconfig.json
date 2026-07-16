@@ -12,6 +12,7 @@
         "skipLibCheck": true,
         "baseUrl": ".",
         "paths": {
+            "/ext/*": ["../ext/*"],
             "*": ["../types/ext/*"],
             "dev/*": ["../types/dev/*"],
             "test/*": ["../types/test/*"],

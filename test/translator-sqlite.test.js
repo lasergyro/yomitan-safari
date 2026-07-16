@@ -50,9 +50,9 @@ const expectedResults1 = parseJson(readFileSync(testResults1FilePath, {encoding:
 
 const testCases = tests.map((data, i) => ({data, expected1: expectedResults1[i]}));
 
-// Run the fixtures against the identity-codec SQLite backend and the deflate-codec one, proving
-// both produce the same dictionaryEntries as the canonical IndexedDB results.
-for (const backend of /** @type {const} */ (['sqlite', 'sqlite-deflate'])) {
+// Run the fixtures against the identity-codec SQLite backend and both compressing codecs, proving
+// all three produce the same dictionaryEntries as the canonical IndexedDB results.
+for (const backend of /** @type {const} */ (['sqlite', 'sqlite-deflate', 'sqlite-zstd'])) {
     const {translator} = await createTranslatorContext(dictionaryDirectory, dictionaryName, backend);
 
     describe(`Dictionary data (${backend} backend)`, () => {

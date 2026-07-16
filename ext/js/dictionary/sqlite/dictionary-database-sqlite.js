@@ -120,9 +120,23 @@ export class DictionaryDatabaseSqlite {
         if (typeof sqlite3 === 'undefined') {
             sqlite3 = await loadVendoredSqlite3();
         }
+        await this._prepareCodecs();
         this._db = await openDictionaryDatabaseHandle(sqlite3, {vfs, path, initialCapacity});
         this._loadDictionaryCache();
         if (vfs === 'opfs') { await requestPersistentStorage(); }
+    }
+
+    /**
+     * Initializes every registered codec before the first row is read or written. `encode`/`decode`
+     * are synchronous (they run inside sqlite's synchronous query/transaction paths), so a codec
+     * needing async setup — loading a WASM module — has to do it here; a read of already-imported
+     * rows never calls `train()` and would otherwise have no async moment to initialize in.
+     * @returns {Promise<void>}
+     */
+    async _prepareCodecs() {
+        for (const codec of this._codecRegistry.values()) {
+            if (typeof codec.prepare === 'function') { await codec.prepare(); }
+        }
     }
 
     /** @returns {boolean} */

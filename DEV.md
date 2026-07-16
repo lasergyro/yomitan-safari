@@ -1,5 +1,17 @@
 # DEV notes
 
+## Rebuilding the zstd WASM module
+
+```sh
+npm run build:zstd      # needs emscripten (brew install emscripten); rarely needed
+```
+
+The zstd + ZDICT module is built from zstd source rather than taken from npm, because **no published
+zstd WASM package exposes `ZDICT_trainFromBuffer`** — the dictionary trainer the payload codec needs.
+Its output is committed at `dev/vendor/zstd/zstd.js`, so a normal build/test/CI run needs neither
+emscripten nor network; `npm run build:libs` only copies it into `ext/lib/`. Details in
+[dev/zstd/README.md](dev/zstd/README.md).
+
 ## Running tests in real Safari without stealing focus
 
 ```sh

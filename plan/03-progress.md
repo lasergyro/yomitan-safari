@@ -18,8 +18,14 @@ oldest → newest. Full design in [01-design.md](01-design.md); decisions in
   - `484f84a7` Stage 2: full DictionaryDatabaseSqlite parity + end-to-end fixture test
   - `794feac8` Stage 3: compressing payload codec (deflate) + self-describing rows
   - `898ae1f7` Stage 4: migration + persistence helpers, tuning, and backend selection wiring
-- Green: `tsc` (main + test), repo-wide `eslint`, full `vitest` (4230 tests / 46 skipped),
-  `npm run build -- --target safari`, and `npm run test:safari` (12/12 in real Safari).
+  - `ff7f7e45` Add a real-Safari test runner, split out the zstd task, sort the plan docs
+  - `56658cf5` plan: fix decision cross-references after the renumbering
+- Green: `tsc` (main + test), repo-wide `eslint`, full `vitest` (4296 tests / 46 skipped),
+  `npm run build -- --target safari`, and `npm run test:safari` (17/17 in real Safari).
+- Note: `test:ts:test` and `eslint` were **red at `56658cf5`** (test tsc could not resolve
+  `test/safari/worker.js`'s server-absolute `/ext/…` imports; 22 lint errors in `test/safari/`),
+  despite that session's notes claiming green. Both are fixed as of the zstd work — the test tsconfig
+  maps `/ext/*` → `../ext/*`, so those files are now genuinely type-checked.
 
 ## Stage 0 — DONE
 
@@ -121,6 +127,37 @@ See **[zstd/](zstd/README.md)** for the remaining (blocked) zstd work and the si
 - **Build verified**: `npm run build -- --target safari` ships `lib/sqlite3.js`, `lib/sqlite3.wasm`
   (865 KB), `lib/pako.js`; the safari manifest CSP has `'wasm-unsafe-eval'`.
 
+## zstd codec — BUILT AND TESTED, NOT SELECTED
+
+Full record in **[zstd/](zstd/README.md)**. The Stage 3 blocker ("needs a custom zstd WASM build") is
+resolved; the remaining question is a shipping decision, not an engineering one.
+
+- **Custom WASM build** (`dev/zstd/`, `npm run build:zstd`): `build.sh` downloads the official zstd
+  1.5.7 tarball, verifies its sha256, and compiles it with emscripten together with `shim.c` — a thin
+  32-bit-clean C shim (`yz_*`) that keeps zstd's `size_t`/`u64` returns from crossing into JS as
+  BigInt and reuses the CCtx/DCtx. The custom build was genuinely necessary: no published zstd WASM
+  package exposes `ZDICT_trainFromBuffer` (verified — `@bokuweb/zstd-wasm` and `zstd-codec` contain
+  no `ZDICT_*` symbols at all).
+- **Committed artifact** (`dev/vendor/zstd/zstd.js`, 492 KB, `-sSINGLE_FILE`): unlike the other libs
+  it is committed, so a normal build/CI run needs neither emscripten nor network; `build:libs` just
+  copies it to `ext/lib/zstd.js`. See [02-decisions.md](02-decisions.md) #21.
+- **`ZstdPayloadCodec`** (`ext/js/dictionary/zstd-payload-codec.js`): module injected as usual;
+  CDict/DDict compiled once per dictionary (WeakMap), never per row; `train()` returns empty when
+  ZDICT refuses a too-small corpus, which the backend already maps to "no dictionary".
+- **New interface hook `PayloadCodec.prepare?()`** ([02-decisions.md](02-decisions.md) #22), awaited
+  by `DictionaryDatabaseSqlite.prepare()` for every registered codec — `encode`/`decode` are sync but
+  WASM init is not, and a read path never calls `train()`.
+- **Level 15, not 19** ([02-decisions.md](02-decisions.md) #23): the ratio plateaus at 15 while 19
+  costs ~3× the encode time.
+- **Tests**: `zstd-payload-codec.test.js` (12); a 2,000-row zstd import in
+  `dictionary-database-sqlite-codec.test.js` asserting the trained dictionary is persisted to
+  `codec_dict` and read back through it after the cache is dropped; all 49 translator fixtures
+  through `sqlite-zstd` (147 = 49 × 3); 17/17 in real Safari.
+- **Not measured on real data.** The 5.52×/~46 MB figures predate this work and were not reproduced —
+  `kty-de-en` is not in the repo. The synthetic corpus confirms the _shape_ (trained 5.77× > raw
+  5.31× > no dict 1.80×) but flatters deflate (6.29× vs its real 3.55×), so it cannot settle
+  deflate-vs-zstd.
+
 ## Stage 5 — NOT STARTED: what is required before flipping `USE_SQLITE_BACKEND`
 
 1. **Extension-origin verification.** `npm run test:safari` covers the engine (OPFS, the vendored
@@ -131,9 +168,11 @@ See **[zstd/](zstd/README.md)** for the remaining (blocked) zstd work and the si
 2. **Settings-page migration UX**: call `legacyIndexedDbDictionaryExists()` on startup, prompt for
    re-import, then `deleteLegacyIndexedDbDictionary()`. Only the helpers exist today; no UI.
 3. **Call `finalizeImport()`** after an import completes (the importer does not call it yet).
-4. **Real-data measurement** on `kty-de-en` — the 1.2 GB → ~100 MB claim is unverified in-tree.
+4. **Real-data measurement** on `kty-de-en` — the 1.2 GB → ~100 MB claim is unverified in-tree, and
+   it is what settles deflate-vs-zstd and the zstd level. The single most valuable remaining step.
 5. **Pick the shipped codec.** The factory uses the default identity codec; for compression it must
-   pass `DeflatePayloadCodec` (with vendored pako) or the future [zstd](zstd/README.md) codec.
+   pass `DeflatePayloadCodec` (with vendored pako) or the now-built [zstd](zstd/README.md) codec
+   (plus the other as a decode codec, so earlier imports stay readable).
 6. **SAH-Pool capacity growth** for large DBs (`initialCapacity` default is 8 files).
 7. Then: remove the IndexedDB path for `dict` + the flag, and unify the two backends behind one
    interface (today the SQLite backend is cast to `DictionaryDatabase` at the factory/test seams).
@@ -151,7 +190,13 @@ See **[zstd/](zstd/README.md)** for the remaining (blocked) zstd work and the si
   Test-harness-only — the real backend runs in a Worker.
 - **`.wasm` MIME in Safari**: extension `.wasm` is served without `application/wasm`, so
   `instantiateStreaming` fails and sqlite falls back to ArrayBuffer instantiation. Works, slightly
-  slower. Any new WASM (zstd) needs the same fallback.
+  slower. The zstd module avoids this entirely by embedding its wasm (`-sSINGLE_FILE`); any _further_
+  WASM would need the fallback again.
+- **Don't hand a WASM-heap view to a web API.** Safari's `TextDecoder` throws a `TypeError` on a
+  `subarray` view backed by the growable WASM memory, where node accepts it happily; copy out with
+  `slice` first. Caught by `npm run test:safari` — the second real bug that runner has found that
+  node could not see. The same caution applies to any view handed across an API boundary, and views
+  must never be cached across an allocation (growth detaches them).
 - **`typedef` aliases of imported types resolve to `any` under typescript-eslint.** Reference types
   as a **direct** `import('payload-codec').PayloadCodec`; a local
   `@typedef {import(...)} PayloadCodec` alias type-checks under tsc but the type-aware lint rules
@@ -172,22 +217,27 @@ ext/js/dictionary/dictionary-backend-config.js   USE_SQLITE_BACKEND flag
 ext/js/dictionary/dictionary-database-factory.js createDictionaryDatabase() backend selection
 ext/js/dictionary/payload-codec.js               IdentityPayloadCodec
 ext/js/dictionary/deflate-payload-codec.js       DeflatePayloadCodec (pako, injected)
+ext/js/dictionary/zstd-payload-codec.js          ZstdPayloadCodec (zstd WASM, injected)
+dev/zstd/build.sh, dev/zstd/shim.c               custom zstd+ZDICT WASM build (npm run build:zstd)
+dev/vendor/zstd/zstd.js                          the committed build output (copied to ext/lib)
 ext/js/dictionary/sqlite/open-sqlite.js          openDictionaryDatabaseHandle()
 ext/js/dictionary/sqlite/dictionary-sqlite-schema.js   DDL + createDictionarySchema()
 ext/js/dictionary/sqlite/dictionary-database-sqlite.js DictionaryDatabaseSqlite (the backend)
 ext/js/dictionary/sqlite/dictionary-storage-migration.js  legacy-IDB detect/delete, persist
 types/ext/sqlite-wasm.d.ts               narrow sqlite oo1 type surface
 types/ext/pako.d.ts                      narrow pako surface
-types/ext/payload-codec.d.ts             PayloadCodec type
+types/ext/zstd.d.ts                      narrow zstd shim surface
+types/ext/payload-codec.d.ts             PayloadCodec type (+ optional prepare())
 types/ext/dictionary-database.d.ts       + PayloadCodecName (and Layer 1's Packed/Payload types)
 test/safari/                             real-Safari runner (run.js, harness.html, worker.js)
 test/sqlite-backend-smoke.test.js        harness + opener/schema tests
 test/dictionary-database-sqlite.test.js  term parity vs IndexedDB backend
 test/dictionary-database-sqlite-codec.test.js  codec self-description + finalizeImport
 test/deflate-payload-codec.test.js       deflate codec round-trips
+test/zstd-payload-codec.test.js          zstd codec round-trips + training
 test/dictionary-storage-migration.test.js      migration helpers
-test/translator-sqlite.test.js           49 fixtures × {identity, deflate} end-to-end
-dev/build-libs.js                        + copySqlite() / dev/lib/pako.js vendoring
+test/translator-sqlite.test.js           49 fixtures × {identity, deflate, zstd} end-to-end
+dev/build-libs.js                        + copySqlite() / copyZstd() / dev/lib/pako.js vendoring
 dev/data/manifest-variants.json          safari CSP -> wasm-unsafe-eval
-package.json                             + @sqlite.org/sqlite-wasm, pako, test:safari script
+package.json                             + @sqlite.org/sqlite-wasm, pako, test:safari, build:zstd
 ```

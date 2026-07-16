@@ -1,11 +1,12 @@
 # Task: zstd payload codec with a trained dictionary
 
-**Status: NOT STARTED.** Blocked on producing a zstd WASM build (needs an emscripten + zstd source
-toolchain). Everything else it plugs into is done and tested.
+**Status: BUILT AND TESTED, NOT SELECTED.** The custom WASM build exists, the codec ships, and it
+passes node + real-Safari end-to-end. What remains is the _decision_ to ship it, which needs a
+measurement on real data — see [What is left](#what-is-left).
 
 This is the final compression step of the storage refactor ([../01-design.md](../01-design.md) §4,
-§6, §8.2). The backend, the codec seam, and an interim `deflate` codec already ship; this task
-replaces the codec with zstd + a per-dictionary trained dictionary to hit the size target.
+§6, §8.2). The backend, the codec seam, and an interim `deflate` codec already shipped; this task
+added zstd + a per-dictionary trained dictionary.
 
 ## Why
 
@@ -21,10 +22,13 @@ independently so rows stay randomly decodable:
 | **per-row zstd −19 + ZDICT-trained dict**     | **5.52×** | **~46 MB**     |
 | whole-corpus gzip (not random-access; floor)  |    ~12.8× | —              |
 
-Two conclusions drive this task: a **shared dictionary is mandatory** (per-row compression of small
+Two conclusions drove this task: a **shared dictionary is mandatory** (per-row compression of small
 payloads is otherwise net-negative), and **training matters** — a raw/untrained dictionary only
-reaches 2.82× where a ZDICT-trained one reaches 5.52×. That is the difference between ~71 MB and
-~46 MB of payload, and it is the last big lever on the 1.2 GB → ~100 MB goal.
+reaches 2.82× where a ZDICT-trained one reaches 5.52×.
+
+> **These numbers predate the implementation and have not been reproduced in-tree** — `kty-de-en` is
+> not in the repo. Everything below that is measured was measured on a _synthetic_ corpus, and is
+> labelled as such. Reproducing the table above on real data is the one remaining gate.
 
 ## Why not sqlite-zstd
 
@@ -33,79 +37,113 @@ must be statically compiled in, which is bleeding-edge for Rust), and there is n
 app-level compression of the single heavy column instead, which reaches the same result with a
 standard toolchain. See [../02-decisions.md](../02-decisions.md) #3.
 
-## What to build
+## What was built
 
-### 1. The WASM module
+### 1. The WASM module — `dev/zstd/`, `npm run build:zstd`
 
-A zstd build exposing, at minimum:
+The custom build was necessary as predicted: **no published zstd WASM package exposes
+`ZDICT_trainFromBuffer`**. Verified before building — `@bokuweb/zstd-wasm` ships
+`compress_using_dict`/`decompress_using_dict` (dictionary _use_) but its wasm contains no `ZDICT_*`
+symbols at all; `zstd-codec` is the same story. Dictionary use is common; dictionary _training_ is
+not, and training is where 2.82× becomes 5.52×.
 
-- `ZDICT_trainFromBuffer(dictBuffer, dictBufferCapacity, samplesBuffer, samplesSizes, nbSamples)` —
-  the training entry point. **This is the piece off-the-shelf zstd WASM packages usually omit**, and
-  the reason a custom build is needed.
-- `ZSTD_compress_usingCDict` / `ZSTD_decompress_usingDDict` (plus `ZSTD_createCDict` /
-  `ZSTD_createDDict`), so the trained dictionary is loaded once and reused for every row rather than
-  re-parsed per call.
-- `ZSTD_compressBound`, `ZSTD_isError`, `ZSTD_getErrorName` for buffer sizing and diagnostics.
+- `dev/zstd/build.sh` downloads the **official zstd release tarball** (1.5.7), verifies its sha256
+  (`eb33e51f…6fa3`) and refuses to build on a mismatch, then compiles it with emscripten.
+- `dev/zstd/shim.c` is a thin C shim (`yz_*`). It exists so every entry point is **32-bit clean**:
+  zstd returns `size_t`/`unsigned long long`, which would otherwise cross the JS boundary as
+  BigInt via emscripten's i64 legalization. It also keeps the CCtx/DCtx reused rather than
+  per-call, and turns zstd's error sentinels into plain negative returns.
+- Build flags of note: `ZSTD_DISABLE_ASM=1` and excluding `huf_decompress_amd64.S` (x86-only asm),
+  `ZSTD_MULTITHREAD=0`, `DYNAMIC_BMI2=0` (meaningless for wasm).
+- **`-sSINGLE_FILE=1`**: the wasm is embedded as base64 in the .js. Costs ~33% size but means no
+  binary blob in git, no sibling-`.wasm` path resolution, and it sidesteps the Safari `.wasm` MIME
+  problem entirely (no `instantiateStreaming` fallback needed). ArrayBuffer instantiation is
+  allowed by the extension CSP's `'wasm-unsafe-eval'`.
 
-Build notes:
+The output (`dev/vendor/zstd/zstd.js`, 492 KB) is **committed**, unlike the other vendored libs:
+rebuilding needs emscripten + network, which the normal build and CI must not require.
+`npm run build:libs` merely copies it to `ext/lib/zstd.js`. See
+[../02-decisions.md](../02-decisions.md) #21.
 
-- Vendor it the same way as sqlite: emit an ESM `.js` + `.wasm` pair and copy them into `ext/lib/`
-  from `dev/build-libs.js` (see `copySqlite`). `ext/lib/*` is gitignored and generated at build.
-- If the file is copied verbatim rather than esbuild-bundled, prepend `// @ts-nocheck` — the tsc
-  project graph reaches it through the codec's import (this bit `copySqlite`; see
-  [../03-progress.md](../03-progress.md)).
-- Safari serves extension `.wasm` without the `application/wasm` MIME, so `instantiateStreaming`
-  fails and the loader must fall back to `ArrayBuffer` instantiation. sqlite's loader already does
-  this; make sure the zstd loader does too.
-- The Safari extension CSP is `script-src 'self' 'wasm-unsafe-eval'` — already set.
+### 2. The codec — `ext/js/dictionary/zstd-payload-codec.js`
 
-### 2. The codec
+`ZstdPayloadCodec` implements the existing `PayloadCodec` interface. The module is injected
+(node tests pass the `dev/vendor` build; the extension self-loads `ext/lib/zstd.js`), mirroring
+sqlite3/pako — [../02-decisions.md](../02-decisions.md) #10. `CDict`/`DDict` are compiled once per
+distinct dictionary and cached in a `WeakMap`, never per row.
 
-Implement `ZstdPayloadCodec` against the existing `PayloadCodec` interface
-(`types/ext/payload-codec.d.ts`). **Use `ext/js/dictionary/deflate-payload-codec.js` as the
-template** — it is the same shape, already wired, and already tested:
+One interface change was needed: **`PayloadCodec.prepare?()`**, awaited by
+`DictionaryDatabaseSqlite.prepare()` for every registered codec. `encode`/`decode` are synchronous
+by contract (they sit inside sqlite's synchronous query/transaction paths) but loading a WASM module
+is not — and a _read_ of already-imported rows never calls `train()`, so there is no other async
+moment to initialize in.
 
-```js
-name: 'zstd'                                     // already in PayloadCodecName
-train(payloadSamples: unknown[][]): Promise<Uint8Array>   // -> ZDICT_trainFromBuffer, ~112 KB
-encode(payload: unknown[], dictionary: ?Uint8Array): Uint8Array
-decode(blob: Uint8Array, dictionary: ?Uint8Array): unknown[]
-```
+### 3. Wiring — already existed, unchanged
 
-Inject the zstd module through the constructor exactly as `DeflatePayloadCodec` takes `pako`, so
-node tests and the browser use the same class (see [../02-decisions.md](../02-decisions.md) #10).
-Cache the `CDict`/`DDict` per dictionary-bytes rather than rebuilding per row.
+Rows are self-describing (`dictionaries.codec` + `codec_dict`), training happens once per dictionary
+before the insert transaction, and the decode codec is picked from a registry by name. None of it
+needed changing to add zstd.
 
-### 3. Wiring (already built — just select it)
+## Measured (synthetic corpus — indicative only)
 
-None of the plumbing needs changing. It already:
+20,000 unique generated rows averaging ~330 B, entropy tuned so neither codec can simply memorize the
+corpus. **Not real dictionary data**: on this corpus `deflate + 32 KB` scores 6.29×, versus 3.55× on
+real `kty-de-en` — so the corpus is still far more compressible than reality and these ratios must
+not be quoted as results. The _shape_ of the findings is what matters:
 
-- stores the codec name per dictionary in `dictionaries.codec` and the trained dictionary in
-  `dictionaries.codec_dict`, so rows are **self-describing** and old rows keep decoding;
-- trains once per dictionary from the first term batch, before the insert transaction, because
-  `train()` is async (`_ensureWriteCodecs` in `dictionary-database-sqlite.js`);
-- selects the decode codec from a registry by the row's codec name.
+| Method                      | Ratio | Encode   |
+| --------------------------- | ----: | -------- |
+| zstd −19, no dictionary     | 1.80× | —        |
+| zstd −19 + raw 112 KB dict  | 5.31× | —        |
+| zstd −19 + **trained** dict | 5.77× | 3 MB/s   |
+| zstd −15 + trained dict     | 5.77× | 10 MB/s  |
+| zstd −12 + trained dict     | 5.57× | 41 MB/s  |
+| zstd −3 + trained dict      | 4.96× | 213 MB/s |
 
-To ship it: construct the backend with `new ZstdPayloadCodec(zstd)` as the write codec (and pass
-the deflate/identity codecs as `decodeCodecs` so existing imports still read), in
-`ext/js/dictionary/dictionary-database-factory.js`.
+Both premises hold: a dictionary is worth ~3×, and **training beats a raw dictionary** (5.77 vs
+5.31), reproducing the direction of the real-data table.
 
-## Acceptance criteria
+**The level sweep contradicts the plan's `−19`.** The ratio plateaus at 15 — levels 15, 19 and 22 are
+identical while 19 is ~3× slower to encode (≈75 s vs ≈26 s for a 253 MB payload). That plateau should
+be structural rather than an artifact of the corpus: at ~330 B/row a longer match search has nothing
+extra to find, because essentially all redundancy resolves against the shared dictionary rather than
+within the row, and real rows are the same order of size (253 MB / 983 k ≈ 257 B). **The codec
+therefore defaults to level 15**, configurable via the constructor. Confirm on real data.
 
-1. `npm test` — add `test/zstd-payload-codec.test.js` mirroring `test/deflate-payload-codec.test.js`
-   (round-trip every payload shape ± a trained dict, empty glossary, structured content, `null`
-   definitionTags, missing termTags; assert compression beats identity; assert the dict size cap).
-2. `test/translator-sqlite.test.js` — add `'sqlite-zstd'` to the backend loop so all 49 translator
-   fixtures pass end-to-end through zstd, matching the canonical expected results.
-3. `npm run test:safari` — the real-Safari runner must stay green with zstd selected (this is what
-   catches WASM/OPFS problems node cannot see; it already caught one).
-4. **Measure on real data**: import `kty-de-en` and record the actual OPFS size against the ~46 MB
-   payload / ~100 MB total target. Write the number back into this file and
-   [../01-design.md](../01-design.md) §4 — the size claim is currently unverified in-tree.
+## Tests
 
-## Fallback if the build proves impractical
+- `test/zstd-payload-codec.test.js` (12) — round-trips every payload shape ± trained dict, the
+  unprepared-use error, `prepare` idempotence, dictionary capacity, the empty-dictionary fallback,
+  compression vs identity, and rejecting a non-zstd blob.
+- `test/dictionary-database-sqlite-codec.test.js` — a 2,000-row zstd import asserting the trained
+  dictionary is **persisted to `codec_dict` and read back through it** after the codec cache is
+  dropped (the real cold-start path), plus a full round-trip of every row.
+- `test/translator-sqlite.test.js` — all 49 translator fixtures now run through `sqlite-zstd` as well
+  (147 tests = 49 × 3 backends), matching the canonical expected results. Note the test dictionary is
+  far too small for ZDICT, so these runs exercise the **empty-dictionary fallback** — itself worth
+  covering, since every small imported dictionary hits it in production.
+- `npm run test:safari` — 17/17 in real Safari, including that the zstd module instantiates under
+  WebKit + CSP, ZDICT trains there, and a trained dictionary survives close/reopen.
 
-The shipped `deflate` codec (3.55×) is a legitimate stopping point — it is pure JS, has no WASM
-build step, and is already green everywhere. The `codec` column means a later zstd rollout does not
-invalidate existing imports: new imports simply get `codec = 'zstd'`, and old `deflate` rows keep
-decoding through the registry. So this task can be deferred without blocking the Stage 5 flip.
+**The Safari runner caught a real bug again**, exactly the kind node cannot see: `decode` passed
+`TextDecoder` a `subarray` **view** into the WASM heap, which WebKit rejects with a `TypeError`
+while node accepts it. Fixed by copying out with `slice` first (as `train`/`encode` already did).
+
+## What is left
+
+1. **Measure on real data** — import `kty-de-en` and record the actual OPFS size against the ~46 MB
+   payload / ~100 MB total target, at level 15 and 19. This is the last unverified claim in the whole
+   refactor, and it also settles deflate-vs-zstd: the synthetic corpus cannot, because it flatters
+   deflate (6.29× vs its real 3.55×).
+2. **Select the codec** in `ext/js/dictionary/dictionary-database-factory.js`. It still constructs
+   the backend with the default identity codec. Shipping zstd means
+   `new DictionaryDatabaseSqlite(new ZstdPayloadCodec(), [new DeflatePayloadCodec(pako)])` — passing
+   deflate as a decode codec so any existing deflate imports stay readable. Deliberately not done
+   here: it is a Stage 5 shipping decision that depends on (1).
+3. **Confirm the level** once (1) exists.
+
+## Fallback if zstd is not shipped
+
+The `deflate` codec (3.55×, pure JS, no build step) remains a legitimate stopping point. The `codec`
+column means the choice is not permanent in either direction: new imports get whichever codec is
+selected, and old rows keep decoding through the registry.

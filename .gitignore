@@ -16,3 +16,6 @@ dictionaries/
 ext/manifest.json
 
 ext/lib/*
+
+# zstd build cache (source tarball + extracted tree); the built output in dev/vendor/zstd is committed
+dev/zstd/.build/

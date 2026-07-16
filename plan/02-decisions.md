@@ -4,6 +4,16 @@ Condensed record of the decisions behind this refactor, oldest first within each
 Rationale/measurements in full are in [01-design.md](01-design.md). Format: **Decision** —
 rationale — _status_.
 
+**Numbers are permanent IDs**, referenced from the code and the other plan docs, so renumbering
+silently breaks every existing reference.
+
+**To add a decision, append it in a new trailing section** — never insert one mid-document, even into
+the group it belongs to thematically. The pre-commit `prettier --write` renumbers each ordered list
+from its own first item, so inserting into a group shifts every later number in it _and_ collides
+with the next group (which keeps its literal starting number). This already happened once: three
+decisions appended to "Implementation patterns" were rewritten 21→16, 22→17, 23→18, duplicating the
+16–18 in "Migration / scope". Sections exist for reading, but the numbers are the contract.
+
 ## Architecture
 
 1. **Replace IndexedDB with SQLite-WASM on OPFS**, behind the existing `DictionaryDatabase`
@@ -46,8 +56,9 @@ rationale — _status_.
 9. **Trained zstd dictionary per imported dictionary is the target codec** (~5.5× on the
    payload). — A shared dictionary is required (per-row compression of tiny payloads is
    otherwise net-negative); raw/untrained only gets ~2.8×, trained gets 5.5×. Needs a **custom
-   zstd WASM build** exposing `ZDICT_trainFromBuffer`. — _not started; blocked on the WASM build.
-   Full task spec in [zstd/](zstd/README.md)._
+   zstd WASM build** exposing `ZDICT_trainFromBuffer`. — _built and tested, **not selected**: the
+   factory still writes with identity. Shipping waits on a real-data measurement, which is also what
+   settles deflate-vs-zstd. Full task record in [zstd/](zstd/README.md)._
 
 ## Implementation patterns
 
@@ -99,3 +110,28 @@ rationale — _status_.
 termTags]`) in the IndexedDB rows. — Deterministic ~10% shrink and a stepping stone; the
     payload array shape carries directly onto the SQLite `payload` BLOB. — _shipped (commit
     `7edfb9b2`)._
+
+## zstd task
+
+Implementation patterns from the [zstd/](zstd/README.md) task. They belong with #10–#15 by theme but
+live here because appending is the only safe place to add one — see the note at the top.
+
+21. **The zstd WASM build is committed under `dev/vendor/`, not generated at build time.** — Every
+    other vendored lib comes from an npm package and is regenerated into the gitignored `ext/lib/`,
+    but no published zstd WASM build exposes `ZDICT_trainFromBuffer` (verified: `@bokuweb/zstd-wasm`
+    and `zstd-codec` have no `ZDICT_*` symbols), so it is built from source by `dev/zstd/build.sh`.
+    Requiring emscripten + network for a normal build or CI run is unacceptable, so the artifact is
+    committed and `build:libs` only copies it. `-sSINGLE_FILE=1` embeds the wasm as base64 in the
+    .js, which keeps it text rather than a binary blob in git and sidesteps Safari's `.wasm` MIME
+    problem (#18 / the `instantiateStreaming` fallback) entirely. The source tarball is pinned by
+    sha256 and the build refuses to run on a mismatch. — _adopted._
+22. **`PayloadCodec.prepare?()`, awaited by `DictionaryDatabaseSqlite.prepare()`.** — `encode`/
+    `decode` are synchronous because they sit inside sqlite's synchronous query/transaction paths,
+    but a WASM-backed codec must load its module first, and reading already-imported rows never
+    calls `train()` — so there is no other async moment to initialize in. Optional, so identity and
+    deflate ignore it. — _adopted._
+23. **Default zstd level is 15, not the 19 the design assumed.** — Measured sweep: the ratio plateaus
+    at 15 (15/19/22 identical) while 19 costs ~3× the encode time. Structural rather than corpus-
+    specific: at ~330 B/row a longer match search finds nothing extra, since the redundancy resolves
+    against the shared dictionary, not within the row. — _adopted provisionally; confirm on real
+    data ([zstd/](zstd/README.md))._
