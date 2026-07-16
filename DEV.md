@@ -1,16 +1,25 @@
 # DEV notes
 
-## Rebuilding the zstd WASM module
+## Building the zstd WASM module (once per clone)
 
 ```sh
-npm run build:zstd      # needs emscripten (brew install emscripten); rarely needed
+brew install emscripten
+npm run build:zstd
 ```
 
 The zstd + ZDICT module is built from zstd source rather than taken from npm, because **no published
 zstd WASM package exposes `ZDICT_trainFromBuffer`** — the dictionary trainer the payload codec needs.
-Its output is committed at `dev/vendor/zstd/zstd.js`, so a normal build/test/CI run needs neither
-emscripten nor network; `npm run build:libs` only copies it into `ext/lib/`. Details in
-[dev/zstd/README.md](dev/zstd/README.md).
+The reproducible build script is committed; its ~500 KB output is not (`dev/vendor/` is gitignored,
+like `ext/lib/`), so run it once after cloning and again only when upgrading zstd. Until then the
+zstd tests fail with a message telling you this. `npm run build:libs` copies the result into
+`ext/lib/`. Details in [dev/zstd/README.md](dev/zstd/README.md).
+
+To measure the codecs against a real dictionary (downloads ~24 MB, cached in `dictionaries/`):
+
+```sh
+npm run measure:zstd            # payload ratios on the real kty-de-en
+npm run measure:zstd -- --db    # ...plus a true SQLite database size
+```
 
 ## Running tests in real Safari without stealing focus
 

@@ -56,9 +56,12 @@ decisions appended to "Implementation patterns" were rewritten 21→16, 22→17,
 9. **Trained zstd dictionary per imported dictionary is the target codec** (~5.5× on the
    payload). — A shared dictionary is required (per-row compression of tiny payloads is
    otherwise net-negative); raw/untrained only gets ~2.8×, trained gets 5.5×. Needs a **custom
-   zstd WASM build** exposing `ZDICT_trainFromBuffer`. — _built and tested, **not selected**: the
-   factory still writes with identity. Shipping waits on a real-data measurement, which is also what
-   settles deflate-vs-zstd. Full task record in [zstd/](zstd/README.md)._
+   zstd WASM build** exposing `ZDICT_trainFromBuffer`. — _built and tested, **not selected**. The
+   ~5.5× **did not reproduce** when finally measured on real `kty-de-en` data: with the parameters
+   this decision assumed (110 KB dictionary) zstd gets 3.15× and loses to deflate's 3.55×. Sizing
+   the dictionary properly (1.9 MB, needing ~200k training rows buffered) gets 4.47× / 56.8 MB and
+   decodes ~8× faster than deflate (2.7 vs 21.4 µs/row). The dictionary-is-mandatory half of this decision holds; the
+   number does not. See [zstd/](zstd/README.md)._
 
 ## Implementation patterns
 
@@ -116,15 +119,17 @@ termTags]`) in the IndexedDB rows. — Deterministic ~10% shrink and a stepping 
 Implementation patterns from the [zstd/](zstd/README.md) task. They belong with #10–#15 by theme but
 live here because appending is the only safe place to add one — see the note at the top.
 
-21. **The zstd WASM build is committed under `dev/vendor/`, not generated at build time.** — Every
-    other vendored lib comes from an npm package and is regenerated into the gitignored `ext/lib/`,
-    but no published zstd WASM build exposes `ZDICT_trainFromBuffer` (verified: `@bokuweb/zstd-wasm`
-    and `zstd-codec` have no `ZDICT_*` symbols), so it is built from source by `dev/zstd/build.sh`.
-    Requiring emscripten + network for a normal build or CI run is unacceptable, so the artifact is
-    committed and `build:libs` only copies it. `-sSINGLE_FILE=1` embeds the wasm as base64 in the
-    .js, which keeps it text rather than a binary blob in git and sidesteps Safari's `.wasm` MIME
-    problem (#18 / the `instantiateStreaming` fallback) entirely. The source tarball is pinned by
-    sha256 and the build refuses to run on a mismatch. — _adopted._
+21. **The zstd WASM build is a committed _script_, not a committed artifact.** — No published zstd
+    WASM build exposes `ZDICT_trainFromBuffer` (verified: `@bokuweb/zstd-wasm` and `zstd-codec` have
+    no `ZDICT_*` symbols), so unlike every other lib it cannot come from npm; `dev/zstd/build.sh`
+    builds it from source and `npm run build:libs` copies the result to `ext/lib/`. What is
+    committed is the reproducible build (pinned zstd version + sha256, refusing to run on a
+    mismatch), not its ~500 KB output — `dev/vendor/` is gitignored like `ext/lib/`, and the build
+    is cached locally. The cost is that a fresh clone must run `npm run build:zstd` once (needs
+    emscripten) before the zstd tests or a build; there is no CI to serve, so a local cache is
+    enough. `-sSINGLE_FILE=1` embeds the wasm in the .js: one artifact, no sibling-`.wasm` path
+    resolution, and Safari's missing `application/wasm` MIME (#18 / the `instantiateStreaming`
+    fallback) never comes up, for ~8% size (502 KB vs 464 KB split). — _adopted._
 22. **`PayloadCodec.prepare?()`, awaited by `DictionaryDatabaseSqlite.prepare()`.** — `encode`/
     `decode` are synchronous because they sit inside sqlite's synchronous query/transaction paths,
     but a WASM-backed codec must load its module first, and reading already-imported rows never
@@ -133,5 +138,16 @@ live here because appending is the only safe place to add one — see the note a
 23. **Default zstd level is 15, not the 19 the design assumed.** — Measured sweep: the ratio plateaus
     at 15 (15/19/22 identical) while 19 costs ~3× the encode time. Structural rather than corpus-
     specific: at ~330 B/row a longer match search finds nothing extra, since the redundancy resolves
-    against the shared dictionary, not within the row. — _adopted provisionally; confirm on real
-    data ([zstd/](zstd/README.md))._
+    against the shared dictionary, not within the row. — _adopted; **confirmed on real data**
+    (−15 → 3.14×, −19 → 3.15× on `kty-de-en`)._
+24. **Codec tuning is a constructor option, not a constant.** — `ZstdPayloadCodec` takes
+    `level`/`dictionaryCapacity` and `DictionaryDatabaseSqlite` takes `trainSampleSize`, because the
+    real measurements show the tradeoff is a judgement call rather than a fact: dictionary size is
+    the dominant lever on ratio (110 KB → 3.15×, ~2 MB → 4.63×), it costs nothing on decode, but a
+    bigger dictionary is only trainable by buffering proportionally more of the import (ZDICT wants
+    ~100× the dictionary size in samples). `npm run measure:zstd` re-derives all of it against the
+    real dictionary. — _adopted._
+25. **`trainSampleSize` defaults to 1000, the importer's `maxTransactionLength`.** — Training runs on
+    the first `bulkAdd` batch, so any larger value was silently unreachable (the old constant of 4000
+    was dead). The default now states the real constraint rather than hiding it; raising it means
+    also giving the trainer more than one batch. — _adopted._

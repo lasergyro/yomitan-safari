@@ -16,19 +16,18 @@
  */
 
 import {beforeAll, describe, expect, test} from 'vitest';
-import zstdInitModule from '../dev/vendor/zstd/zstd.js';
 import {IdentityPayloadCodec} from '../ext/js/dictionary/payload-codec.js';
 import {ZstdPayloadCodec} from '../ext/js/dictionary/zstd-payload-codec.js';
+import {loadZstdInitModule} from '../dev/zstd/load.js';
 
 /**
- * The WASM module is injected rather than self-loaded: the vendored copy under dev/vendor is the
- * same artifact `build:libs` copies to ext/lib, but ext/lib only exists after a build, so tests read
- * the source of truth directly. Mirrors how sqlite3/pako are injected (plan/02-decisions.md #10).
+ * The WASM module is injected rather than self-loaded, mirroring sqlite3/pako
+ * (plan/02-decisions.md #10).
  * @param {{level?: number, dictionaryCapacity?: number}} [options]
  * @returns {Promise<ZstdPayloadCodec>}
  */
 async function createCodec(options) {
-    const codec = new ZstdPayloadCodec(/** @type {import('zstd').ZstdInitModule} */ (zstdInitModule), options);
+    const codec = new ZstdPayloadCodec(await loadZstdInitModule(), options);
     await codec.prepare();
     return codec;
 }
@@ -91,8 +90,8 @@ describe('ZstdPayloadCodec', () => {
         expect(codec.name).toBe('zstd');
     });
 
-    test('throws a clear error if used before prepare', () => {
-        const unprepared = new ZstdPayloadCodec(/** @type {import('zstd').ZstdInitModule} */ (zstdInitModule));
+    test('throws a clear error if used before prepare', async () => {
+        const unprepared = new ZstdPayloadCodec(await loadZstdInitModule());
         expect(() => unprepared.encode(samplePayloads[0], null)).toThrow(/not prepared/);
     });
 

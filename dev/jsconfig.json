@@ -51,6 +51,18 @@
             "dictionary-importer-media-loader": [
                 "../types/ext/dictionary-importer-media-loader"
             ],
+            "payload-codec": [
+                "../types/ext/payload-codec"
+            ],
+            "pako": [
+                "../types/ext/pako"
+            ],
+            "sqlite-wasm": [
+                "../types/ext/sqlite-wasm"
+            ],
+            "zstd": [
+                "../types/ext/zstd"
+            ],
             "dynamic-property": [
                 "../types/ext/dynamic-property"
             ],

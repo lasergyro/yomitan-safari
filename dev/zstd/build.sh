@@ -67,13 +67,15 @@ sources=$(find "${src_dir}/lib/common" "${src_dir}/lib/compress" "${src_dir}/lib
 
 echo "==> compiling $(echo "${sources}" | wc -w | tr -d ' ') zstd sources + shim.c"
 
-# SINGLE_FILE embeds the wasm as base64 inside the .js. This costs ~33% size over a separate .wasm
-# but buys three things that matter here:
-#   1. no binary blob in git (decision #12: ext/lib is generated, libs are vendored as text);
+# SINGLE_FILE embeds the wasm inside the .js, costing ~8% (502 KB, vs 464 KB split as 10 KB glue +
+# 454 KB wasm) and buying:
+#   1. one artifact to commit, vendor and copy;
 #   2. Safari serves extension .wasm without the application/wasm MIME, which breaks
 #      instantiateStreaming -- embedding sidesteps the fallback path entirely;
 #   3. no runtime path resolution for a sibling .wasm (which bit the sqlite vendoring).
 # Instantiation from an ArrayBuffer is allowed by the extension CSP's 'wasm-unsafe-eval'.
+# It does NOT keep a binary out of git: emscripten embeds an escaped binary string rather than
+# base64, so the output holds NUL/high bytes. .gitattributes marks it -text accordingly.
 emcc -O3 \
     -DZSTD_MULTITHREAD=0 \
     -DZSTD_DISABLE_ASM=1 \

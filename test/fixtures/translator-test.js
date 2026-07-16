@@ -21,7 +21,6 @@ import {IDBKeyRange, indexedDB} from 'fake-indexeddb';
 import * as pako from 'pako';
 import {expect, vi} from 'vitest';
 import {createDictionaryArchiveData} from '../../dev/dictionary-archive-util.js';
-import zstdInitModule from '../../dev/vendor/zstd/zstd.js';
 import {DeflatePayloadCodec} from '../../ext/js/dictionary/deflate-payload-codec.js';
 import {DictionaryDatabase} from '../../ext/js/dictionary/dictionary-database.js';
 import {DictionaryImporter} from '../../ext/js/dictionary/dictionary-importer.js';
@@ -30,6 +29,7 @@ import {ZstdPayloadCodec} from '../../ext/js/dictionary/zstd-payload-codec.js';
 import {Translator} from '../../ext/js/language/translator.js';
 import {chrome, fetch} from '../mocks/common.js';
 import {DictionaryImporterMediaLoader} from '../mocks/dictionary-importer-media-loader.js';
+import {loadZstdInitModule} from '../../dev/zstd/load.js';
 import {createDomTest} from './dom-test.js';
 
 vi.stubGlobal('indexedDB', indexedDB);
@@ -41,12 +41,12 @@ vi.stubGlobal('chrome', chrome);
  * The write codec for a sqlite backend variant; `undefined` leaves the backend on its identity
  * default. `DictionaryDatabaseSqlite.prepare()` initializes whatever codec it is given.
  * @param {'sqlite'|'sqlite-deflate'|'sqlite-zstd'|string} backend
- * @returns {import('payload-codec').PayloadCodec|undefined}
+ * @returns {Promise<import('payload-codec').PayloadCodec|undefined>}
  */
-function createCodec(backend) {
+async function createCodec(backend) {
     switch (backend) {
         case 'sqlite-deflate': return new DeflatePayloadCodec(pako);
-        case 'sqlite-zstd': return new ZstdPayloadCodec(/** @type {import('zstd').ZstdInitModule} */ (zstdInitModule));
+        case 'sqlite-zstd': return new ZstdPayloadCodec(await loadZstdInitModule());
         default: return void 0;
     }
 }
@@ -68,7 +68,7 @@ function createCodec(backend) {
 async function createDictionaryDatabaseBackend(backend) {
     if (backend.startsWith('sqlite')) {
         const sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
-        const database = new DictionaryDatabaseSqlite(createCodec(backend));
+        const database = new DictionaryDatabaseSqlite(await createCodec(backend));
         await database.prepare({sqlite3, vfs: 'memory'});
         return /** @type {DictionaryDatabase} */ (/** @type {unknown} */ (database));
     }

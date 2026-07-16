@@ -138,9 +138,11 @@ resolved; the remaining question is a shipping decision, not an engineering one.
   BigInt and reuses the CCtx/DCtx. The custom build was genuinely necessary: no published zstd WASM
   package exposes `ZDICT_trainFromBuffer` (verified — `@bokuweb/zstd-wasm` and `zstd-codec` contain
   no `ZDICT_*` symbols at all).
-- **Committed artifact** (`dev/vendor/zstd/zstd.js`, 492 KB, `-sSINGLE_FILE`): unlike the other libs
-  it is committed, so a normal build/CI run needs neither emscripten nor network; `build:libs` just
-  copies it to `ext/lib/zstd.js`. See [02-decisions.md](02-decisions.md) #21.
+- **The build script is committed, not the artifact** ([02-decisions.md](02-decisions.md) #21):
+  `dev/vendor/` is gitignored like `ext/lib/`, so a fresh clone runs `npm run build:zstd` once
+  (needs emscripten) before the zstd tests or a build; `build:libs` then copies the module to
+  `ext/lib/zstd.js`. There is no CI to serve, so a local cache is enough. The tests fail with a
+  message naming the command when the build is absent (`test/utilities/zstd.js`).
 - **`ZstdPayloadCodec`** (`ext/js/dictionary/zstd-payload-codec.js`): module injected as usual;
   CDict/DDict compiled once per dictionary (WeakMap), never per row; `train()` returns empty when
   ZDICT refuses a too-small corpus, which the backend already maps to "no dictionary".
@@ -153,10 +155,24 @@ resolved; the remaining question is a shipping decision, not an engineering one.
   `dictionary-database-sqlite-codec.test.js` asserting the trained dictionary is persisted to
   `codec_dict` and read back through it after the cache is dropped; all 49 translator fixtures
   through `sqlite-zstd` (147 = 49 × 3); 17/17 in real Safari.
-- **Not measured on real data.** The 5.52×/~46 MB figures predate this work and were not reproduced —
-  `kty-de-en` is not in the repo. The synthetic corpus confirms the _shape_ (trained 5.77× > raw
-  5.31× > no dict 1.80×) but flatters deflate (6.29× vs its real 3.55×), so it cannot settle
-  deflate-vs-zstd.
+- **Measured on the real `kty-de-en`** (`npm run measure:zstd`, `dev/zstd/measure.js`; downloads the
+  24 MB dictionary into the gitignored `dictionaries/` and caches it, checksum-pinned). 947,070 rows,
+  253.9 MB of payload. Headline: **the design's 5.52× / ~46 MB does not reproduce**, and with the
+  plan's own parameters (110 KB dictionary) zstd _loses_ to deflate — 3.15× vs 3.55×. deflate
+  reproduces the design's 3.55× exactly, which is what makes the zstd result trustworthy rather than
+  a setup difference. Sizing the dictionary properly (1.9 MB, trained on 200k rows) gives
+  **4.47× / 56.8 MB** at −15 (4.63× / 54.9 MB at −19), and decode is **~8× faster than deflate**
+  (2.7 vs 21.4 µs/row) — within 1 µs/row of raw JSON — with dictionary size costing nothing on
+  decode. So the codec that saves the most also reads the fastest; deflate is the slow one on the
+  query path. Full tables and the open decision in [zstd/](zstd/README.md).
+- **Tunable rather than baked in** ([02-decisions.md](02-decisions.md) #24, #25): `ZstdPayloadCodec`
+  takes `level`/`dictionaryCapacity`, `DictionaryDatabaseSqlite` takes `trainSampleSize`, and
+  `measure:zstd` takes `--level/--dict-cap/--train/--rows/--db`. The tradeoff is a judgement call, so
+  it should be re-derivable rather than argued from memory.
+- **Found: `_trainSampleSize = 4000` was unreachable.** The importer's `maxTransactionLength` is 1000
+  and training runs on the first `bulkAdd` batch, so the trainer only ever saw 1000 rows (→ 3.05×,
+  worse than deflate). The default now states that real limit; raising it means buffering more of the
+  import before the first insert, which is the actual cost of choosing zstd.
 
 ## Stage 5 — NOT STARTED: what is required before flipping `USE_SQLITE_BACKEND`
 
@@ -168,8 +184,10 @@ resolved; the remaining question is a shipping decision, not an engineering one.
 2. **Settings-page migration UX**: call `legacyIndexedDbDictionaryExists()` on startup, prompt for
    re-import, then `deleteLegacyIndexedDbDictionary()`. Only the helpers exist today; no UI.
 3. **Call `finalizeImport()`** after an import completes (the importer does not call it yet).
-4. **Real-data measurement** on `kty-de-en` — the 1.2 GB → ~100 MB claim is unverified in-tree, and
-   it is what settles deflate-vs-zstd and the zstd level. The single most valuable remaining step.
+4. **Real-data measurement** on `kty-de-en` — `npm run measure:zstd` now does the payload half of
+   this (see the zstd section above). Still unverified: the **whole-database** size, which is what
+   the ~100 MB target is really about — payload ratios ignore the indexes. `measure:zstd -- --db`
+   imports through the real backend and reports `page_count * page_size`.
 5. **Pick the shipped codec.** The factory uses the default identity codec; for compression it must
    pass `DeflatePayloadCodec` (with vendored pako) or the now-built [zstd](zstd/README.md) codec
    (plus the other as a decode codec, so earlier imports stay readable).

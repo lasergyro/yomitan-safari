@@ -82,8 +82,11 @@ export class DictionaryDatabaseSqlite {
      * @param {import('payload-codec').PayloadCodec[]} [decodeCodecs] Extra codecs available for
      *   decoding rows written by a different codec (rows are self-describing via the `codec`
      *   column). The write codec and an identity codec are always registered.
+     * @param {{trainSampleSize?: number}} [options] `trainSampleSize` is how many payloads a
+     *   compressing codec trains its per-dictionary dictionary from; see the field below for why
+     *   raising it is not free.
      */
-    constructor(codec = new IdentityPayloadCodec(), decodeCodecs = []) {
+    constructor(codec = new IdentityPayloadCodec(), decodeCodecs = [], {trainSampleSize = 1000} = {}) {
         /** @type {import('sqlite-wasm').SqliteDatabaseHandle?} */
         this._db = null;
         /** @type {import('payload-codec').PayloadCodec} The write/default codec for new imports. */
@@ -101,8 +104,17 @@ export class DictionaryDatabaseSqlite {
         this._titleToId = new Map();
         /** @type {Map<number, string>} */
         this._idToTitle = new Map();
-        /** How many payloads to sample when training a per-dictionary codec dictionary. */
-        this._trainSampleSize = 4000;
+        /**
+         * How many payloads to sample when training a per-dictionary codec dictionary.
+         *
+         * The ceiling is the importer's batch size (`maxTransactionLength`, 1000), because training
+         * happens on the first `bulkAdd` batch — a larger value here does nothing on its own. It
+         * matters because ZDICT needs roughly 100x the dictionary size in samples, so a bigger
+         * trained dictionary means buffering more of the import before the first insert. Measured
+         * tradeoffs are in plan/zstd/README.md; `npm run measure:zstd` re-runs them.
+         * @type {number}
+         */
+        this._trainSampleSize = trainSampleSize;
     }
 
     /**

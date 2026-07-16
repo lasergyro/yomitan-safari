@@ -18,10 +18,10 @@
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import * as pako from 'pako';
 import {beforeAll, describe, expect, test} from 'vitest';
-import zstdInitModule from '../dev/vendor/zstd/zstd.js';
 import {DeflatePayloadCodec} from '../ext/js/dictionary/deflate-payload-codec.js';
 import {DictionaryDatabaseSqlite} from '../ext/js/dictionary/sqlite/dictionary-database-sqlite.js';
 import {ZstdPayloadCodec} from '../ext/js/dictionary/zstd-payload-codec.js';
+import {loadZstdInitModule} from '../dev/zstd/load.js';
 
 const dictionaryName = 'Codec Test Dictionary';
 const dictionaries = new Set([dictionaryName]);
@@ -126,7 +126,7 @@ describe('DictionaryDatabaseSqlite zstd codec self-description', () => {
 
     beforeAll(async () => {
         const sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
-        backend = new DictionaryDatabaseSqlite(new ZstdPayloadCodec(/** @type {import('zstd').ZstdInitModule} */ (zstdInitModule)));
+        backend = new DictionaryDatabaseSqlite(new ZstdPayloadCodec(await loadZstdInitModule()));
         await backend.prepare({sqlite3, vfs: 'memory'});
         /** @type {import('dictionary-importer').Summary} */
         const summary = {title: zstdDictionaryName, revision: 'r1', sequenced: false, version: 3, importDate: 0, prefixWildcardsSupported: false, styles: ''};

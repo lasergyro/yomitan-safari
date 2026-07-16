@@ -6,9 +6,10 @@ Builds the WebAssembly module behind `ext/js/dictionary/zstd-payload-codec.js`.
 npm run build:zstd      # needs emscripten: brew install emscripten
 ```
 
-**You almost never need to run this.** The output (`dev/vendor/zstd/zstd.js`) is committed, and
-`npm run build:libs` just copies it into `ext/lib/`. Re-run it only to upgrade zstd or change build
-flags — then commit the result.
+**Run this once after cloning**, and again only to upgrade zstd or change build flags. The output
+(`dev/vendor/zstd/zstd.js`) is gitignored and cached locally — this script is what's committed, not
+its ~500 KB result — and `npm run build:libs` copies it into `ext/lib/`. Until it has been run, the
+zstd tests fail with a message pointing back here.
 
 ## Why a custom build
 
@@ -27,7 +28,20 @@ untrained dictionary reaches ~2.8× where a trained one reaches ~5.5×.
   zstd's error sentinels into plain negative returns.
 - `.build/` — gitignored cache of the downloaded tarball and extracted source.
 
-The build is `-sSINGLE_FILE=1`, so the wasm is embedded as base64 in the .js: no binary in git, no
-sibling-`.wasm` path resolution, and no dependence on Safari serving `application/wasm` correctly.
+The build is `-sSINGLE_FILE=1`, so the wasm is embedded in the .js: one artifact, no sibling-`.wasm`
+path resolution, and no dependence on Safari serving `application/wasm` correctly. It costs ~8% over
+a separate `.wasm`.
+
+## Measuring against a real dictionary
+
+```sh
+npm run measure:zstd            # payload codec ratios on the real kty-de-en dictionary
+npm run measure:zstd -- --db    # ...and import it into SQLite for a true database size
+npm run measure:zstd -- --rows=20000   # a fast subset run
+```
+
+`measure.js` downloads `kty-de-en` (~24 MB, checksum-pinned) into the gitignored `dictionaries/` and
+caches it. This is the only measurement that settles deflate-vs-zstd: a synthetic corpus flatters
+deflate badly. Results live in [../../plan/zstd/README.md](../../plan/zstd/README.md).
 
 Background and measurements: [../../plan/zstd/README.md](../../plan/zstd/README.md).
