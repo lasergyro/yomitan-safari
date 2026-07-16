@@ -15,10 +15,16 @@ Target: ~1.2 GB → ~100 MB. Branch: **`safari-refactor`**.
   and nothing user-visible has changed. `DictionaryDatabaseSqlite` has full API parity, passes the
   real importer/translator fixtures end-to-end (identity, deflate **and** zstd codecs), passes 17/17
   checks in **real Safari**, and is wired behind `createDictionaryDatabase()`.
+- **Heads-up on the numbers:** the payload codecs have now been measured on the real `kty-de-en`
+  (`npm run measure:zstd`) and **the design's zstd claim (5.52× / ~46 MB) does not reproduce** — with
+  the parameters the plan assumed it gets 3.15× and _loses_ to deflate's 3.55×. Sized properly
+  (a 1.9 MB trained dictionary) zstd reaches 4.63× / ~55 MB and decodes ~8× faster than deflate.
+  [zstd/](zstd/README.md) has the tables; [01-design.md](01-design.md) §4/§8.2 is stale on this.
 - **What gates the Stage 5 flip:**
-  1. a **real-data measurement** on `kty-de-en` — the 1.2 GB → ~100 MB claim has never been
-     reproduced in-tree, and it decides which codec ships (and at which level);
-  2. **selecting a codec** in the factory (it still writes with identity);
+  1. **selecting a codec** in the factory (it still writes with identity) — and if zstd, buffering
+     ~200k rows during import so its dictionary can be trained;
+  2. the **whole-database** size is still unmeasured (`npm run measure:zstd -- --db`); the ~100 MB
+     target is about the file, and payload ratios ignore the indexes;
   3. **extension-origin verification** (`./rebuild-safari.sh` + a manual scan pass).
      See [03-progress.md](03-progress.md) → "Stage 5".
 - **Feature flag:** `USE_SQLITE_BACKEND` in `ext/js/dictionary/dictionary-backend-config.js`
@@ -43,7 +49,8 @@ npm run build -- --target safari      # build only the safari variant
 ./rebuild-safari.sh                   # rebuild + reinstall into Safari (quits/relaunches it)
 npm test                              # full vitest suite (includes the SQLite backend tests)
 npm run test:safari                   # run the backend in REAL Safari, backgrounded (no focus steal)
-npm run build:zstd                    # rebuild the zstd WASM module (needs emscripten; rarely)
+npm run build:zstd                    # build the zstd WASM module (needs emscripten; once per clone)
+npm run measure:zstd                  # measure the codecs against the real kty-de-en dictionary
 npx tsc --noEmit -p jsconfig.json     # main type-check
 npm run test:ts:test                  # type-check the test/ project
 npx eslint . --ignore-pattern '**/*.json'

@@ -110,21 +110,27 @@ difference.
 deflate** (3.15× vs 3.55×). The parameters are the reason, not zstd: a **110 KB dictionary is far too
 small for a 254 MB corpus**. Sweeping the dictionary capacity (all at −19, full corpus):
 
-| Trained dictionary                       |     Ratio |     Payload |
-| ---------------------------------------- | --------: | ----------: |
-| 110 KB cap, 4k training samples          |     3.15× |     80.6 MB |
-| 110 KB cap, 100k training samples        |     3.15× |     80.6 MB |
-| 1 MB cap, 100k samples                   |     3.36× |     75.5 MB |
-| **4 MB cap → 3.0 MB dict, 400k samples** | **4.34×** | **58.5 MB** |
-| 8 MB cap → 3.7 MB dict, 900k samples     |     4.23× |     60.1 MB |
+| Trained dictionary                            |     Ratio |     Payload |
+| --------------------------------------------- | --------: | ----------: |
+| 110 KB cap, 1k samples — **production today** |     3.05× |     83.3 MB |
+| 110 KB cap, 4k samples                        |     3.15× |     80.6 MB |
+| 110 KB cap, 100k samples                      |     3.15× |     80.6 MB |
+| 512 KB cap, 50k samples                       |     3.20× |     79.2 MB |
+| 1 MB cap, 100k samples                        |     3.36× |     75.5 MB |
+| **2 MB cap → 1.9 MB dict, 200k samples**      | **4.63×** | **54.9 MB** |
+| 4 MB cap → 3.0 MB dict, 400k samples          |     4.34× |     58.5 MB |
+| 8 MB cap → 3.7 MB dict, 900k samples          |     4.23× |     60.1 MB |
+
+The peak is a **~2 MB dictionary**; past that it regresses, so this is not a "bigger is always
+better" knob — 4 MB and 8 MB are both worse than 2 MB.
 
 Three things fall out of this:
 
 1. **Dictionary capacity is the whole lever; training-sample count alone does nothing.** 4k vs 100k
    samples at a 110 KB cap are byte-for-byte identical (3.15×). Sample count only matters because
    ZDICT needs roughly 100× the dictionary size in samples before it can fill a larger one.
-2. **Properly sized, zstd does beat deflate** — 58.5 MB vs 71.5 MB, 18% smaller — but at ~4.3×, not
-   5.5×. Returns go negative past ~3 MB of dictionary.
+2. **Properly sized, zstd does beat deflate** — 54.9 MB vs 71.5 MB, 23% smaller — but at ~4.6×, not
+   5.5×. Returns go negative past ~2 MB of dictionary.
 3. **The gap at 110 KB is per-row framing.** zstd costs 85.1 B/row against deflate's 75.5 B/row, and
    ~10 B/row is exactly a zstd frame header (magic + FHD + dictID + content size + block header),
    which raw DEFLATE does not have. On 268 B rows that overhead is ~4% of the payload. It could be

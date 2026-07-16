@@ -9,9 +9,15 @@ what's left see [03-progress.md](03-progress.md); for the condensed decision log
 > **Note:** this document describes the _plan as originally written_. Where it and
 > [03-progress.md](03-progress.md) disagree, progress wins — it records what was actually built.
 > Known drift: the staged plan in §9 is done through Stage 4 (the flag is still off); the zstd
-> codec of §8.2 was **not** built and now lives in [zstd/](zstd/README.md), with `deflate`
-> shipping in its place; the size numbers in §3/§4 are measurements from the _analysis_, not
-> from a real import through the new backend.
+> codec of §8.2 has since been built and lives in [zstd/](zstd/README.md); the size numbers in
+> §3/§4 are measurements from the _analysis_, not from a real import through the new backend.
+>
+> **§4's zstd row is wrong.** The **5.52× / ~46 MB** for a ZDICT-trained 112 KB dictionary does not
+> reproduce: measured against the real `kty-de-en` via `npm run measure:zstd`, that configuration
+> gets **3.15×** and _loses_ to deflate's 3.55× (which reproduces exactly). A 112 KB dictionary is
+> simply too small for a 254 MB corpus; ~1.9 MB gets 4.63× / ~55 MB, and needs ~200k rows buffered
+> to train on. §4's deflate rows still hold. See [zstd/](zstd/README.md) for the real tables — every
+> "~46 MB" in this document (§4, §9, §12) should be read as **~55 MB at best**.
 
 ---
 
@@ -161,14 +167,14 @@ Payload = `[definitionTags, rules, score, glossary, termTags]` serialized to com
 (~253 MB total over the 983,520 rows). Per-row compression (each row independently, so it is
 randomly decodable):
 
-| Method                                                           | Ratio     | Payload result |
-| ---------------------------------------------------------------- | --------- | -------------- |
-| per-row deflate, no dictionary                                   | 2.24×     | 113 MB         |
-| per-row deflate + 32 KB shared preset dict (pako-style, pure JS) | **3.55×** | ~71 MB         |
-| per-row zstd −19, no dictionary                                  | 2.09×     | —              |
-| per-row zstd −19 + **raw** (untrained) 112 KB content dict       | 2.82×     | —              |
-| **per-row zstd −19 + 112 KB ZDICT-trained dict**                 | **5.52×** | ~46 MB         |
-| whole-corpus gzip (not random-access; theoretical floor)         | ~12.8×    | —              |
+| Method                                                                                         | Ratio     | Payload result |
+| ---------------------------------------------------------------------------------------------- | --------- | -------------- |
+| per-row deflate, no dictionary                                                                 | 2.24×     | 113 MB         |
+| per-row deflate + 32 KB shared preset dict (pako-style, pure JS)                               | **3.55×** | ~71 MB         |
+| per-row zstd −19, no dictionary                                                                | 2.09×     | —              |
+| per-row zstd −19 + **raw** (untrained) 112 KB content dict                                     | 2.82×     | —              |
+| **per-row zstd −19 + 112 KB ZDICT-trained dict** — **DID NOT REPRODUCE; really 3.15× / 81 MB** | **5.52×** | ~46 MB         |
+| whole-corpus gzip (not random-access; theoretical floor)                                       | ~12.8×    | —              |
 
 Conclusions (already decided): a **shared dictionary is required** (per-row compression of tiny
 payloads is otherwise net-negative). **zstd + a trained dictionary (5.5×) is the target.** A

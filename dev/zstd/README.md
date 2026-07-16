@@ -41,7 +41,12 @@ npm run measure:zstd -- --rows=20000   # a fast subset run
 ```
 
 `measure.js` downloads `kty-de-en` (~24 MB, checksum-pinned) into the gitignored `dictionaries/` and
-caches it. This is the only measurement that settles deflate-vs-zstd: a synthetic corpus flatters
-deflate badly. Results live in [../../plan/zstd/README.md](../../plan/zstd/README.md).
+caches it. This is the only measurement that settles deflate-vs-zstd, and it already overturned the
+design's headline number — full results and the reasoning live in
+[../../plan/zstd/README.md](../../plan/zstd/README.md).
+
+Useful knobs: `--train=N` (rows to train the dictionary on), `--dict-cap=BYTES`, `--level=N`,
+`--rows=N`. Dictionary capacity is the dominant lever on ratio and costs nothing on decode, but a
+larger dictionary is only trainable by buffering proportionally more of the import.
 
 Background and measurements: [../../plan/zstd/README.md](../../plan/zstd/README.md).
