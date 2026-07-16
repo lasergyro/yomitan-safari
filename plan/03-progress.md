@@ -42,7 +42,7 @@ oldest → newest. Full design in [01-design.md](01-design.md); decisions in
   `openDictionaryDatabaseHandle(sqlite3, {vfs, path?, initialCapacity?})`. `vfs:'opfs'` →
   `installOpfsSAHPoolVfs` + `OpfsSAHPoolDb`; `vfs:'memory'` → `new sqlite3.oo1.DB(':memory:')`.
   Sets `page_size`/`synchronous`/`temp_store`, then creates the schema. **`sqlite3` is injected**
-  (not imported here) — see [02-decisions.md](02-decisions.md) #9.
+  (not imported here) — see [02-decisions.md](02-decisions.md) #10.
 - **Schema** (`ext/js/dictionary/sqlite/dictionary-sqlite-schema.js`): `createDictionarySchema(db)`
   runs the DDL (`dictionaries, terms, term_meta, kanji, kanji_meta, tag_meta, media`) and sets
   `PRAGMA user_version = DICTIONARY_SQLITE_SCHEMA_VERSION` (=1). Exports `DICTIONARY_SQLITE_TABLES`.

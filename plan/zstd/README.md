@@ -73,7 +73,7 @@ decode(blob: Uint8Array, dictionary: ?Uint8Array): unknown[]
 ```
 
 Inject the zstd module through the constructor exactly as `DeflatePayloadCodec` takes `pako`, so
-node tests and the browser use the same class (see [../02-decisions.md](../02-decisions.md) #9).
+node tests and the browser use the same class (see [../02-decisions.md](../02-decisions.md) #10).
 Cache the `CDict`/`DDict` per dictionary-bytes rather than rebuilding per row.
 
 ### 3. Wiring (already built — just select it)
