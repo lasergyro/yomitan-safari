@@ -1,25 +1,17 @@
 # DEV notes
 
-## Building the zstd WASM module (once per clone)
+## Measuring dictionary storage for real
 
 ```sh
-brew install emscripten
-npm run build:zstd
+npm run measure:storage            # payload codec ratios + decode cost on the real kty-de-en
+npm run measure:storage -- --db    # ...plus a true SQLite database size and per-lookup timing
 ```
 
-The zstd + ZDICT module is built from zstd source rather than taken from npm, because **no published
-zstd WASM package exposes `ZDICT_trainFromBuffer`** — the dictionary trainer the payload codec needs.
-The reproducible build script is committed; its ~500 KB output is not (`dev/vendor/` is gitignored,
-like `ext/lib/`), so run it once after cloning and again only when upgrading zstd. Until then the
-zstd tests fail with a message telling you this. `npm run build:libs` copies the result into
-`ext/lib/`. Details in [dev/zstd/README.md](dev/zstd/README.md).
-
-To measure the codecs against a real dictionary (downloads ~24 MB, cached in `dictionaries/`):
-
-```sh
-npm run measure:zstd            # payload ratios on the real kty-de-en
-npm run measure:zstd -- --db    # ...plus a true SQLite database size
-```
+Downloads the real `kty-de-en` (~24 MB, checksum-pinned, cached in the gitignored `dictionaries/`).
+Worth knowing before optimising anything: the fixture dictionary and synthetic corpora predict real
+ratios badly, and this script is what found the 75 ms full table scan on every lookup. Current
+numbers: **~150 MB** total with deflate, of which **~78 MB is indexes that no codec touches**. See
+[plan/zstd/README.md](plan/zstd/README.md).
 
 ## Running tests in real Safari without stealing focus
 

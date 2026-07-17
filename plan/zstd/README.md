@@ -17,9 +17,9 @@ column keeps the decision reversible. The exercise still paid for itself: it fou
 table scan on every lookup** ([../03-progress.md](../03-progress.md) → "Query plans"), which mattered
 far more than any codec.
 
-This is the final compression step of the storage refactor ([../01-design.md](../01-design.md) §4,
-§6, §8.2). The backend, the codec seam, and an interim `deflate` codec already shipped; this task
-added zstd + a per-dictionary trained dictionary.
+It was meant to be the final compression step of the storage refactor
+([../01-design.md](../01-design.md) §4, §6, §8.2). Everything below is written as it was at the time
+of the evaluation; **none of the zstd code is in the tree any more**.
 
 ## Why (the original claim)
 
@@ -51,7 +51,7 @@ standard toolchain. See [../02-decisions.md](../02-decisions.md) #3.
 
 ## What was built
 
-### 1. The WASM module — `dev/zstd/`, `npm run build:zstd`
+### 1. The WASM module — was `dev/zstd/`, `npm run build:zstd`
 
 The custom build was necessary as predicted: **no published zstd WASM package exposes
 `ZDICT_trainFromBuffer`**. Verified before building — `@bokuweb/zstd-wasm` ships
@@ -72,7 +72,7 @@ not, and training is where 2.82× becomes 5.52×.
   fallback needed). ArrayBuffer instantiation is allowed by the extension CSP's
   `'wasm-unsafe-eval'`. Cost is ~8%: 502 KB, vs 464 KB (10 KB glue + 454 KB wasm) split.
 
-**The script is committed; the output is not.** `dev/vendor/` is gitignored just like `ext/lib/`, and
+**The script was committed; the output was not.** `dev/vendor/` is gitignored just like `ext/lib/`, and
 `npm run build:libs` copies the built module to `ext/lib/zstd.js`. So a fresh clone must run
 `npm run build:zstd` once (needs `brew install emscripten`) before the zstd tests, the type-checks
 that touch them, or a build. There is no CI to serve, so a locally cached build is enough. See
@@ -99,7 +99,7 @@ needed changing to add zstd.
 
 ## Measured on real data (`kty-de-en`)
 
-`npm run measure:zstd` — 947,070 term rows, **253.9 MB** of payload, avg **268 B/row**. (The row
+`npm run measure:storage` — 947,070 term rows, **253.9 MB** of payload, avg **268 B/row**. (The row
 count differs from the design's 983,520 because this is a later release of the dictionary; the
 payload size matches almost exactly.)
 

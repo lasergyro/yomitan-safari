@@ -114,38 +114,41 @@ termTags]`) in the IndexedDB rows. — Deterministic ~10% shrink and a stepping 
     payload array shape carries directly onto the SQLite `payload` BLOB. — _shipped (commit
     `7edfb9b2`)._
 
-## zstd task
+## zstd task, and what came out of it
 
-Implementation patterns from the [zstd/](zstd/README.md) task. They belong with #10–#15 by theme but
-live here because appending is the only safe place to add one — see the note at the top.
+The zstd evaluation and its fallout. #21–#25 describe an implementation that has since been
+**deleted** (#26) — they are kept because the numbers and constraints behind the rejection are worth
+not rediscovering; read them as history, not as description of the tree. #26–#27 are live.
 
-21. **The zstd WASM build is a committed _script_, not a committed artifact.** — No published zstd
+These belong with #10–#15 by theme but live here because appending is the only safe place to add
+one — see the note at the top.
+
+21. _(historical — zstd removed in #26)_ **The zstd WASM build was a committed _script_, not a committed artifact.** — No published zstd
     WASM build exposes `ZDICT_trainFromBuffer` (verified: `@bokuweb/zstd-wasm` and `zstd-codec` have
     no `ZDICT_*` symbols), so unlike every other lib it cannot come from npm; `dev/zstd/build.sh`
     builds it from source and `npm run build:libs` copies the result to `ext/lib/`. What is
     committed is the reproducible build (pinned zstd version + sha256, refusing to run on a
     mismatch), not its ~500 KB output — `dev/vendor/` is gitignored like `ext/lib/`, and the build
-    is cached locally. The cost is that a fresh clone must run `npm run build:zstd` once (needs
-    emscripten) before the zstd tests or a build; there is no CI to serve, so a local cache is
-    enough. `-sSINGLE_FILE=1` embeds the wasm in the .js: one artifact, no sibling-`.wasm` path
+    was cached locally. The cost was that a fresh clone had to run `npm run build:zstd` once (needs
+    emscripten) before the zstd tests or a build; there is no CI to serve, so a local cache sufficed. `-sSINGLE_FILE=1` embeds the wasm in the .js: one artifact, no sibling-`.wasm` path
     resolution, and Safari's missing `application/wasm` MIME (#18 / the `instantiateStreaming`
     fallback) never comes up, for ~8% size (502 KB vs 464 KB split). — _adopted._
-22. **`PayloadCodec.prepare?()`, awaited by `DictionaryDatabaseSqlite.prepare()`.** — `encode`/
+22. **`PayloadCodec.prepare?()`, awaited by `DictionaryDatabaseSqlite.prepare()`.** _(still live: deflate uses it to self-load vendored pako.)_ — `encode`/
     `decode` are synchronous because they sit inside sqlite's synchronous query/transaction paths,
     but a WASM-backed codec must load its module first, and reading already-imported rows never
     calls `train()` — so there is no other async moment to initialize in. Optional, so identity and
     deflate ignore it. — _adopted._
-23. **Default zstd level is 15, not the 19 the design assumed.** — Measured sweep: the ratio plateaus
+23. _(historical — zstd removed in #26)_ **Default zstd level was 15, not the 19 the design assumed.** — Measured sweep: the ratio plateaus
     at 15 (15/19/22 identical) while 19 costs ~3× the encode time. Structural rather than corpus-
     specific: at ~330 B/row a longer match search finds nothing extra, since the redundancy resolves
     against the shared dictionary, not within the row. — _adopted; **confirmed on real data**
     (−15 → 3.14×, −19 → 3.15× on `kty-de-en`)._
-24. **Codec tuning is a constructor option, not a constant.** — `ZstdPayloadCodec` takes
-    `level`/`dictionaryCapacity` and `DictionaryDatabaseSqlite` takes `trainSampleSize`, because the
+24. **Codec tuning is a constructor option, not a constant.** — `DictionaryDatabaseSqlite` takes
+    `trainSampleSize` (and the removed `ZstdPayloadCodec` took `level`/`dictionaryCapacity`), because the
     real measurements show the tradeoff is a judgement call rather than a fact: dictionary size is
     the dominant lever on ratio (110 KB → 3.15×, ~2 MB → 4.63×), it costs nothing on decode, but a
     bigger dictionary is only trainable by buffering proportionally more of the import (ZDICT wants
-    ~100× the dictionary size in samples). `npm run measure:zstd` re-derives all of it against the
+    ~100× the dictionary size in samples). `npm run measure:storage` re-derives it against the
     real dictionary. — _adopted._
 25. **`trainSampleSize` defaults to 1000, the importer's `maxTransactionLength`.** — Training runs on
     the first `bulkAdd` batch, so any larger value was silently unreachable (the old constant of 4000

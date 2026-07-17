@@ -2,7 +2,7 @@
 
 Living status of the storage-backend refactor. Update this every work session. Stages are ordered
 oldest → newest. Full design in [01-design.md](01-design.md); decisions in
-[02-decisions.md](02-decisions.md); the outstanding zstd task in [zstd/](zstd/README.md).
+[02-decisions.md](02-decisions.md); why zstd was rejected in [zstd/](zstd/README.md).
 
 ## Git state
 
@@ -132,17 +132,20 @@ See **[zstd/](zstd/README.md)** for the remaining (blocked) zstd work and the si
 Full record in **[zstd/](zstd/README.md)**. The Stage 3 blocker ("needs a custom zstd WASM build") is
 resolved; the remaining question is a shipping decision, not an engineering one.
 
-- **Custom WASM build** (`dev/zstd/`, `npm run build:zstd`): `build.sh` downloads the official zstd
-  1.5.7 tarball, verifies its sha256, and compiles it with emscripten together with `shim.c` — a thin
-  32-bit-clean C shim (`yz_*`) that keeps zstd's `size_t`/`u64` returns from crossing into JS as
-  BigInt and reuses the CCtx/DCtx. The custom build was genuinely necessary: no published zstd WASM
-  package exposes `ZDICT_trainFromBuffer` (verified — `@bokuweb/zstd-wasm` and `zstd-codec` contain
-  no `ZDICT_*` symbols at all).
-- **The build script is committed, not the artifact** ([02-decisions.md](02-decisions.md) #21):
-  `dev/vendor/` is gitignored like `ext/lib/`, so a fresh clone runs `npm run build:zstd` once
-  (needs emscripten) before the zstd tests or a build; `build:libs` then copies the module to
-  `ext/lib/zstd.js`. There is no CI to serve, so a local cache is enough. The tests fail with a
-  message naming the command when the build is absent (`test/utilities/zstd.js`).
+**All of the zstd implementation below was removed** in the same change that selected deflate
+([02-decisions.md](02-decisions.md) #26); it lives in git history at `58fe1f50`. Kept here as the
+record of what was tried and what it cost.
+
+- **Custom WASM build** (was `dev/zstd/`): `build.sh` downloaded the official zstd 1.5.7 tarball,
+  verified its sha256, and compiled it with emscripten together with `shim.c` — a thin 32-bit-clean
+  C shim (`yz_*`) that kept zstd's `size_t`/`u64` returns from crossing into JS as BigInt and reused
+  the CCtx/DCtx. The custom build was genuinely necessary: no published zstd WASM package exposes
+  `ZDICT_trainFromBuffer` (verified — `@bokuweb/zstd-wasm` and `zstd-codec` contain no `ZDICT_*`
+  symbols at all).
+- **The build script was committed, not the artifact** ([02-decisions.md](02-decisions.md) #21):
+  `dev/vendor/` was gitignored like `ext/lib/`, so a fresh clone ran `npm run build:zstd` once
+  (needs emscripten) before the zstd tests or a build. There is no CI to serve, so a local cache
+  sufficed.
 - **`ZstdPayloadCodec`** (`ext/js/dictionary/zstd-payload-codec.js`): module injected as usual;
   CDict/DDict compiled once per dictionary (WeakMap), never per row; `train()` returns empty when
   ZDICT refuses a too-small corpus, which the backend already maps to "no dictionary".
@@ -155,7 +158,7 @@ resolved; the remaining question is a shipping decision, not an engineering one.
   `dictionary-database-sqlite-codec.test.js` asserting the trained dictionary is persisted to
   `codec_dict` and read back through it after the cache is dropped; all 49 translator fixtures
   through `sqlite-zstd` (147 = 49 × 3); 17/17 in real Safari.
-- **Measured on the real `kty-de-en`** (`npm run measure:zstd`, `dev/zstd/measure.js`; downloads the
+- **Measured on the real `kty-de-en`** (`npm run measure:storage`, `dev/measure-storage.js`; downloads the
   24 MB dictionary into the gitignored `dictionaries/` and caches it, checksum-pinned). 947,070 rows,
   253.9 MB of payload. Headline: **the design's 5.52× / ~46 MB does not reproduce**, and with the
   plan's own parameters (110 KB dictionary) zstd _loses_ to deflate — 3.15× vs 3.55×. deflate
@@ -165,10 +168,10 @@ resolved; the remaining question is a shipping decision, not an engineering one.
   (2.7 vs 21.4 µs/row) — within 1 µs/row of raw JSON — with dictionary size costing nothing on
   decode. So the codec that saves the most also reads the fastest; deflate is the slow one on the
   query path. Full tables and the open decision in [zstd/](zstd/README.md).
-- **Tunable rather than baked in** ([02-decisions.md](02-decisions.md) #24, #25): `ZstdPayloadCodec`
-  takes `level`/`dictionaryCapacity`, `DictionaryDatabaseSqlite` takes `trainSampleSize`, and
-  `measure:zstd` takes `--level/--dict-cap/--train/--rows/--db`. The tradeoff is a judgement call, so
-  it should be re-derivable rather than argued from memory.
+- **Tunable rather than baked in** ([02-decisions.md](02-decisions.md) #24, #25):
+  `DictionaryDatabaseSqlite` takes `trainSampleSize`, and `measure:storage` takes
+  `--train/--rows/--db`. The tradeoff is a judgement call, so it should be re-derivable rather than
+  argued from memory.
 - **Found: `_trainSampleSize = 4000` was unreachable.** The importer's `maxTransactionLength` is 1000
   and training runs on the first `bulkAdd` batch, so the trainer only ever saw 1000 rows (→ 3.05×,
   worse than deflate). The default now states that real limit; raising it means buffering more of the
@@ -184,13 +187,12 @@ resolved; the remaining question is a shipping decision, not an engineering one.
 2. **Settings-page migration UX**: call `legacyIndexedDbDictionaryExists()` on startup, prompt for
    re-import, then `deleteLegacyIndexedDbDictionary()`. Only the helpers exist today; no UI.
 3. **Call `finalizeImport()`** after an import completes (the importer does not call it yet).
-4. **Real-data measurement** on `kty-de-en` — `npm run measure:zstd` now does the payload half of
-   this (see the zstd section above). Still unverified: the **whole-database** size, which is what
-   the ~100 MB target is really about — payload ratios ignore the indexes. `measure:zstd -- --db`
-   imports through the real backend and reports `page_count * page_size`.
-5. **Pick the shipped codec.** The factory uses the default identity codec; for compression it must
-   pass `DeflatePayloadCodec` (with vendored pako) or the now-built [zstd](zstd/README.md) codec
-   (plus the other as a decode codec, so earlier imports stay readable).
+4. **Real-data measurement** — DONE (`npm run measure:storage -- --db`): **149.7 MB** total with
+   deflate, of which **~78 MB is indexes**. The ~100 MB target is unreachable by compression; if it
+   is still a target, the schema is where the work is.
+5. **Pick the shipped codec** — DONE: deflate ([02-decisions.md](02-decisions.md) #26). The factory
+   builds `new DictionaryDatabaseSqlite(new DeflatePayloadCodec())`; the codec self-loads vendored
+   pako in `prepare()`, so nothing extra enters the module graph while the flag is off.
 6. **SAH-Pool capacity growth** for large DBs (`initialCapacity` default is 8 files).
 7. Then: remove the IndexedDB path for `dict` + the flag, and unify the two backends behind one
    interface (today the SQLite backend is cast to `DictionaryDatabase` at the factory/test seams).
@@ -262,16 +264,13 @@ ext/js/dictionary/dictionary-backend-config.js   USE_SQLITE_BACKEND flag
 ext/js/dictionary/dictionary-database-factory.js createDictionaryDatabase() backend selection
 ext/js/dictionary/payload-codec.js               IdentityPayloadCodec
 ext/js/dictionary/deflate-payload-codec.js       DeflatePayloadCodec (pako, injected)
-ext/js/dictionary/zstd-payload-codec.js          ZstdPayloadCodec (zstd WASM, injected)
-dev/zstd/build.sh, dev/zstd/shim.c               custom zstd+ZDICT WASM build (npm run build:zstd)
-dev/vendor/zstd/zstd.js                          the committed build output (copied to ext/lib)
+dev/measure-storage.js                           real-dictionary measurement (npm run measure:storage)
 ext/js/dictionary/sqlite/open-sqlite.js          openDictionaryDatabaseHandle()
 ext/js/dictionary/sqlite/dictionary-sqlite-schema.js   DDL + createDictionarySchema()
 ext/js/dictionary/sqlite/dictionary-database-sqlite.js DictionaryDatabaseSqlite (the backend)
 ext/js/dictionary/sqlite/dictionary-storage-migration.js  legacy-IDB detect/delete, persist
 types/ext/sqlite-wasm.d.ts               narrow sqlite oo1 type surface
 types/ext/pako.d.ts                      narrow pako surface
-types/ext/zstd.d.ts                      narrow zstd shim surface
 types/ext/payload-codec.d.ts             PayloadCodec type (+ optional prepare())
 types/ext/dictionary-database.d.ts       + PayloadCodecName (and Layer 1's Packed/Payload types)
 test/safari/                             real-Safari runner (run.js, harness.html, worker.js)
@@ -279,10 +278,10 @@ test/sqlite-backend-smoke.test.js        harness + opener/schema tests
 test/dictionary-database-sqlite.test.js  term parity vs IndexedDB backend
 test/dictionary-database-sqlite-codec.test.js  codec self-description + finalizeImport
 test/deflate-payload-codec.test.js       deflate codec round-trips
-test/zstd-payload-codec.test.js          zstd codec round-trips + training
+test/dictionary-database-sqlite-query-plan.test.js  guards term lookups against full scans
 test/dictionary-storage-migration.test.js      migration helpers
-test/translator-sqlite.test.js           49 fixtures × {identity, deflate, zstd} end-to-end
-dev/build-libs.js                        + copySqlite() / copyZstd() / dev/lib/pako.js vendoring
+test/translator-sqlite.test.js           49 fixtures × {identity, deflate} end-to-end
+dev/build-libs.js                        + copySqlite() / dev/lib/pako.js vendoring
 dev/data/manifest-variants.json          safari CSP -> wasm-unsafe-eval
-package.json                             + @sqlite.org/sqlite-wasm, pako, test:safari, build:zstd
+package.json                             + @sqlite.org/sqlite-wasm, pako, test:safari, measure:storage
 ```
