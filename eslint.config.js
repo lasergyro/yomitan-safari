@@ -70,10 +70,7 @@ async function getDependencies(scriptPaths) {
  */
 export default [
     {
-        // dev/vendor/ holds generated vendored builds (the zstd+ZDICT WASM module produced by
-        // dev/zstd/build.sh). It is committed rather than gitignored like ext/lib/ only because
-        // rebuilding it needs emscripten, which the normal build/CI path must not require.
-        ignores: ['ext/lib/', 'dev/lib/handlebars/', 'dev/vendor/', '**/node_modules/', '**/builds/', 'test-results/', '.claude/'],
+        ignores: ['ext/lib/', 'dev/lib/handlebars/', '**/node_modules/', '**/builds/', 'test-results/', '.claude/'],
     },
     ...compat.extends(
         'eslint:recommended',
@@ -843,35 +840,6 @@ export default [
         ...vitest.configs.recommended,
         rules: {
             'vitest/prefer-to-be': 'off',
-        },
-    },
-    {
-        // The zstd codec calls into the emscripten module, whose exports are underscore-prefixed by
-        // the C-to-WASM ABI (`_malloc`, and each `yz_*` entry point of dev/zstd/shim.c). The prefix
-        // is not our naming convention and cannot be changed, so allow exactly those names here
-        // instead of scattering inline disables through the file.
-        files: [
-            'ext/js/dictionary/zstd-payload-codec.js',
-        ],
-        rules: {
-            'no-underscore-dangle': ['error', {
-                allow: [
-                    '_malloc',
-                    '_free',
-                    '_yz_train',
-                    '_yz_cdict_create',
-                    '_yz_cdict_free',
-                    '_yz_ddict_create',
-                    '_yz_ddict_free',
-                    '_yz_compress',
-                    '_yz_decompress',
-                    '_yz_compress_bound',
-                    '_yz_frame_content_size',
-                ],
-                allowAfterThis: true,
-                allowAfterSuper: false,
-                allowAfterThisConstructor: false,
-            }],
         },
     },
     ...compat.extends('plugin:@typescript-eslint/disable-type-checked').map((config) => ({

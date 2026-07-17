@@ -16,8 +16,3 @@ dictionaries/
 ext/manifest.json
 
 ext/lib/*
-
-# zstd WASM build: both the source cache and the built output are generated locally by
-# `npm run build:zstd` (needs emscripten). Only the build script is committed, not its output.
-dev/zstd/.build/
-dev/vendor/

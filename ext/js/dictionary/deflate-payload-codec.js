@@ -21,23 +21,42 @@ import {parseJson} from '../core/json.js';
  * @typedef {import('payload-codec').PayloadCodec} PayloadCodec
  */
 
+/** @type {?Promise<import('pako')>} */
+let vendoredPakoPromise = null;
+
 /**
- * Interim compressing codec (see plan/01-design.md §6): raw DEFLATE via pako with an optional 32 KB
- * preset dictionary trained from a sample of the dictionary's own payloads. Pure JS (no WASM), so
- * it works before the zstd WASM build lands; the payload stays randomly decodable (each row is an
- * independent DEFLATE stream sharing only the preset dictionary).
+ * Loads the vendored browser build, memoized. Only reached when nothing is injected (the extension
+ * path); the dynamic import keeps pako out of the module graph when the SQLite backend is not
+ * selected.
+ * @returns {Promise<import('pako')>}
+ */
+function loadVendoredPako() {
+    if (vendoredPakoPromise === null) {
+        vendoredPakoPromise = import('../../lib/pako.js');
+    }
+    return vendoredPakoPromise;
+}
+
+/**
+ * The shipped compressing codec (plan/02-decisions.md #8, #26): raw DEFLATE via pako with a 32 KB
+ * preset dictionary built from a sample of the dictionary's own payloads. Pure JS (no WASM), and the
+ * payload stays randomly decodable — each row is an independent DEFLATE stream sharing only the
+ * preset dictionary. Measured on the real `kty-de-en`: 3.55x on the payload, ~150 MB total database
+ * against ~700 MB of IndexedDB.
  *
- * pako is injected (browser: vendored `ext/lib/pako.js`; node tests: the `pako` package), mirroring
- * how sqlite3 is injected — see plan/02-decisions.md #10.
+ * pako is injected (node tests pass the `pako` package); with nothing injected, `prepare()` loads the
+ * vendored `ext/lib/pako.js` — the extension path, mirroring how sqlite3 is injected
+ * (plan/02-decisions.md #10).
  * @implements {PayloadCodec}
  */
 export class DeflatePayloadCodec {
     /**
-     * @param {import('pako')} pako The pako module (needs `deflateRaw`/`inflateRaw`).
+     * @param {?import('pako')} [pako] The pako module (needs `deflateRaw`/`inflateRaw`). Omitted, the
+     *   vendored build is loaded on `prepare()`.
      * @param {{level?: number, dictionarySampleBytes?: number}} [options]
      */
-    constructor(pako, {level = 6, dictionarySampleBytes = 32768} = {}) {
-        /** @type {import('pako')} */
+    constructor(pako = null, {level = 6, dictionarySampleBytes = 32768} = {}) {
+        /** @type {?import('pako')} */
         this._pako = pako;
         /** @type {number} */
         this._level = level;
@@ -52,6 +71,16 @@ export class DeflatePayloadCodec {
     /** @returns {import('dictionary-database').PayloadCodecName} */
     get name() {
         return 'deflate';
+    }
+
+    /**
+     * Loads the vendored pako when none was injected. Idempotent. `encode`/`decode` are synchronous
+     * by interface contract, so the module has to be resolved before the first row is touched;
+     * `DictionaryDatabaseSqlite.prepare()` awaits this for every registered codec.
+     * @returns {Promise<void>}
+     */
+    async prepare() {
+        if (this._pako === null) { this._pako = await loadVendoredPako(); }
     }
 
     /**
@@ -90,7 +119,7 @@ export class DeflatePayloadCodec {
      */
     encode(payload, dictionary) {
         const bytes = this._encoder.encode(JSON.stringify(payload));
-        return this._pako.deflateRaw(bytes, this._deflateOptions(dictionary));
+        return this._require().deflateRaw(bytes, this._deflateOptions(dictionary));
     }
 
     /**
@@ -99,9 +128,20 @@ export class DeflatePayloadCodec {
      * @returns {unknown[]}
      */
     decode(blob, dictionary) {
-        const bytes = this._pako.inflateRaw(blob, this._inflateOptions(dictionary));
+        const bytes = this._require().inflateRaw(blob, this._inflateOptions(dictionary));
         const parsed = parseJson(this._decoder.decode(bytes));
         return Array.isArray(parsed) ? parsed : [];
+    }
+
+    /**
+     * @returns {import('pako')}
+     * @throws {Error} If `prepare()` has not completed.
+     */
+    _require() {
+        if (this._pako === null) {
+            throw new Error('DeflatePayloadCodec is not prepared; await prepare() before encode/decode');
+        }
+        return this._pako;
     }
 
     /**

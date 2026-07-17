@@ -12,12 +12,27 @@ what's left see [03-progress.md](03-progress.md); for the condensed decision log
 > codec of §8.2 has since been built and lives in [zstd/](zstd/README.md); the size numbers in
 > §3/§4 are measurements from the _analysis_, not from a real import through the new backend.
 >
-> **§4's zstd row is wrong.** The **5.52× / ~46 MB** for a ZDICT-trained 112 KB dictionary does not
-> reproduce: measured against the real `kty-de-en` via `npm run measure:zstd`, that configuration
-> gets **3.15×** and _loses_ to deflate's 3.55× (which reproduces exactly). A 112 KB dictionary is
-> simply too small for a 254 MB corpus; ~1.9 MB gets 4.63× / ~55 MB, and needs ~200k rows buffered
-> to train on. §4's deflate rows still hold. See [zstd/](zstd/README.md) for the real tables — every
-> "~46 MB" in this document (§4, §9, §12) should be read as **~55 MB at best**.
+> **Corrections from measuring the real dictionary** (`npm run measure:storage`; full tables in
+> [zstd/](zstd/README.md)). §4's deflate rows reproduce exactly, which is what makes the rest of
+> these trustworthy:
+>
+> - **§4's zstd row is wrong.** The **5.52× / ~46 MB** for a ZDICT-trained 112 KB dictionary does not
+>   reproduce: that configuration gets **3.15×** and _loses_ to deflate's 3.55×. A 112 KB dictionary
+>   is too small for a 254 MB corpus; ~1.9 MB gets 4.63× / ~55 MB but needs ~200k rows buffered to
+>   train on. zstd was built, measured, and **not adopted** — deflate ships. Every "~46 MB" here
+>   (§4, §9, §12) is unreachable.
+> - **§3's "`reading` values — 14.4 MB" is wrong: it is 0.** Every one of the 947,070 rows has
+>   `reading = ''` (readings are a Japanese concept; this is a German dictionary). The figure looks
+>   like the `expression` row duplicated. This is not cosmetic — that column's emptiness is what made
+>   SQLite's planner full-scan on every lookup (see [03-progress.md](03-progress.md) → "Query plans").
+> - **§1's "~1.2 GB" baseline is unverified and looks too high.** It does not reconcile with this
+>   document's own breakdown — 356.8 MB value store + 100–150 MB of index B-trees ≈ **460–510 MB** —
+>   nor with the ~700 MB the app reports. Note the app's number is
+>   `navigator.storage.estimate().usage`: the **whole origin's** physical footprint including free
+>   pages and other databases, padded by WebKit — not this store's logical size. Treat ~1.2 GB as an
+>   anecdote until someone measures the `dict` store directly.
+> - **The dictionary's 626 MB of JSON is ~55% whitespace.** The term banks are pretty-printed;
+>   minified they are **276.9 MB**, which matches the 276 MB of column data SQLite actually stores.
 
 ---
 
@@ -143,15 +158,15 @@ representative). Scripts live in the scratch dir (see §12) — `measure.mjs`, `
 
 Packed value store (after Layer 1) = **356.8 MB**, decomposed:
 
-| Component                                                 | Size        | Compressible?            |
-| --------------------------------------------------------- | ----------- | ------------------------ |
-| `m` payload (definitions/glossary)                        | 266.8 MB    | **yes** → ~48 MB at 5.5× |
-| top-level fields (needed for indexes)                     | **89.0 MB** | **no**                   |
-| ↳ repeating property key-names per row                    | 33.8 MB     | —                        |
-| ↳ repeating `dictionary` title per row (1 distinct value) | 8.4 MB      | —                        |
-| ↳ `expression` values (952,394 distinct = 97% unique)     | 14.4 MB     | —                        |
-| ↳ `reading` values                                        | 14.4 MB     | —                        |
-| ↳ ints (id, sequence) + clone overhead                    | ~18 MB      | —                        |
+| Component                                                   | Size        | Compressible?            |
+| ----------------------------------------------------------- | ----------- | ------------------------ |
+| `m` payload (definitions/glossary)                          | 266.8 MB    | **yes** → ~48 MB at 5.5× |
+| top-level fields (needed for indexes)                       | **89.0 MB** | **no**                   |
+| ↳ repeating property key-names per row                      | 33.8 MB     | —                        |
+| ↳ repeating `dictionary` title per row (1 distinct value)   | 8.4 MB      | —                        |
+| ↳ `expression` values (952,394 distinct = 97% unique)       | 14.4 MB     | —                        |
+| ↳ `reading` values — **WRONG: measured 0, every row empty** | 14.4 MB     | —                        |
+| ↳ ints (id, sequence) + clone overhead                      | ~18 MB      | —                        |
 
 **Why IndexedDB + compression can't get below ~137 MB value store:** IndexedDB indexes read
 values through a keyPath, so indexed fields _and their property names_ must live as plain named

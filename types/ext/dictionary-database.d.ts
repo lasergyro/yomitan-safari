@@ -59,7 +59,7 @@ export type DatabaseTermEntry = {
 };
 
 /** Identifier of the codec used to (de)serialize a term row's payload blob. See payload-codec.js. */
-export type PayloadCodecName = 'identity' | 'deflate' | 'zstd';
+export type PayloadCodecName = 'identity' | 'deflate';
 
 /**
  * Positional payload holding the non-indexed fields of a term row, stored under the `m` key so

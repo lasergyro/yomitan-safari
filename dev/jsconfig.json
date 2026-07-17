@@ -60,9 +60,6 @@
             "sqlite-wasm": [
                 "../types/ext/sqlite-wasm"
             ],
-            "zstd": [
-                "../types/ext/zstd"
-            ],
             "dynamic-property": [
                 "../types/ext/dynamic-property"
             ],

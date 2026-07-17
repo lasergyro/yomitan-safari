@@ -108,10 +108,11 @@ export class DictionaryDatabaseSqlite {
          * How many payloads to sample when training a per-dictionary codec dictionary.
          *
          * The ceiling is the importer's batch size (`maxTransactionLength`, 1000), because training
-         * happens on the first `bulkAdd` batch — a larger value here does nothing on its own. It
-         * matters because ZDICT needs roughly 100x the dictionary size in samples, so a bigger
-         * trained dictionary means buffering more of the import before the first insert. Measured
-         * tradeoffs are in plan/zstd/README.md; `npm run measure:zstd` re-runs them.
+         * happens on the first `bulkAdd` batch — a larger value here does nothing on its own. It is
+         * a knob because a codec with a large shared dictionary needs proportionally more samples,
+         * which means buffering more of the import before the first insert. deflate's dictionary is
+         * capped at DEFLATE's 32 KB window, so 1000 rows already saturate it. `npm run
+         * measure:storage` re-derives the tradeoff; plan/zstd/README.md records it.
          * @type {number}
          */
         this._trainSampleSize = trainSampleSize;
@@ -994,24 +995,36 @@ export class DictionaryDatabaseSqlite {
     _queryTermColumn(column, term, matchType, dictionaryIds) {
         const db = this._require();
         const idFilter = `dictionary_id IN (${dictionaryIds.join(',')})`;
-        const select = 'SELECT id, dictionary_id, expression, reading, sequence, payload FROM terms';
+        const columns = 'id, dictionary_id, expression, reading, sequence, payload';
+        // `INDEXED BY` forces the seek instead of letting the planner choose, because on real data it
+        // chooses catastrophically: every row of a German dictionary has `reading = ''` (readings are
+        // a Japanese concept), so ANALYZE records ix_terms_reading as completely unselective and the
+        // planner full-scans the table for a reading probe — ~75 ms per lookup on a ~1M-row
+        // dictionary, on the hover path, versus 0.02 ms with the index. Its estimate is not wrong on
+        // average, it just cannot know the probe value is not the one dominant value. IndexedDB had
+        // no such failure mode: it always seeks the index, which is exactly what these probes want.
+        const index = column === 'expression' ? 'ix_terms_expression' : 'ix_terms_reading';
         switch (matchType) {
             case 'prefix':
                 // Inclusive bound [term, term+'￿'], matching IDBKeyRange.bound(term, term+'￿').
                 // Valid for BMP strings, where SQLite BINARY (UTF-8) and IndexedDB (UTF-16) code-point
                 // orders agree; dictionary data is BMP.
                 return db.selectObjects(
-                    `${select} WHERE ${column} >= ? AND ${column} <= ? || char(65535) AND ${idFilter}`,
+                    `SELECT ${columns} FROM terms INDEXED BY ${index} WHERE ${column} >= ? AND ${column} <= ? || char(65535) AND ${idFilter}`,
                     [term, term],
                 );
             case 'suffix': {
                 // No reverse column yet (that is a later schema addition, see plan/03-progress.md
-                // "watch-outs"); filter suffix matches in JS over the enabled dictionaries.
-                const rows = db.selectObjects(`${select} WHERE ${idFilter}`);
+                // "watch-outs"); filter suffix matches in JS over the enabled dictionaries. Left to
+                // the planner deliberately — no index can serve this, so the scan is the real plan.
+                const rows = db.selectObjects(`SELECT ${columns} FROM terms WHERE ${idFilter}`);
                 return rows.filter((row) => typeof row[column] === 'string' && /** @type {string} */ (row[column]).endsWith(term));
             }
             default: // 'exact'
-                return db.selectObjects(`${select} WHERE ${column} = ? AND ${idFilter}`, [term]);
+                return db.selectObjects(
+                    `SELECT ${columns} FROM terms INDEXED BY ${index} WHERE ${column} = ? AND ${idFilter}`,
+                    [term],
+                );
         }
     }
 

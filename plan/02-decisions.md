@@ -151,3 +151,23 @@ live here because appending is the only safe place to add one — see the note a
     the first `bulkAdd` batch, so any larger value was silently unreachable (the old constant of 4000
     was dead). The default now states the real constraint rather than hiding it; raising it means
     also giving the trainer more than one batch. — _adopted._
+26. **Ship `deflate`; zstd is measured, rejected, and removed.** — Measured on the real `kty-de-en`
+    (`npm run measure:storage`), against the **whole database** rather than the payload: deflate
+    **149.7 MB** vs zstd **161.3 MB as it would actually ship** (it can only train on 1,000 rows) or
+    ~137 MB with import buffering that does not exist. So the best case saves ~13 MB on ~150 MB —
+    ~1% of the original problem — for a custom emscripten toolchain, ~24 MB of WASM heap in the DB
+    worker (a live concern on iOS), and that buffering. Decode speed decided nothing: both are tens
+    of microseconds per lookup, ~1000× under a frame. **~78 MB of the database is indexes, which no
+    codec touches** — so compression cannot reach the ~100 MB target and the remaining weight is the
+    schema. The zstd code is deleted rather than left dormant; the evidence is in
+    [zstd/](zstd/README.md) and the implementation in git history (`58fe1f50`). The `codec` column
+    makes this reversible. — _adopted; `createDictionaryDatabase()` now builds
+    `new DeflatePayloadCodec()`._
+27. **Pin the term index with `INDEXED BY`; do not let the planner choose.** — Every row of a German
+    dictionary has `reading = ''`, so ANALYZE records ix*terms_reading as completely unselective and
+    the planner full-scans the table for a reading probe: **75 ms per lookup** on 947k rows, on the
+    hover path, vs 0.02 ms with the index. The estimate is right on average and wrong for the probe,
+    which is a shape SQLite's stat1 cannot express. IndexedDB had no such failure mode — an index
+    probe always seeks — and these queries want exactly that. Suffix still scans, deliberately: no
+    index can serve it. — \_adopted, with a query-plan regression test
+    (`dictionary-database-sqlite-query-plan.test.js`); found only by measuring the real dictionary.*

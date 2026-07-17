@@ -28,9 +28,11 @@ import {parseJson} from '../core/json.js';
  * alongside the dictionary, and passed back to `encode`/`decode`. Codecs that do not use a
  * dictionary ignore that argument and `train()` returns an empty buffer.
  *
- * See plan/01-design.md (sections 6 and 8.2) for the rollout: `identity` (no compression,
- * correctness baseline) -> `deflate` (pako + preset dict) -> `zstd` (trained dict). The
- * `PayloadCodec` type lives in types/ext/payload-codec.d.ts.
+ * `identity` exists as the correctness baseline; `deflate` (pako + a preset dictionary) is what the
+ * extension ships. A trained-dictionary zstd codec was built and measured against real data and did
+ * not justify its cost — plan/zstd/README.md records why, and the `codec` column means that decision
+ * can be revisited without invalidating existing imports. The `PayloadCodec` type lives in
+ * types/ext/payload-codec.d.ts.
  * @typedef {import('payload-codec').PayloadCodec} PayloadCodec
  */
 

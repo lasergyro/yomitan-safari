@@ -18,12 +18,12 @@
 // Runs in real Safari, inside a module worker (the OPFS SAH-Pool VFS needs sync access handles,
 // which WebKit only exposes to workers — the same reason the extension's DB lives in a worker).
 // Everything here is loaded from the actual source tree over HTTP: the backend modules from
-// ext/js/**, and the *vendored* ext/lib/sqlite3.js + sqlite3.wasm that the extension ships.
+// ext/js/**, and the *vendored* ext/lib/sqlite3.js + sqlite3.wasm + pako.js that the extension ships.
+// The backend is constructed exactly as createDictionaryDatabase() constructs it, so the checks
+// cover the real shipping configuration rather than a test-only wiring of it.
 
 import {DeflatePayloadCodec} from '/ext/js/dictionary/deflate-payload-codec.js';
 import {DictionaryDatabaseSqlite} from '/ext/js/dictionary/sqlite/dictionary-database-sqlite.js';
-import {ZstdPayloadCodec} from '/ext/js/dictionary/zstd-payload-codec.js';
-import * as pako from '/ext/lib/pako.js';
 
 const dictionaryName = 'Safari Check Dictionary';
 const dictionaries = new Set([dictionaryName]);
@@ -73,74 +73,16 @@ function termRows(suffix) {
     ];
 }
 
-const zstdReadings = ['いぬ', 'ねこ', 'とり', 'さかな', 'うま', 'ひつじ', 'うし', 'ぶた'];
-const zstdGlosses = ['dog', 'cat', 'bird', 'fish', 'horse', 'sheep', 'cow', 'pig'];
-
-/**
- * @param {number} i
- * @returns {string}
- */
-function zstdExpression(i) {
-    return `${zstdReadings[i % zstdReadings.length]}${i}`;
-}
-
-/**
- * The glossary text of row `i`. Derived rather than hardcoded in the assertions, so a change to the
- * generator can never quietly disagree with what the checks expect.
- * @param {number} i
- * @returns {string}
- */
-function zstdGlossText(i) {
-    return `${zstdGlosses[(i * 3) % zstdGlosses.length]} number ${i}`;
-}
-
-/**
- * Pulls the glossary text back out of a decoded definition.
- * @param {unknown} definition
- * @returns {string}
- */
-function zstdGlossTextOf(definition) {
-    return /** @type {{content: {content: string}[]}} */ (definition).content[0].content;
-}
-
-/**
- * ZDICT needs a corpus of real size and variety before it will train, so the zstd checks generate
- * one rather than reusing the three handwritten rows above.
- * @param {number} count
- * @returns {import('../../types/ext/dictionary-database').DatabaseTermEntryPacked[]}
- */
-function zstdTermRows(count) {
-    /** @type {import('../../types/ext/dictionary-database').DatabaseTermEntryPacked[]} */
-    const rows = [];
-    for (let i = 0; i < count; ++i) {
-        rows.push({
-            expression: zstdExpression(i),
-            reading: zstdExpression(i),
-            dictionary: dictionaryName,
-            sequence: i,
-            m: [
-                i % 2 === 0 ? 'n' : 'vt',
-                i % 3 === 0 ? 'v5r' : '',
-                (i % 100) - 50,
-                [{type: 'structured-content',
-                    content: [
-                        {tag: 'div', data: {content: 'glossary'}, content: zstdGlossText(i)},
-                    ]}],
-                i % 5 === 0 ? 'common' : '',
-            ],
-        });
-    }
-    return rows;
-}
-
 /** Entry point. */
 async function main() {
-    // Constructed outside the check so the rest of main sees a non-nullable handle: only prepare()
-    // can fail, and assigning inside the callback would defeat both narrowing and the type checker.
-    const db = new DictionaryDatabaseSqlite(new DeflatePayloadCodec(pako));
+    // Exactly what createDictionaryDatabase() builds: no pako injected, so the codec self-loads the
+    // vendored ext/lib/pako.js in prepare(). Constructed outside the check so the rest of main sees a
+    // non-nullable handle — only prepare() can fail, and assigning inside the callback would defeat
+    // both narrowing and the type checker.
+    const db = new DictionaryDatabaseSqlite(new DeflatePayloadCodec());
 
-    await check('sqlite3 initializes from the vendored ext/lib/sqlite3.js on the OPFS SAH-Pool VFS', async () => {
-        // No arguments == the extension path: dynamic-import the vendored build, open OPFS.
+    await check('sqlite3 + pako initialize from ext/lib on the OPFS SAH-Pool VFS', async () => {
+        // No arguments == the extension path: dynamic-import the vendored builds, open OPFS.
         await db.prepare();
         assert(db.isPrepared(), 'backend did not report prepared');
     });
@@ -226,70 +168,7 @@ async function main() {
         db.close();
     });
 
-    await zstdChecks();
-
     postMessage(checks);
-}
-
-/**
- * The zstd codec in real Safari. This is the part node cannot vouch for: the module is a *separate*
- * WASM binary from sqlite's, instantiated from an embedded base64 ArrayBuffer (the build uses
- * SINGLE_FILE), which is what the extension CSP's 'wasm-unsafe-eval' has to permit. Training also
- * runs a large allocation through the WASM heap under WebKit's limits.
- * @returns {Promise<void>}
- */
-async function zstdChecks() {
-    const db = new DictionaryDatabaseSqlite(new ZstdPayloadCodec());
-
-    await check('zstd: module initializes from the vendored ext/lib/zstd.js', async () => {
-        // No initModule argument == the extension path: dynamic-import the vendored build.
-        const codec = new ZstdPayloadCodec();
-        await codec.prepare();
-        const blob = codec.encode(['n', '', 0, ['dog'], 'tag'], null);
-        assert(blob instanceof Uint8Array && blob.length > 0, 'zstd produced no output');
-        await db.prepare();
-        assert(db.isPrepared(), 'zstd backend did not report prepared');
-    });
-
-    if (!db.isPrepared()) { return; }
-
-    await check('zstd: ZDICT trains a dictionary under WebKit', async () => {
-        await db.purge();
-        await db.bulkAdd('dictionaries', [summaryFor(dictionaryName)], 0, 1);
-        const rows = zstdTermRows(2000);
-        await db.bulkAdd('terms', rows, 0, rows.length);
-        const results = await db.findTermsBulk([zstdExpression(0)], dictionaries, 'exact');
-        assert(results.length === 1, `expected 1 result, got ${results.length}`);
-        assert(zstdGlossTextOf(results[0].definitions[0]) === zstdGlossText(0), 'zstd payload did not round-trip');
-    });
-
-    await check('zstd: trained dictionary survives close + reopen (read via codec_dict)', async () => {
-        db.close();
-        await db.prepare();
-        // The reopen dropped the in-memory codec cache, so this read has to rebuild the codec and
-        // its trained dictionary from the dictionaries row — the real cold-start path.
-        const results = await db.findTermsBulk([zstdExpression(1234)], dictionaries, 'exact');
-        assert(results.length === 1, 'zstd data did not survive a close/reopen');
-        assert(
-            zstdGlossTextOf(results[0].definitions[0]) === zstdGlossText(1234),
-            `unexpected payload: ${JSON.stringify(results[0].definitions[0])}`,
-        );
-    });
-
-    await check('zstd: compression ratio on the generated corpus', async () => {
-        const rows = zstdTermRows(2000);
-        const codec = new ZstdPayloadCodec();
-        await codec.prepare();
-        const raw = rows.reduce((total, row) => total + new TextEncoder().encode(JSON.stringify(row.m)).length, 0);
-        const dictionary = await codec.train(rows.map((row) => row.m));
-        const compressed = rows.reduce((total, row) => total + codec.encode(row.m, dictionary).length, 0);
-        return `${(raw / compressed).toFixed(2)}x on ${rows.length} synthetic rows (dict ${dictionary.length} B) — indicative only, not real dictionary data`;
-    });
-
-    await check('zstd: cleanup', async () => {
-        await db.purge();
-        db.close();
-    });
 }
 
 void main();

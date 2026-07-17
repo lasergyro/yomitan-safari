@@ -127,7 +127,7 @@ See **[zstd/](zstd/README.md)** for the remaining (blocked) zstd work and the si
 - **Build verified**: `npm run build -- --target safari` ships `lib/sqlite3.js`, `lib/sqlite3.wasm`
   (865 KB), `lib/pako.js`; the safari manifest CSP has `'wasm-unsafe-eval'`.
 
-## zstd codec — BUILT AND TESTED, NOT SELECTED
+## Codec — DECIDED: deflate ships; zstd built, measured, rejected, removed
 
 Full record in **[zstd/](zstd/README.md)**. The Stage 3 blocker ("needs a custom zstd WASM build") is
 resolved; the remaining question is a shipping decision, not an engineering one.
@@ -194,6 +194,33 @@ resolved; the remaining question is a shipping decision, not an engineering one.
 6. **SAH-Pool capacity growth** for large DBs (`initialCapacity` default is 8 files).
 7. Then: remove the IndexedDB path for `dict` + the flag, and unify the two backends behind one
    interface (today the SQLite backend is cast to `DictionaryDatabase` at the factory/test seams).
+
+## Query plans — a full scan on every lookup (FIXED)
+
+Found while measuring the real dictionary; nothing else could have caught it, and it would have made
+the extension unusable.
+
+- **Symptom**: `findTermsBulk` cost **~75 ms per lookup** on the real 947k-row `kty-de-en` — on the
+  hover path — while the same SQL run by hand took 0.043 ms.
+- **Cause**: `findTermsBulk` probes the `expression` column _and_ the `reading` column. Every row of
+  a German dictionary has `reading = ''` (readings are a Japanese concept), so `ANALYZE` (run by
+  `finalizeImport`) records `ix_terms_reading` as `947070 947070` — completely unselective — and the
+  planner concludes a full scan beats the index for a reading probe. It is not wrong on average; it
+  just cannot know the probed value is not the one dominant value. Without ANALYZE it was worse
+  (110 ms via `ix_terms_dictionary`).
+- **Why IndexedDB never had it**: no query planner. An IDB index probe always seeks, which is exactly
+  what these queries want.
+- **Fix**: `_queryTermColumn` pins the column's index with `INDEXED BY` for the exact and prefix
+  probes. **75.6 ms → 0.064 ms per lookup** (~1200×), identical results. Suffix still scans on
+  purpose (no reverse column, so no index can serve it).
+- **Regression test**: `test/dictionary-database-sqlite-query-plan.test.js` captures the SQL the
+  backend actually issues, runs `EXPLAIN QUERY PLAN` on it, and asserts `SCAN terms` never appears.
+  2,000 all-empty-reading rows + ANALYZE reproduce the degenerate statistic in ~90 ms, and the test
+  demonstrably fails when the `INDEXED BY` is removed. Correctness tests cannot catch this class of
+  bug — results are identical either way, only the plan differs.
+- **Same class, unverified**: the `term_meta` / `kanji` / `kanji_meta` equality probes let the planner
+  choose too. Their columns are selective on real data, so they are not known to be affected, but a
+  dictionary that made one degenerate would hit the same cliff.
 
 ## Watch-outs (still live)
 

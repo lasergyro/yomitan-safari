@@ -16,28 +16,36 @@
  */
 
 /**
- * Measures the payload codecs against a **real** dictionary (`kty-de-en`), the one the whole storage
- * refactor is sized around. The unit tests can only use the tiny fixture dictionary and a synthetic
- * corpus, neither of which predicts real ratios — a synthetic corpus flatters deflate badly (6.3x
- * where real data gives 3.6x), so deflate-vs-zstd cannot be settled without this.
+ * Measures dictionary storage against the **real** `kty-de-en`, the dictionary the whole storage
+ * refactor is sized around. The unit tests can only use the tiny fixture dictionary, and synthetic
+ * corpora predict real ratios badly, so this is the only honest source of numbers. It is also what
+ * found the 75 ms full table scan on every lookup (see plan/03-progress.md → "Query plans").
  *
  * Usage:
- *   npm run measure:zstd                 # payload codec ratios
- *   npm run measure:zstd -- --db         # ...and import into SQLite to get a real total DB size
- *   npm run measure:zstd -- --rows=50000 # cap rows (a fast smoke run)
+ *   npm run measure:storage                 # payload codec ratios + decode cost
+ *   npm run measure:storage -- --db         # ...and import into SQLite for a real total DB size
+ *   npm run measure:storage -- --rows=50000 # cap rows (a fast smoke run)
  *
  * The dictionary (~24 MB) is downloaded on first use into `dictionaries/` (gitignored) and cached.
- * Requires the zstd build: `npm run build:zstd`.
+ *
+ * Results and their interpretation live in plan/zstd/README.md; the headline is that ~78 MB of the
+ * ~150 MB database is indexes, which no codec touches — so that, not compression, is where the
+ * remaining weight now is.
+ *
+ * `--train=N` models buffering N rows before training the preset dictionary. deflate's dictionary is
+ * capped at 32 KB (DEFLATE's window), so raising it past a few thousand rows changes nothing; the
+ * knob is kept because it mattered for the zstd evaluation and would matter again for any codec with
+ * a larger dictionary.
  */
 
 import fs from 'fs';
 import JSZip from 'jszip';
 import path from 'path';
 import {fileURLToPath} from 'url';
-import {parseJson} from '../json.js';
+import {parseJson} from './json.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.join(dirname, '..', '..');
+const repoRoot = path.join(dirname, '..');
 const dictionaryDir = path.join(repoRoot, 'dictionaries');
 const archivePath = path.join(dictionaryDir, 'kty-de-en.zip');
 
@@ -54,6 +62,12 @@ const DEFAULT_TRAIN_SAMPLE_SIZE = 1000;
 
 /** Decode every Nth row rather than all of them; decode timing needs a sample, not the corpus. */
 const DECODE_SAMPLE_EVERY = 20;
+
+/** `DictionaryImporter.maxTransactionLength` — mirrored so training sees what production sees. */
+const IMPORTER_BATCH_SIZE = 1000;
+
+/** How many real lookups to time for the per-query cost. */
+const QUERY_PROBE_COUNT = 200;
 
 const encoder = new TextEncoder();
 
@@ -92,14 +106,18 @@ async function ensureDictionary() {
 }
 
 /**
- * Yields the packed payloads of every term, bank by bank, so the whole 626 MB of JSON is never
- * resident at once. The payload shape is exactly `DictionaryImporter._packTermEntry`'s
+ * Yields every term row, bank by bank, so the whole 626 MB of JSON is never resident at once. Rows
+ * carry the real `expression`/`reading`/`sequence` as well as the payload, because the database
+ * measurement needs genuine index content — synthetic keys would misreport the index size, which is
+ * a large part of the answer.
+ *
+ * The payload shape is exactly `DictionaryImporter._packTermEntry`'s
  * `m: [definitionTags, rules, score, glossary, termTags]`.
  * @param {number} rowLimit
- * @yields {unknown[][]} One bank's worth of packed payloads.
- * @returns {AsyncGenerator<unknown[][]>}
+ * @yields {{expression: string, reading: string, sequence: number, m: unknown[]}[]} One bank's rows.
+ * @returns {AsyncGenerator<{expression: string, reading: string, sequence: number, m: unknown[]}[]>}
  */
-async function *readTermPayloadBanks(rowLimit) {
+async function *readTermBanks(rowLimit) {
     const zip = await JSZip.loadAsync(fs.readFileSync(archivePath));
     const bankNames = Object.keys(zip.files)
         .filter((name) => /^term_bank_\d+\.json$/.test(name))
@@ -110,14 +128,19 @@ async function *readTermPayloadBanks(rowLimit) {
         if (file === null) { continue; }
         /** @type {unknown[][]} */
         const bank = parseJson(await file.async('string'));
-        /** @type {unknown[][]} */
-        const payloads = [];
+        /** @type {{expression: string, reading: string, sequence: number, m: unknown[]}[]} */
+        const rows = [];
         for (const entry of bank) {
             // [expression, reading, definitionTags, rules, score, glossary, sequence, termTags]
-            payloads.push([entry[2], entry[3], entry[4], entry[5], entry[7]]);
+            rows.push({
+                expression: /** @type {string} */ (entry[0]),
+                reading: /** @type {string} */ (entry[1]),
+                sequence: typeof entry[6] === 'number' ? entry[6] : 0,
+                m: [entry[2], entry[3], entry[4], entry[5], entry[7]],
+            });
             if (++emitted >= rowLimit) { break; }
         }
-        yield payloads;
+        yield rows;
         if (emitted >= rowLimit) { return; }
     }
 }
@@ -149,7 +172,8 @@ async function measureCodecs(entries, trainSamples, rowLimit) {
             decodeRows: 0,
         });
     }
-    for await (const payloads of readTermPayloadBanks(rowLimit)) {
+    for await (const rows of readTermBanks(rowLimit)) {
+        const payloads = rows.map((row) => row.m);
         for (const entry of prepared) {
             const start = Date.now();
             let bytes = 0;
@@ -177,13 +201,14 @@ async function measureCodecs(entries, trainSamples, rowLimit) {
  * @param {import('payload-codec').PayloadCodec} codec
  * @param {string} label
  * @param {number} rowLimit
+ * @param {number} trainSampleSize
  * @returns {Promise<void>}
  */
-async function measureDatabase(codec, label, rowLimit) {
+async function measureDatabase(codec, label, rowLimit, trainSampleSize) {
     const {default: sqlite3InitModule} = await import('@sqlite.org/sqlite-wasm');
-    const {DictionaryDatabaseSqlite} = await import('../../ext/js/dictionary/sqlite/dictionary-database-sqlite.js');
+    const {DictionaryDatabaseSqlite} = await import('../ext/js/dictionary/sqlite/dictionary-database-sqlite.js');
     const sqlite3 = /** @type {import('sqlite-wasm').Sqlite3Module} */ (/** @type {unknown} */ (await sqlite3InitModule()));
-    const backend = new DictionaryDatabaseSqlite(codec);
+    const backend = new DictionaryDatabaseSqlite(codec, [], {trainSampleSize});
     await backend.prepare({sqlite3, vfs: 'memory'});
 
     const title = 'kty-de-en';
@@ -193,28 +218,67 @@ async function measureDatabase(codec, label, rowLimit) {
 
     const start = Date.now();
     let rows = 0;
-    for await (const payloads of readTermPayloadBanks(rowLimit)) {
+    /** @type {string[]} */
+    const probeTerms = [];
+    for await (const bank of readTermBanks(rowLimit)) {
         /** @type {import('dictionary-database').DatabaseTermEntryPacked[]} */
-        const items = payloads.map((m, i) => ({
-            expression: `e${rows + i}`,
-            reading: `r${rows + i}`,
+        const items = bank.map((row) => ({
+            expression: row.expression,
+            reading: row.reading,
             dictionary: title,
-            sequence: rows + i,
-            m: /** @type {import('dictionary-database').DatabaseTermEntryPayload} */ (m),
+            sequence: row.sequence,
+            m: /** @type {import('dictionary-database').DatabaseTermEntryPayload} */ (row.m),
         }));
-        await backend.bulkAdd('terms', items, 0, items.length);
+        // Import in the importer's own batch size, so training sees exactly what it sees in
+        // production (it trains on the first batch).
+        for (let i = 0; i < items.length; i += IMPORTER_BATCH_SIZE) {
+            await backend.bulkAdd('terms', items, i, Math.min(IMPORTER_BATCH_SIZE, items.length - i));
+        }
+        if (probeTerms.length < QUERY_PROBE_COUNT) { probeTerms.push(items[0].expression, items[items.length >> 1].expression); }
         rows += items.length;
         process.stdout.write(`\r    ${label}: imported ${rows} rows…`);
     }
     await backend.finalizeImport();
+
     const internal = /** @type {{_require: () => {selectValue: (sql: string) => unknown}}} */ (/** @type {unknown} */ (backend));
     // eslint-disable-next-line no-underscore-dangle
     const db = internal._require();
-    const pageCount = Number(db.selectValue('PRAGMA page_count'));
-    const pageSize = Number(db.selectValue('PRAGMA page_size'));
+    const dbBytes = Number(db.selectValue('PRAGMA page_count')) * Number(db.selectValue('PRAGMA page_size'));
+    const payloadBytes = Number(db.selectValue('SELECT sum(length(payload)) FROM terms'));
+    const dictBytes = Number(db.selectValue('SELECT coalesce(sum(length(codec_dict)), 0) FROM dictionaries'));
+
+    // A real lookup: findTermsBulk over the enabled dictionaries, decoding each matching row. Warmed
+    // up first so statement preparation and page-cache warming don't land on the first probe.
+    const dictionaries = new Set([title]);
+    for (const term of probeTerms.slice(0, 10)) { await backend.findTermsBulk([term], dictionaries, 'exact'); }
+    const queryStart = Date.now();
+    let decoded = 0;
+    for (const term of probeTerms) { decoded += (await backend.findTermsBulk([term], dictionaries, 'exact')).length; }
+    const queryMs = (Date.now() - queryStart) / probeTerms.length;
+
     process.stdout.write('\r');
-    log(`    ${label}: DB ${mb(pageCount * pageSize)} for ${rows} rows (${((Date.now() - start) / 1000).toFixed(0)}s)`);
+    log(
+        `    ${label}: DB ${mb(dbBytes).padStart(9)} = payload ${mb(payloadBytes).padStart(9)} + dict ` +
+        `${mb(dictBytes).padStart(8)} + rest ${mb(dbBytes - payloadBytes - dictBytes).padStart(9)} | ` +
+        `${rows} rows, import ${((Date.now() - start) / 1000).toFixed(0)}s | lookup ${queryMs.toFixed(2)} ms ` +
+        `(${(decoded / probeTerms.length).toFixed(1)} rows/lookup) | wasm heap ${mb(wasmHeapBytes(codec))}`,
+    );
     backend.close();
+}
+
+/**
+ * Resident size of a codec's WASM linear memory, which is the bulk of what a compressing codec costs
+ * in RAM while the extension is idle: the module itself plus the compiled dictionary handles.
+ * Returns 0 for codecs with no WASM behind them.
+ * @param {import('payload-codec').PayloadCodec} codec
+ * @returns {number}
+ */
+function wasmHeapBytes(codec) {
+    // Reaches into the codec's private module deliberately: exposing a heap-size accessor on the
+    // production API purely so a measurement script can read it would be the worse trade.
+    // eslint-disable-next-line no-underscore-dangle
+    const module = /** @type {{_module?: {HEAPU8?: Uint8Array}}} */ (/** @type {unknown} */ (codec))._module;
+    return module?.HEAPU8?.byteLength ?? 0;
 }
 
 /** Entry point. */
@@ -231,30 +295,26 @@ async function main() {
     };
     const rowLimit = numberArg('rows', Number.POSITIVE_INFINITY);
     const trainSampleSize = numberArg('train', DEFAULT_TRAIN_SAMPLE_SIZE);
-    const dictionaryCapacity = numberArg('dict-cap', 0);
-    const level = numberArg('level', 0);
     const withDatabase = args.includes('--db');
 
     await ensureDictionary();
 
-    const [{IdentityPayloadCodec}, {DeflatePayloadCodec}, {ZstdPayloadCodec}, pakoModule, {loadZstdInitModule}] = await Promise.all([
-        import('../../ext/js/dictionary/payload-codec.js'),
-        import('../../ext/js/dictionary/deflate-payload-codec.js'),
-        import('../../ext/js/dictionary/zstd-payload-codec.js'),
+    const [{IdentityPayloadCodec}, {DeflatePayloadCodec}, pakoModule] = await Promise.all([
+        import('../ext/js/dictionary/payload-codec.js'),
+        import('../ext/js/dictionary/deflate-payload-codec.js'),
         import('pako'),
-        import('./load.js'),
     ]);
     // pako is CJS: under a dynamic import node puts its exports on `.default`, where the tests' static
     // `import * as pako` sees them as named exports.
     const pako = /** @type {import('pako')} */ (pakoModule.default ?? pakoModule);
-    const zstdInitModule = await loadZstdInitModule();
 
     log('==> reading term payloads');
     /** @type {unknown[][]} */
     const trainSamples = [];
     let rawBytes = 0;
     let rowCount = 0;
-    for await (const payloads of readTermPayloadBanks(rowLimit)) {
+    for await (const rows of readTermBanks(rowLimit)) {
+        const payloads = rows.map((row) => row.m);
         for (const payload of payloads) {
             rawBytes += encoder.encode(JSON.stringify(payload)).length;
             // The real import trains on the first batch it sees, so sample the same way rather than
@@ -267,31 +327,11 @@ async function main() {
     process.stdout.write('\r');
     log(`    ${rowCount} term rows; payload ${mb(rawBytes)} of compact JSON (avg ${(rawBytes / rowCount).toFixed(0)} B/row)`);
 
-    /**
-     * `--level`/`--dict-cap` pin a single zstd configuration; otherwise sweep the interesting ones.
-     * Dictionary capacity matters far more than level, so the default sweep varies it — but note a
-     * bigger dictionary is only reachable by raising `--train` too (ZDICT needs roughly 100x the
-     * dictionary size in samples), and that means buffering that many rows during a real import.
-     * @type {{codec: import('payload-codec').PayloadCodec, label: string}[]}
-     */
+    /** @type {{codec: import('payload-codec').PayloadCodec, label: string}[]} */
     const codecs = [
         {codec: new IdentityPayloadCodec(), label: 'identity (JSON)'},
         {codec: new DeflatePayloadCodec(pako), label: 'deflate + 32 KB dict'},
     ];
-    if (level > 0 || dictionaryCapacity > 0) {
-        const options = {level: level > 0 ? level : 15, dictionaryCapacity: dictionaryCapacity > 0 ? dictionaryCapacity : 112640};
-        codecs.push({
-            codec: new ZstdPayloadCodec(zstdInitModule, options),
-            label: `zstd -${options.level} + ${(options.dictionaryCapacity / 1024).toFixed(0)} KB cap`,
-        });
-    } else {
-        for (const capacity of [112640, 524288, 2097152, 4194304]) {
-            codecs.push({
-                codec: new ZstdPayloadCodec(zstdInitModule, {level: 15, dictionaryCapacity: capacity}),
-                label: `zstd -15 + ${(capacity / 1024).toFixed(0)} KB cap`,
-            });
-        }
-    }
 
     log(`\n==> payload codecs (single pass; ${trainSamples.length} training samples)`);
     const results = await measureCodecs(codecs, trainSamples, rowLimit);
@@ -311,9 +351,8 @@ async function main() {
 
     if (withDatabase) {
         log('\n==> full SQLite import (real DB size, indexes included)');
-        await measureDatabase(new IdentityPayloadCodec(), 'identity', rowLimit);
-        await measureDatabase(new DeflatePayloadCodec(pako), 'deflate ', rowLimit);
-        await measureDatabase(new ZstdPayloadCodec(zstdInitModule, {level: 15}), 'zstd -15', rowLimit);
+        await measureDatabase(new IdentityPayloadCodec(), 'identity', rowLimit, trainSampleSize);
+        await measureDatabase(new DeflatePayloadCodec(pako), 'deflate ', rowLimit, trainSampleSize);
     } else {
         log('\n(pass --db to also import into SQLite and measure the real database size)');
     }

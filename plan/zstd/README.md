@@ -1,9 +1,21 @@
 # Task: zstd payload codec with a trained dictionary
 
-**Status: BUILT AND TESTED, NOT SELECTED. The design's headline number does not reproduce.** The
-custom WASM build exists, the codec ships, and it passes node + real-Safari end-to-end. It has now
-been measured against the real `kty-de-en` dictionary (`npm run measure:zstd`), and that measurement
-changes the picture — see [Measured on real data](#measured-on-real-data-kty-de-en).
+**Status: BUILT, MEASURED, REJECTED — and REMOVED. `deflate` ships instead**
+([../02-decisions.md](../02-decisions.md) #26). This file is kept as the record of _why_, so nobody
+has to rediscover it.
+
+The custom WASM build worked and passed node + real Safari end-to-end. Measured against the real
+`kty-de-en` (`npm run measure:storage`) it still lost: the design's **5.52× / ~46 MB does not
+reproduce**; with the plan's own parameters zstd is _worse_ than deflate; and sized properly it saves
+~13 MB on a ~150 MB database, for a custom emscripten toolchain, ~24 MB of RAM, and import buffering
+that does not exist. **~78 MB of the database is indexes that no codec touches**, so compression was
+never going to reach the ~100 MB target anyway.
+
+The code is deleted rather than left dormant — it is in git history at **`58fe1f50`**
+(`ext/js/dictionary/zstd-payload-codec.js`, `dev/zstd/`, `types/ext/zstd.d.ts`), and the `codec`
+column keeps the decision reversible. The exercise still paid for itself: it found a **75 ms full
+table scan on every lookup** ([../03-progress.md](../03-progress.md) → "Query plans"), which mattered
+far more than any codec.
 
 This is the final compression step of the storage refactor ([../01-design.md](../01-design.md) §4,
 §6, §8.2). The backend, the codec seam, and an interim `deflate` codec already shipped; this task
@@ -151,14 +163,16 @@ buffering, not the dictionary, is the real cost. `trainSampleSize` is now a cons
 `DictionaryDatabaseSqlite`, and `ZstdPayloadCodec` takes `level`/`dictionaryCapacity`, so the
 tradeoff is tunable rather than baked in.
 
-### Decode: a bigger dictionary is free, and zstd is much faster than deflate
+### Decode: a bigger dictionary is free; zstd is faster, but it does not matter
 
-The thing that would sink this trade is slower lookups — `decode` runs inside every query, and saving
-15 MB is not worth a visibly slower popup. It turns out to be the reverse of the worry:
+The worry worth checking was slower lookups — `decode` runs inside every query, and saving 15 MB is
+not worth a visibly slower popup. Neither codec is a problem (see
+[Does any of this affect the UI?](#does-any-of-this-affect-the-ui) — the per-lookup difference is
+tens of microseconds), but the relative numbers are still informative:
 
 - **zstd decodes ~8× faster than deflate** — 2.7 vs 21.4 µs/row on the full corpus — and lands within
-  1 µs/row of storing raw uncompressed JSON (1.7 µs). It also encodes ~13× faster (26 vs 2 MB/s).
-  On the axis that matters for queries, **deflate is the expensive option**, not zstd.
+  1 µs/row of storing raw uncompressed JSON (1.7 µs). It also encodes ~13× faster (26 vs 2 MB/s),
+  which _is_ user-visible: it is the difference between a 47 s and a 166 s import.
 - **Dictionary size costs nothing on decode.** On a 60k-row subset (read the latencies, not the
   ratios): 110 KB → 8.3 µs/row, 512 KB → 7.7, 2 MB → 7.7, 4 MB → 8.3 — flat within noise. The `DDict`
   is parsed once at `prepare()` and cached, so per-row cost does not scale with it. The only prices
@@ -185,39 +199,105 @@ The thing that would sink this trade is slower lookups — `decode` runs inside 
 `TextDecoder` a `subarray` **view** into the WASM heap, which WebKit rejects with a `TypeError`
 while node accepts it. Fixed by copying out with `slice` first (as `train`/`encode` already did).
 
+## The whole database, not just the payload (`measure:zstd -- --db`)
+
+Payload ratios flatter every codec, because the payload is not the whole file. Importing all 947,070
+rows through the real backend (`page_count * page_size`, after `finalizeImport`):
+
+| Codec                                                           |     Total DB | payload | trained dict | rest (indexes, keys, row overhead) |
+| --------------------------------------------------------------- | -----------: | ------: | -----------: | ---------------------------------: |
+| identity (JSON)                                                 |     345.2 MB |   253.9 |            — |                            91.2 MB |
+| **deflate + 32 KB**                                             | **149.7 MB** |    71.5 |            — |                            78.1 MB |
+| zstd, **as production trains today** (1 KB batch → 0.3 MB dict) |     161.3 MB |    82.4 |       0.3 MB |                            78.6 MB |
+| zstd, 1.9 MB dict (projected¹)                                  |      ~137 MB |    56.8 |       1.9 MB |                           ~78.6 MB |
+
+¹ payload and dict measured, `rest` taken from the run above — not yet a single end-to-end run,
+because reaching a 1.9 MB dictionary needs the import buffering that does not exist yet.
+
+This reframes the whole codec argument:
+
+- **`rest` is ~78 MB and does not compress.** Indexes, keys and row overhead are over half the
+  database once the payload is squeezed. So the payload win of 71.5 → 56.8 MB (−15) only moves the
+  total 149.7 → ~137 MB (**−8%**).
+- **Nothing reaches the ~100 MB target**, and no codec can: even a _free, perfect_ codec (payload → 0)
+  would land at ~78 MB, and deflate is already within 70 MB of that floor. If ~100 MB matters, the
+  next work is the indexes, not the codec.
+- **The real win is already banked**: ~1.2 GB → ~150 MB with deflate. zstd's extra 13 MB is ~1% of
+  the original problem.
+
+## Does any of this affect the UI?
+
+**No — and the thing that did was not the codec.** Per-lookup cost after the index fix
+([../02-decisions.md](../02-decisions.md) #27), on the full 947k-row dictionary:
+
+| Codec    | SQL      | decode/row | lookup total |
+| -------- | -------- | ---------- | ------------ |
+| identity | ~0.04 ms | 1.7 µs     | ~0.05 ms     |
+| deflate  | ~0.04 ms | 21.4 µs    | ~0.06 ms     |
+| zstd     | ~0.04 ms | 2.7 µs     | ~0.05 ms     |
+
+A lookup decodes a handful of rows, so the codec contributes tens of microseconds — three orders of
+magnitude below a 16 ms frame. **Decode speed is not a reason to choose either codec.** (The earlier
+"deflate taxes every query" framing overstated it: 20 µs/row is real but invisible.)
+
+What _did_ threaten the UI was a full table scan on every lookup — 75 ms — caused by the query
+planner, not compression. Measuring the real dictionary is what exposed it; see
+[../03-progress.md](../03-progress.md) → "Query plans".
+
+## RAM
+
+- **zstd costs ~24 MB of WASM heap** in the DB worker, measured after a full import. Of that,
+  **16.1 MB is emscripten's default initial heap** — present before any dictionary is loaded, and
+  tunable with `-sINITIAL_MEMORY` (the module grows on demand anyway). The trained dictionary and the
+  CDict/DDict account for the rest.
+- **deflate costs essentially nothing**: pure JS, a 32 KB dictionary, no WASM heap.
+- **Caveat for a big dictionary**: training copies the samples into the WASM heap, so a 1.9 MB
+  dictionary (~200k rows ≈ 54 MB of samples) makes the heap grow to at least that during import —
+  and `WebAssembly.Memory` **cannot shrink**, so it stays that large for the life of the worker
+  unless training happens in a module instance that is then discarded. Unmeasured; it matters on iOS,
+  where extension memory limits are real.
+
 ## Where this leaves the decision
 
-Perspective first: the refactor's goal is ~1.2 GB → ~100 MB, and **every option below already
-achieves the bulk of that**. The remaining argument is over ~17 MB of payload, so complexity and
-query speed matter more than the last megabyte.
+**On the measured evidence, deflate is the better engineering choice.** That reverses what the
+payload table alone suggests:
 
-| Option                                        | Payload     | Decode         | Cost                                            |
-| --------------------------------------------- | ----------- | -------------- | ----------------------------------------------- |
-| identity (no compression)                     | 253.9 MB    | 1.7 µs/row     | none                                            |
-| deflate + 32 KB (ships today, unselected)     | 71.5 MB     | 21.4 µs/row    | none — pure JS, no build step                   |
-| zstd −15, 110 KB dict (plan's params)         | 80.9 MB     | ~8 µs/row      | WASM build                                      |
-| **zstd −15, 1.9 MB dict, 200k train samples** | **56.8 MB** | **2.7 µs/row** | WASM build + buffering ~200k rows during import |
+| Option                           | Total DB     | Lookup   | RAM     | Cost                                |
+| -------------------------------- | ------------ | -------- | ------- | ----------------------------------- |
+| identity                         | 345.2 MB     | ~0.05 ms | —       | none                                |
+| **deflate + 32 KB**              | **149.7 MB** | ~0.06 ms | ~0      | none — pure JS                      |
+| zstd, as production trains today | 161.3 MB     | ~0.05 ms | ~24 MB  | WASM build (**worse than deflate**) |
+| zstd, 1.9 MB dict (projected)    | ~137 MB      | ~0.05 ms | ~24 MB+ | WASM build + import buffering       |
 
-**zstd is better on every axis that matters** — 15 MB smaller than deflate _and_ ~8× faster to decode,
-which is the query path — provided the dictionary is sized properly. Its costs are the WASM build
-(done) and buffering a prefix of the import to train on. deflate's apparent simplicity is not free:
-it is the slowest option to read.
+1. **The margin is 8%, not 25%.** Against the whole database, zstd's best case saves ~13 MB on
+   ~150 MB — about 1% of the original 1.2 GB problem. The ~78 MB of indexes, which no codec touches,
+   is the larger half now.
+2. **Its decode advantage is irrelevant.** ~8× faster, but both are tens of microseconds per
+   lookup — invisible.
+3. **Its costs are real**: a custom emscripten toolchain to maintain, ~24 MB of WASM heap in the DB
+   worker (a live concern on iOS), and import buffering that does not exist yet. **Shipped as-is
+   today zstd is simply worse than deflate** (161.3 vs 149.7 MB), because it can only train on 1,000
+   rows.
+
+zstd becomes the right answer if the ~100 MB target is reinstated _and_ the index overhead is
+attacked too, at which point 13 MB is a meaningful share of what remains. It is built, tested, and
+ready behind the codec registry for that day.
 
 The `--train`/`--dict-cap`/`--level` knobs exist so this can be re-derived rather than argued.
 
 Still open, and deliberately not decided here:
 
 1. **Select a codec** in `ext/js/dictionary/dictionary-database-factory.js` — it still constructs the
-   backend with the default identity codec. Shipping zstd means
-   `new DictionaryDatabaseSqlite(new ZstdPayloadCodec(zstd, {dictionaryCapacity}), [new DeflatePayloadCodec(pako)], {trainSampleSize})`,
-   passing deflate as a decode codec so existing deflate imports stay readable.
-2. **Buffer enough rows to train on** if zstd is chosen: raise `trainSampleSize` and give the trainer
-   more than one `bulkAdd` batch. Without this, zstd trains on 1,000 rows and lands at 3.05× —
-   _worse_ than deflate.
-3. **Measure the real database size** (`npm run measure:zstd -- --db`) — payload ratios ignore the
-   indexes, and the ~100 MB target is about the whole file.
-4. **Reclaim the ~10 B/row frame overhead** (`ZSTD_f_zstd1_magicless`, dictID/content-size flags off)
-   if the last few MB matter — worth ~9 MB on this corpus.
+   backend with the default identity codec. `new DictionaryDatabaseSqlite(new DeflatePayloadCodec(pako))`
+   is the recommendation above; either way pass the other codec in `decodeCodecs` so earlier imports
+   stay readable.
+2. **If zstd is ever chosen**: buffer enough rows to train on (raise `trainSampleSize` _and_ give the
+   trainer more than one `bulkAdd` batch), lower `-sINITIAL_MEMORY`, and check the training heap
+   spike on iOS.
+3. **Attack the ~78 MB of `rest`** if ~100 MB is a real target — that is where the remaining weight
+   is, and no codec reaches it.
+4. **Reclaim the ~10 B/row zstd frame overhead** (`ZSTD_f_zstd1_magicless`, dictID/content-size flags
+   off) — worth ~9 MB, only relevant if zstd is chosen.
 
 Either way the choice is reversible: the `codec` column makes rows self-describing, so new imports
 take whichever codec is selected while old rows keep decoding through the registry.
