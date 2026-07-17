@@ -88,10 +88,40 @@ describe('DictionaryDatabaseSqlite term query plans', () => {
         handle = internal._require();
     });
 
-    test('ANALYZE really does record the reading index as unselective', () => {
-        // If this ever stops holding, the guards below are passing for the wrong reason.
+    test('the partial reading index holds nothing on a dictionary with no readings', () => {
+        // Schema v2 (plan/02-decisions.md #28) made ix_terms_reading partial, so on a German
+        // dictionary it indexes zero of the 2000 rows -- where a full index held 2000 copies of ''
+        // (~8.5 MB on the real dictionary) and, being perfectly unselective, was what talked the
+        // planner into the full scan of #27. `0 0` is that fix visible in the statistics. If this
+        // ever stops holding, the guards below are passing for a different reason than documented.
         const stat = handle.selectObjects("SELECT stat FROM sqlite_stat1 WHERE idx = 'ix_terms_reading'")[0]?.stat;
-        expect(stat).toBe(`${ROW_COUNT} ${ROW_COUNT}`);
+        expect(stat).toBe('0 0');
+    });
+
+    test('ix_terms_dictionary is gone, and the queries that used it still seek', () => {
+        // It was a strict prefix-duplicate of ix_terms_sequence(dictionary_id, sequence) -- redundant
+        // on every dictionary, not just this one -- so dropping it costs no capability.
+        const indexes = handle.selectObjects("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'terms'")
+            .map((row) => String(row.name));
+        expect(indexes).not.toContain('ix_terms_dictionary');
+        expect(indexes).toContain('ix_terms_sequence');
+        for (const sql of ['SELECT count(*) FROM terms WHERE dictionary_id = 1', 'DELETE FROM terms WHERE dictionary_id = 1']) {
+            expect(planOf(sql, []), `planned as a scan:\n  ${sql}`).toMatch(/SEARCH terms USING (COVERING )?INDEX ix_terms_sequence/);
+        }
+    });
+
+    test("the reading probe carries `reading <> ''`, without which it cannot compile", async () => {
+        // The partial index and the query are coupled: SQLite only uses a partial index when the
+        // query provably implies its WHERE clause, and it cannot prove that of a bound parameter.
+        // Combined with INDEXED BY there is then no plan at all -- this fails hard rather than
+        // silently degrading to a scan, which is why the literal must never be dropped.
+        const queries = await captureQueries(() => backend.findTermsBulk(['wort7'], dictionaries, 'exact'));
+        const readingQuery = queries.find(({sql}) => /WHERE reading =/.test(sql));
+        expect(readingQuery?.sql).toContain("reading <> ''");
+        expect(() => handle.selectObjects(
+            'SELECT id FROM terms INDEXED BY ix_terms_reading WHERE reading = ? AND dictionary_id IN (1)',
+            ['wort7'],
+        )).toThrow(/no query solution/);
     });
 
     /**

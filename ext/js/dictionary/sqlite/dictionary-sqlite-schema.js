@@ -16,10 +16,14 @@
  */
 
 /**
- * Schema version for the SQLite dictionary backend. Bump when the DDL below changes; the
- * backend compares it against `PRAGMA user_version` and rebuilds if they differ.
+ * Schema version for the SQLite dictionary backend, stored in `PRAGMA user_version`. Bump when the
+ * DDL below changes and add the corresponding step to `migrateDictionarySchema`, which runs on open.
+ *
+ * 1. Initial columnar schema.
+ * 2. Dropped `ix_terms_dictionary`; `ix_terms_reading` became partial (`WHERE reading <> ''`).
+ *    See plan/02-decisions.md #28.
  */
-export const DICTIONARY_SQLITE_SCHEMA_VERSION = 1;
+export const DICTIONARY_SQLITE_SCHEMA_VERSION = 2;
 
 /**
  * The dictionary storage schema (see plan/01-design.md §8.1). Columnar tables — no per-row property
@@ -49,9 +53,15 @@ CREATE TABLE IF NOT EXISTS terms (
     payload       BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_terms_expression ON terms(expression);
-CREATE INDEX IF NOT EXISTS ix_terms_reading    ON terms(reading);
+-- Partial: on a German dictionary every one of ~947k rows has reading = '', so a full index is
+-- ~8.5 MB of one repeated value. Restricting it to real readings costs Japanese dictionaries
+-- nothing and costs German nothing at all. The reading probe in _queryTermColumn MUST carry the
+-- literal \`AND reading <> ''\` or SQLite cannot use this index -- with INDEXED BY it fails outright
+-- with "no query solution". See plan/02-decisions.md #28.
+CREATE INDEX IF NOT EXISTS ix_terms_reading    ON terms(reading) WHERE reading <> '';
+-- Serves both the sequence lookup and, on its dictionary_id prefix, the per-dictionary count and
+-- delete. A separate ix_terms_dictionary(dictionary_id) would be a strict prefix-duplicate of this.
 CREATE INDEX IF NOT EXISTS ix_terms_sequence   ON terms(dictionary_id, sequence);
-CREATE INDEX IF NOT EXISTS ix_terms_dictionary ON terms(dictionary_id);
 
 CREATE TABLE IF NOT EXISTS term_meta (
     id            INTEGER PRIMARY KEY,
@@ -108,11 +118,25 @@ CREATE INDEX IF NOT EXISTS ix_media_dictionary ON media(dictionary_id);
 `;
 
 /**
- * Creates the dictionary schema (idempotent) and records the schema version.
+ * Brings an existing database up to `DICTIONARY_SQLITE_SCHEMA_VERSION`, then creates anything still
+ * missing and records the version. Idempotent, and safe on a fresh database (`user_version` is 0 and
+ * every step below is a no-op against empty schema).
+ *
+ * Migrations run **before** the DDL because `CREATE ... IF NOT EXISTS` will not alter an object that
+ * already exists — an index whose definition changed has to be dropped here or the create silently
+ * keeps the old one.
  * @param {import('sqlite-wasm').SqliteDatabaseHandle} db
  * @returns {void}
  */
 export function createDictionarySchema(db) {
+    const version = Number(db.selectValue('PRAGMA user_version'));
+    if (version < 2) {
+        // v1 -> v2: ix_terms_dictionary is redundant with ix_terms_sequence's leading column, and
+        // ix_terms_reading is recreated below as a partial index. Both are index-only changes, so
+        // this rebuilds them in place and keeps the imported data — no re-import.
+        db.exec('DROP INDEX IF EXISTS ix_terms_dictionary');
+        db.exec('DROP INDEX IF EXISTS ix_terms_reading');
+    }
     db.exec(SCHEMA_SQL);
     db.exec(`PRAGMA user_version = ${DICTIONARY_SQLITE_SCHEMA_VERSION}`);
 }

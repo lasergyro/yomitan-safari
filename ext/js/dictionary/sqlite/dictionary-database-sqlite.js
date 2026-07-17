@@ -1093,13 +1093,20 @@ export class DictionaryDatabaseSqlite {
         // average, it just cannot know the probe value is not the one dominant value. IndexedDB had
         // no such failure mode: it always seeks the index, which is exactly what these probes want.
         const index = column === 'expression' ? 'ix_terms_expression' : 'ix_terms_reading';
+        // ix_terms_reading is partial (`WHERE reading <> ''`), so the probe has to repeat that
+        // predicate literally: SQLite only uses a partial index when the query provably implies its
+        // WHERE clause, and it cannot prove that of a bound parameter. Without this the `INDEXED BY`
+        // above does not degrade to a scan — the statement fails to compile at all, with
+        // "no query solution". Dropping empty readings is also the correct semantics: a row with
+        // reading = '' has no reading, so nothing should match it *as* a reading.
+        const partial = column === 'reading' ? " AND reading <> ''" : '';
         switch (matchType) {
             case 'prefix':
                 // Inclusive bound [term, term+'￿'], matching IDBKeyRange.bound(term, term+'￿').
                 // Valid for BMP strings, where SQLite BINARY (UTF-8) and IndexedDB (UTF-16) code-point
                 // orders agree; dictionary data is BMP.
                 return this._selectObjects(
-                    `SELECT ${columns} FROM terms INDEXED BY ${index} WHERE ${column} >= ? AND ${column} <= ? || char(65535) AND ${idFilter}`,
+                    `SELECT ${columns} FROM terms INDEXED BY ${index} WHERE ${column} >= ? AND ${column} <= ? || char(65535)${partial} AND ${idFilter}`,
                     [term, term],
                 );
             case 'suffix': {
@@ -1111,7 +1118,7 @@ export class DictionaryDatabaseSqlite {
             }
             default: // 'exact'
                 return this._selectObjects(
-                    `SELECT ${columns} FROM terms INDEXED BY ${index} WHERE ${column} = ? AND ${idFilter}`,
+                    `SELECT ${columns} FROM terms INDEXED BY ${index} WHERE ${column} = ?${partial} AND ${idFilter}`,
                     [term],
                 );
         }
