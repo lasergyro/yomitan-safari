@@ -177,6 +177,52 @@ record of what was tried and what it cost.
   worse than deflate). The default now states that real limit; raising it means buffering more of the
   import before the first insert, which is the actual cost of choosing zstd.
 
+## Sizing work queue — do these in order
+
+From [sizing/](sizing/README.md). Ordered by ascending risk, and each is independently shippable, so
+stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31.
+
+1. **Cache the term-query prepared statements** ([02-decisions.md](02-decisions.md) #32) —
+   `findTermsBulk` loops per term calling `selectObjects`, which prepares **and finalises** a
+   statement per call. ~85% of query time is that overhead, not index seeks (434 candidates:
+   9.44 → 1.52 ms). Affects the backend as shipped. Small and self-contained; no schema change, no
+   behaviour change. **— DONE.**
+2. **Drop the degenerate indexes** ([02-decisions.md](02-decisions.md) #28) — drop
+   `ix_terms_dictionary` (a strict prefix-duplicate of `ix_terms_sequence`, redundant on every
+   dictionary) and make `ix_terms_reading` partial (`WHERE reading <> ''`). **Measured −17.0 MB,
+   149.7 → 132.7 MB**, no capability lost. (Not −26.5: that figure counted `ix_terms_sequence` too,
+   which #29 defers pending the `sequence = 0` semantics call — a further −9.5 MB.) Needs a
+   schema-version bump and the literal `AND reading <> ''` in
+   the reading probe — without it the existing `INDEXED BY` fails with `no query solution` rather
+   than falling back. **— DONE.**
+3. **Rule-derived inflections** ([02-decisions.md](02-decisions.md) #31) — replace the derivable
+   subset of the 852,139 form-of stub rows with induced `(prefix,suffix)` rules + paradigm classes.
+   **~46 MB at K=1,000 (~0.2 ms/hover) down to ~20 MB at K=70,247 (~3.4 ms/hover)**, benchmarked
+   ([sizing/](sizing/README.md) §5.4). **Not blocked on UX after all**: form-of rows never render —
+   they are pure deinflection pointers, and the label-set table reproduces their chip text, so the
+   only visible change is the inflection chain's `source`. The real work is architectural: the rules
+   are derived **per dictionary** and live in the database, while algorithm deinflections come from
+   `MultiLanguageTransformer`, which is **language-static and built at construction**; and dropping
+   the stub rows removes what `_getDictionaryDeinflections` reads, so both paths change together.
+   Import also has to pay the induction (LCS over 2.17M pairs) — measured at **3.1s**, negligible
+   against a multi-minute import. **Decided: K = 1,000** (~46 MB at ~0.2 ms/hover), staged.
+
+   - **Stage A1 — DONE:** `ext/js/dictionary/sqlite/inflection-rules.js` + `test/inflection-rules.test.js`
+     (13 tests). Pure functions: `induceInflectionRule` / `applyInflectionRule` (core = longest
+     common substring, affix change either side, whole-word fallback for zero overlap),
+     `buildInflectionTable` (rank by lemma count, cut to `ruleBudget`), `isDerivable`,
+     `deriveLemmas`. Validated against the real dictionary: it reproduces the analysis exactly —
+     **70,247 rules, 82,661 paradigms, 76.6% of stub rows derivable at K=1,000** (analysis: 70,247 /
+     82,661 / 76%).
+   - **Stage A2 — NEXT:** persist the table. It has to be **compressed** to hit the projection: the
+     ~0.3 MB at K=1,000 is deflate'd, where the same data as SQLite rows would be ~11–15 MB and eat
+     a third of the win. So store it as BLOB columns on `dictionaries` (alongside `codec_dict`) and
+     load it per enabled dictionary — schema v3. Induce in `finalizeImport()` by reading the stub
+     rows back, since `bulkAdd` is streaming and buffering 2.17M pairs would cost ~200 MB of heap.
+     Verify the table reproduces every `(form, lemma, labels)` it claims, still keeping all rows.
+   - **Stage B — NOT STARTED:** skip derivable rows at import, load the rules into the translator,
+     generate candidates + paradigm-verify. Both deinflection paths change together.
+
 ## Stage 5 — NOT STARTED: what is required before flipping `USE_SQLITE_BACKEND`
 
 1. **Extension-origin verification.** `npm run test:safari` covers the engine (OPFS, the vendored
@@ -188,8 +234,12 @@ record of what was tried and what it cost.
    re-import, then `deleteLegacyIndexedDbDictionary()`. Only the helpers exist today; no UI.
 3. **Call `finalizeImport()`** after an import completes (the importer does not call it yet).
 4. **Real-data measurement** — DONE (`npm run measure:storage -- --db`): **149.7 MB** total with
-   deflate, of which **~78 MB is indexes**. The ~100 MB target is unreachable by compression; if it
-   is still a target, the schema is where the work is.
+   deflate, of which **78.1 MB is indexes (49.5) + table row overhead (28.5)** — the earlier "~78 MB
+   of indexes" credited all of it to indexes. Fully broken down per B-tree in
+   [sizing/](sizing/README.md), which also found **26.5 MB of degenerate index** (17.0 of it dropped
+   in schema v2, [02-decisions.md](02-decisions.md) #28) and that **90% of the rows are inflected-form
+   stubs** worth 60.5 MB of the 71.5 MB payload (#30). The ~100 MB target is unreachable by
+   compression; the work is the schema and the dictionary's shape.
 5. **Pick the shipped codec** — DONE: deflate ([02-decisions.md](02-decisions.md) #26). The factory
    builds `new DictionaryDatabaseSqlite(new DeflatePayloadCodec())`; the codec self-loads vendored
    pako in `prepare()`, so nothing extra enters the module graph while the flag is off.

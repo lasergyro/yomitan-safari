@@ -8,8 +8,10 @@ The custom WASM build worked and passed node + real Safari end-to-end. Measured 
 `kty-de-en` (`npm run measure:storage`) it still lost: the design's **5.52× / ~46 MB does not
 reproduce**; with the plan's own parameters zstd is _worse_ than deflate; and sized properly it saves
 ~13 MB on a ~150 MB database, for a custom emscripten toolchain, ~24 MB of RAM, and import buffering
-that does not exist. **~78 MB of the database is indexes that no codec touches**, so compression was
-never going to reach the ~100 MB target anyway.
+that does not exist. **78.1 MB of the database is indexes + row overhead that no codec touches**, so
+compression was never going to reach the ~100 MB target anyway. (That 78.1 is 49.5 MB of index and
+28.5 MB of table row overhead — this doc originally credited all of it to indexes; see
+[../sizing/README.md](../sizing/README.md).)
 
 The code is deleted rather than left dormant — it is in git history at **`58fe1f50`**
 (`ext/js/dictionary/zstd-payload-codec.js`, `dev/zstd/`, `types/ext/zstd.d.ts`), and the `codec`
@@ -218,10 +220,14 @@ This reframes the whole codec argument:
 
 - **`rest` is ~78 MB and does not compress.** Indexes, keys and row overhead are over half the
   database once the payload is squeezed. So the payload win of 71.5 → 56.8 MB (−15) only moves the
-  total 149.7 → ~137 MB (**−8%**).
+  total 149.7 → ~137 MB (**−8%**). (`rest` is **49.5 MB of index + 28.5 MB of table row overhead** —
+  see [../sizing/README.md](../sizing/README.md) §1. Note it is not even a stable quantity: 91.2 MB
+  under identity vs 78.1 under deflate for the same rows, because it absorbs page-fill differences.
+  `dbstat` is the right tool.)
 - **Nothing reaches the ~100 MB target**, and no codec can: even a _free, perfect_ codec (payload → 0)
   would land at ~78 MB, and deflate is already within 70 MB of that floor. If ~100 MB matters, the
-  next work is the indexes, not the codec.
+  next work is the schema, not the codec — and **~26.5 MB of that 78 is degenerate index**, 17.0 MB
+  of which is now simply dropped ([../02-decisions.md](../02-decisions.md) #28).
 - **The real win is already banked**: ~1.2 GB → ~150 MB with deflate. zstd's extra 13 MB is ~1% of
   the original problem.
 
@@ -270,8 +276,8 @@ payload table alone suggests:
 | zstd, 1.9 MB dict (projected)    | ~137 MB      | ~0.05 ms | ~24 MB+ | WASM build + import buffering       |
 
 1. **The margin is 8%, not 25%.** Against the whole database, zstd's best case saves ~13 MB on
-   ~150 MB — about 1% of the original 1.2 GB problem. The ~78 MB of indexes, which no codec touches,
-   is the larger half now.
+   ~150 MB — about 1% of the original 1.2 GB problem. The 78.1 MB of index + row overhead, which no
+   codec touches, is the larger half now.
 2. **Its decode advantage is irrelevant.** ~8× faster, but both are tens of microseconds per
    lookup — invisible.
 3. **Its costs are real**: a custom emscripten toolchain to maintain, ~24 MB of WASM heap in the DB
@@ -294,8 +300,10 @@ Still open, and deliberately not decided here:
 2. **If zstd is ever chosen**: buffer enough rows to train on (raise `trainSampleSize` _and_ give the
    trainer more than one `bulkAdd` batch), lower `-sINITIAL_MEMORY`, and check the training heap
    spike on iOS.
-3. **Attack the ~78 MB of `rest`** if ~100 MB is a real target — that is where the remaining weight
-   is, and no codec reaches it.
+3. **Attack the 78.1 MB of `rest`** if ~100 MB is a real target — that is where the remaining weight
+   is, and no codec reaches it. **Now analysed in full: [../sizing/README.md](../sizing/README.md).**
+   26.5 MB of it is degenerate index (17.0 MB now dropped, schema v2), and the real prize is bigger than
+   `rest` — 90% of the rows are inflected-form stubs costing 60.5 MB of the 71.5 MB payload.
 4. **Reclaim the ~10 B/row zstd frame overhead** (`ZSTD_f_zstd1_magicless`, dictID/content-size flags
    off) — worth ~9 MB, only relevant if zstd is chosen.
 

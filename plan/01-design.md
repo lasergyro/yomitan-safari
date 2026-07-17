@@ -33,6 +33,18 @@ what's left see [03-progress.md](03-progress.md); for the condensed decision log
 >   anecdote until someone measures the `dict` store directly.
 > - **The dictionary's 626 MB of JSON is ~55% whitespace.** The term banks are pretty-printed;
 >   minified they are **276.9 MB**, which matches the 276 MB of column data SQLite actually stores.
+> - **§3's framing — "the `m` payload is the compressible bulk, the rest is index overhead" — holds,
+>   but it hides what the payload is.** 90% of the 947,070 rows are **inflected-form stubs**
+>   (`geschützt → past participle of schützen`), not definitions. They cost **60.5 MB of the 71.5 MB**
+>   of shipped payload; all 94,931 real definitions together are **11.1 MB**. §3 counts rows and
+>   bytes but never distinguishes the two populations, so every conclusion drawn from "266.8 MB of
+>   definitions" is really a conclusion about inflections. See [sizing/](sizing/README.md) §4.
+> - **§3's "~10% of rows carry structured content" is right** (94,931 / 947,070 = 10.0%) — it just
+>   was not followed up. That 10% _is_ the dictionary; the other 90% is morphology.
+> - **"~78 MB is indexes" (stated in the other docs, not here) was wrong**: it is 49.5 MB of index
+>   plus 28.5 MB of table row overhead, and **26.5 MB of the index is degenerate** (17.0 MB of that
+>   is dropped as of schema v2) — see
+>   [sizing/](sizing/README.md) §1–2 and [02-decisions.md](02-decisions.md) #28.
 
 ---
 

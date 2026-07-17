@@ -160,9 +160,10 @@ one — see the note at the top.
     ~137 MB with import buffering that does not exist. So the best case saves ~13 MB on ~150 MB —
     ~1% of the original problem — for a custom emscripten toolchain, ~24 MB of WASM heap in the DB
     worker (a live concern on iOS), and that buffering. Decode speed decided nothing: both are tens
-    of microseconds per lookup, ~1000× under a frame. **~78 MB of the database is indexes, which no
-    codec touches** — so compression cannot reach the ~100 MB target and the remaining weight is the
-    schema. The zstd code is deleted rather than left dormant; the evidence is in
+    of microseconds per lookup, ~1000× under a frame. **78.1 MB of the database is indexes + row
+    overhead, which no codec touches** (49.5 + 28.5 — see [sizing/](sizing/README.md) §1; this was
+    previously miscredited entirely to indexes) — so compression cannot reach the ~100 MB target and
+    the remaining weight is the schema. The zstd code is deleted rather than left dormant; the evidence is in
     [zstd/](zstd/README.md) and the implementation in git history (`58fe1f50`). The `codec` column
     makes this reversible. — _adopted; `createDictionaryDatabase()` now builds
     `new DeflatePayloadCodec()`._
@@ -174,3 +175,69 @@ one — see the note at the top.
     probe always seeks — and these queries want exactly that. Suffix still scans, deliberately: no
     index can serve it. — \_adopted, with a query-plan regression test
     (`dictionary-database-sqlite-query-plan.test.js`); found only by measuring the real dictionary.*
+
+## Storage sizing
+
+Full analysis and every number: [sizing/](sizing/README.md).
+
+28. **Drop `ix_terms_dictionary`; make `ix_terms_reading` partial (`WHERE reading <> ''`).** —
+    `ix_terms_dictionary(dictionary_id)` is a strict prefix-duplicate of
+    `ix_terms_sequence(dictionary_id, sequence)`, so it is redundant **by construction on every
+    dictionary**, not just this one; the count/delete queries that used it still plan as seeks on
+    `ix_terms_sequence` (one as a covering index). `ix_terms_reading` holds 947,070 copies of the
+    empty string on a German dictionary; partial makes it free there while a Japanese dictionary
+    still gets a full one — it adapts to the data instead of guessing. Together **−17.0 MB measured
+    on the real dictionary, 149.7 → 132.7 MB (−11.4%)**, no capability lost — 8.5 MB from each. (The
+    −26.5 MB quoted while this was being analysed also counted `ix_terms_sequence`, which #29 defers;
+    that is a further −9.5 MB.) The partial index **requires** adding the literal
+    `AND reading <> ''` to the reading probe: without it the existing `INDEXED BY` fails hard with
+    `no query solution` rather than falling back to a scan. — _recommended, NOT yet applied._
+29. **Do not make `ix_terms_sequence` partial, and do not adopt `WITHOUT ROWID` yet.** — Both look
+    like free wins and neither is. `WHERE sequence > 0` would _change behaviour_: every `kty-de-en`
+    row has `sequence = 0` while `index.json` claims `sequenced: true`, so this is a semantics
+    question (what does `sequence = 0` mean?) wearing a storage costume — see [sizing/](sizing/README.md)
+    §6 for the latent all-rows-match bug it exposes, which is upstream's and not a regression.
+    `PRIMARY KEY(expression, id) WITHOUT ROWID` measures well on German (−35.7 MB, seeks still
+    0.045 ms) precisely because its reading index is empty — but secondary indexes on a `WITHOUT
+ROWID` table reference rows by the full primary key, so a Japanese dictionary's reading index
+    would carry `expression + id` per entry. It was measured on the one dictionary that cannot show
+    the downside. — _deferred pending a measurement on a Japanese dictionary._
+30. **The remaining weight is the dictionary's shape, not the schema or the codec.** — 90% of
+    `kty-de-en`'s rows are inflected-form stubs (`geschützt → past participle of schützen`). They are
+    **60.5 MB of the 71.5 MB payload**; all 94,931 real definitions together are **11.1 MB**. A stub
+    carries ~3.6 B of information (a 17-bit lemma pointer + a 12-bit label) and costs 71 B stored.
+    Storing them as `(lemma_id, label_id)` instead of JSON text is worth ~50 MB — more than every
+    other lever here combined, and it is an importer/schema change, not a codec one. — _recorded;
+    no work scheduled._
+31. **Deriving stubs from induced rules beats storing them, and the rule model beats the rule
+    budget.** — Rules can be induced from the dictionary's own 849,941 distinct `(form,lemma)` pairs
+    with no language knowledge. Modelling a rule as a shared core (longest common substring) plus an
+    affix change on each side — rather than suffix-only — cuts the rule table **462,003 → 70,247**,
+    paradigm classes **26,711 → 16,129**, the encoding **4.21 → 1.65 MB**, and raises coverage at
+    every budget (at 1,000 rules: **76.7% vs 44.0%**). It matters because German's productive
+    morphology is circumfixing (`ge-…-t`) and periphrastic (`würde ge-…-t haben`), which suffix-only
+    rules cannot express at all — they mint a unique rule per form. Rule count is then a knob:
+    K=100 → ~66 MB, K=1,000 → ~46 MB, all → ~20 MB, trading storage against candidate lookups per
+    hover. **Precision requires the paradigm check** (naive over-generation is 27–64% precise, and a
+    DB lookup does not filter a real-but-wrong word); that check is exact but _tautological_ — it is
+    equivalent to consulting the original map — so this is a **compression scheme, not a
+    generalisation**, and it cannot analyse a form the dictionary never listed. — _measured, not
+    implemented; the open risk is lookup cost, see [sizing/](sizing/README.md) §5.3._
+32. **Cache the term-query prepared statements; `findTermsBulk` re-prepares one per candidate.** —
+    It loops per term calling `selectObjects`, which runs `sqlite3_prepare` + finalise on every call,
+    so a lookup with 434 candidates pays 868 of them. Measured: **~85% of query time is statement
+    preparation, not index seeks** (434 candidates: 9.44 ms → 1.52 ms with two cached statements).
+    Batching into `WHERE expression IN (?,?,…)` on top of that adds only ~12% more (1.34 ms), so
+    caching is the win and batching is a bonus. **This affects the backend as shipped today**, not
+    just the inflection work: it makes every hover ~5–10× cheaper on the SQL. It is also what decides
+    whether the §5.3 rule expansion is affordable — with it, the full 70,247-rule set costs ~3.4 ms
+    per hover instead of ~12. — _measured, not implemented; small and self-contained
+    ([sizing/](sizing/README.md) §5.4)._
+33. **`searchResolution` drives lookup cost more than anything else, and German recommends `word`.** —
+    `translator._getAlgorithmDeinflections` runs the transforms over **every substring** of the scan
+    window (`scanning.length`, default 16), stepping by letter or by word per
+    `translation.searchResolution` (schema default `letter`; `recommended-settings.json` sets `word`
+    for German). Word stepping turns a 16-character window into ~3 substrings instead of 16, a ~5×
+    difference in candidates and therefore in lookup cost. Any latency claim about the deinflection
+    path is meaningless without stating which mode it assumes. — _recorded; both modes are measured in
+    [sizing/](sizing/README.md) §5.4._

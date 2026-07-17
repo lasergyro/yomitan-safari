@@ -6,7 +6,8 @@ that eliminates repeated strings. Branch: **`safari-refactor`**.
 
 **Measured result: ~700 MB of IndexedDB → ~150 MB.** The original "~1.2 GB → ~100 MB" framing did not
 survive measurement — the 1.2 GB baseline is unverified (the app reports ~700 MB), and ~100 MB is
-unreachable by compression because ~78 MB of the database is indexes. See the numbers below.
+unreachable by compression because 78.1 MB of the database is indexes and row overhead rather than
+payload. See the numbers below, and [sizing/](sizing/README.md) for where every byte goes.
 
 ## Resume here (after a context reset)
 
@@ -22,9 +23,15 @@ unreachable by compression because ~78 MB of the database is indexes. See the nu
 - **Heads-up on the numbers — measured on the real `kty-de-en` (`npm run measure:storage`).
   Several claims in [01-design.md](01-design.md) do not survive it; its header lists them.**
   - **Whole-database sizes**: identity 345 MB, **deflate 149.7 MB** (from ~700 MB of IndexedDB).
-    **~78 MB of that is indexes/keys, which no codec touches** — so **~100 MB is unreachable by
-    compression**, and the remaining weight is the schema, not the payload. That, not the codec, is
-    where any further size work goes.
+    **78.1 MB of that is indexes + row overhead, which no codec touches** — so **~100 MB is
+    unreachable by compression**, and the remaining weight is the schema and the dictionary's shape,
+    not the payload. That, not the codec, is where any further size work goes.
+  - **Where the 149.7 MB goes is now fully broken down: [sizing/](sizing/README.md).** Headlines:
+    indexes are **49.5 MB, not ~78** (the old figure conflated indexes with the table's own row
+    overhead); **26.5 MB of index is degenerate**, of which **17.0 MB is now dropped** (schema v2)
+    with no capability
+    lost; and **90% of the rows are inflected-form stubs**, costing 60.5 MB of the 71.5 MB payload
+    while the real definitions are only 11.1 MB. The inflections, not the codec, are the database.
   - **zstd was built, measured and rejected**; its ~13 MB edge did not pay for a custom toolchain,
     ~24 MB of RAM and import buffering. Removed in favour of deflate — [zstd/](zstd/README.md)
     keeps the evidence.
@@ -40,13 +47,14 @@ unreachable by compression because ~78 MB of the database is indexes. See the nu
 
 Numbered oldest → newest; read them in order.
 
-| File                               | Purpose                                                                         | Changes                         |
-| ---------------------------------- | ------------------------------------------------------------------------------- | ------------------------------- |
-| [README.md](README.md)             | Index + resume-here + status                                                    | often                           |
-| [01-design.md](01-design.md)       | Full design reference: baseline, measurements, feasibility, schema, staged plan | rarely                          |
-| [02-decisions.md](02-decisions.md) | Condensed decision log (what + why + status)                                    | when a decision is made/revised |
-| [03-progress.md](03-progress.md)   | Implementation log per stage, watch-outs, file map, what's left                 | every work session              |
-| [zstd/](zstd/README.md)            | Why zstd was built, measured and rejected; the real-data numbers                | closed                          |
+| File                               | Purpose                                                                                                              | Changes                           |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| [README.md](README.md)             | Index + resume-here + status                                                                                         | often                             |
+| [01-design.md](01-design.md)       | Full design reference: baseline, measurements, feasibility, schema, staged plan                                      | rarely                            |
+| [02-decisions.md](02-decisions.md) | Condensed decision log (what + why + status)                                                                         | when a decision is made/revised   |
+| [03-progress.md](03-progress.md)   | Implementation log per stage, watch-outs, file map, what's left                                                      | every work session                |
+| [zstd/](zstd/README.md)            | Why zstd was built, measured and rejected; the real-data numbers                                                     | closed                            |
+| [sizing/](sizing/README.md)        | Bottom-up budget: per-B-tree split, the degenerate indexes, the index floor, and why 90% of the rows are inflections | when the schema or numbers change |
 
 ## Commands
 
