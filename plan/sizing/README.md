@@ -493,17 +493,41 @@ Japanese dictionary before deciding.** The 9.2 MB it adds over §2 is not worth 
 
 ## 8. What to do
 
+> **Every MB figure in §1–§7 is terms-only and understated.** They came from harnesses that imported
+> only `term_bank_*.json` and wrote `reading: ''`. Driving the real `DictionaryImporter` (all stores,
+> `reading` rewritten to the expression) the pre-drop database is **170.5 MB**, not 132.7, and the
+> post-drop database is **49.4 MB** (56.8 at schema v4, then 49.4 once #36 empties the reading index),
+> not 44.56 (see [02-decisions.md](../02-decisions.md) #35). The shape of every conclusion holds; the
+> absolute bytes were low. Re-measuring §1–§4 through the real importer is itself an open item.
+
 1. **Do now** (small, verified, no capability lost): drop `ix_terms_dictionary`, make
-   `ix_terms_reading` partial + add the literal predicate to the reading probe. **149.7 → 132.7 MB,
-   measured** (−17.0; the −26.5 in §2 also counts `ix_terms_sequence`, which item 2 below defers).
-   **DONE** — schema v2, with `dictionary-database-sqlite-query-plan.test.js` covering the empty
-   partial index, the removal of `ix_terms_dictionary`, and the `no query solution` trap.
+   `ix_terms_reading` partial + add the literal predicate to the reading probe. **DONE** — schema v2.
+   ⚠️ The predicate was `reading <> ''`, which **saved nothing** — the importer never writes an empty
+   reading, so it excluded no rows (#35). Fixed by #36: `reading <> expression`, which on German
+   empties the index (a 25.67 MB B-tree; **−23.0 MB** in the file after VACUUM, schema v5). The lesson
+   is the durable part: this was measured on `bulkAdd(reading: '')` data the product never produces.
 2. **Decide** what `sequence = 0` means (§6) before touching `ix_terms_sequence`.
 3. **Measure a Japanese dictionary** — it gates §7, and it is also the only way to know whether the
-   reading index and the reverse-column gap matter in practice.
+   reading index and the reverse-column gap matter in practice. **More urgent now**: #36's reading
+   index is empty on German and non-empty only on Japanese, so Japanese is the case that exercises it.
 4. **The real prize is the inflection representation** (§4): 60.5 MB → ~11 MB. It is a schema +
-   importer change (a `form_of` table of `(expression, lemma_id, label_id)`), not a codec change, and
-   it is worth more than everything else here combined.
+   importer change, not a codec change, and it is worth more than everything else here combined.
+   **DONE, and it went further than this section proposed.** Rather than store the form-of rows more
+   cheaply as `(expression, lemma_id, label_id)`, they are **not stored at all**: rules induced from
+   the dictionary's own pairs (§5.3) delete every row they can reproduce, and `findTermsBulk`
+   synthesizes it back on lookup. Measured through the real importer: **170.5 → 49.4 MB, 947,070 →
+   293,262 rows** (56.8 MB at v4 from the drop, 49.4 once #36 empties the reading index), with the
+   pointers a lookup yields matching the ZIP exactly over 41,921 sampled forms (0 lost, 0 invented).
+   Schema v4/v5; see [02-decisions.md](../02-decisions.md) #31, #34 and #36.
+
+   The whole-file total is now **49.4 MB against the 149.7 MB this document opened on** (both partial
+   pictures — the 149.7 was also terms-only — but the direction is real): the morphology that §4
+   measured at 87% of the database is gone.
+
+5. **Import cost is now the open question, not size.** `finalizeImport` is 124.0s on top of a 152.0s
+   import, through the real importer. Unzip + parse is ~3s of that 152; **~90% of the import is pako
+   deflate** (identity is 15.1s → 366.4 MB, deflate 152.0s → 170.5 MB, #37), so it is a codec knob,
+   not a schema one. The drop pass also decodes every payload a second time (~60s of the 124).
 
 ## Reproducing
 

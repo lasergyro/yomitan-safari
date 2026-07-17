@@ -20,18 +20,18 @@ import {beforeAll, describe, expect, test} from 'vitest';
 import {DictionaryDatabaseSqlite} from '../ext/js/dictionary/sqlite/dictionary-database-sqlite.js';
 
 /**
- * Guards the term lookup path against full table scans.
+ * Guards the term lookup path against full table scans, and pins the reading index's partial
+ * predicate to the shape the real importer produces.
  *
- * This exists because of a real bug that cost ~75 ms per lookup on a ~1M-row dictionary, on the
- * hover path, and that no other test could see. Every row of a German dictionary has `reading = ''`
- * (readings are a Japanese concept), so `ANALYZE` records ix_terms_reading as completely
- * unselective and SQLite's planner concludes a scan beats the index for a reading probe. It is not
- * wrong on average — it just cannot know the probed value is not the one dominant value.
- * `_queryTermColumn` therefore pins the index with `INDEXED BY`.
+ * `_queryTermColumn` pins `INDEXED BY` so a reading probe always seeks — IndexedDB did that
+ * unconditionally, and the planner once chose a ~75 ms/hover scan instead (plan/02-decisions.md #27).
  *
- * The setup below reproduces exactly that shape in miniature: enough rows for ANALYZE to record the
- * degenerate statistic, all with an empty reading. Correctness tests cannot catch this — the results
- * are identical either way, only the plan (and the speed) differs — so the plan is what is asserted.
+ * The fixture reproduces what the importer actually writes, which an earlier version of this test got
+ * wrong: `dictionary-importer.js` rewrites an empty reading to the expression, so a German dictionary
+ * has `reading === expression` on every row and never `''` (see #35). The partial index is therefore
+ * `WHERE reading <> expression` (#36) — empty on the German-shaped rows below, holding only the few
+ * with a distinct reading. Building `reading: ''` rows through `bulkAdd` (as this test used to) tested
+ * a shape the product never produces, and asserted a `sqlite_stat1` of `'0 0'` that real data refutes.
  */
 
 /**
@@ -42,20 +42,27 @@ import {DictionaryDatabaseSqlite} from '../ext/js/dictionary/sqlite/dictionary-d
 
 const dictionaryName = 'Query Plan Test Dictionary';
 
-/** Enough rows that ANALYZE records ix_terms_reading as unselective and the planner prefers a scan. */
+/** Enough rows for ANALYZE to record real statistics for the planner. */
 const ROW_COUNT = 2000;
 
+/** How many of them carry a distinct reading (the Japanese shape), so the partial index is non-empty. */
+const DISTINCT_READING_COUNT = 10;
+
 /**
+ * Rows as the importer writes them: `reading === expression` for the German majority (its
+ * `_convertTermBankEntryV3` rewrites an empty reading to the expression), and a handful with a
+ * genuinely distinct reading, which are the only rows `ix_terms_reading` (partial on
+ * `reading <> expression`) holds.
  * @returns {import('dictionary-database').DatabaseTermEntryPacked[]}
  */
 function createTermRows() {
     /** @type {import('dictionary-database').DatabaseTermEntryPacked[]} */
     const rows = [];
     for (let i = 0; i < ROW_COUNT; ++i) {
+        const expression = `wort${i}`;
         rows.push({
-            expression: `wort${i}`,
-            // The whole point: a dictionary with no readings at all.
-            reading: '',
+            expression,
+            reading: i < DISTINCT_READING_COUNT ? `yomi${i}` : expression,
             dictionary: dictionaryName,
             sequence: i,
             m: ['n', '', i % 50, [`gloss ${i}`], ''],
@@ -88,14 +95,16 @@ describe('DictionaryDatabaseSqlite term query plans', () => {
         handle = internal._require();
     });
 
-    test('the partial reading index holds nothing on a dictionary with no readings', () => {
-        // Schema v2 (plan/02-decisions.md #28) made ix_terms_reading partial, so on a German
-        // dictionary it indexes zero of the 2000 rows -- where a full index held 2000 copies of ''
-        // (~8.5 MB on the real dictionary) and, being perfectly unselective, was what talked the
-        // planner into the full scan of #27. `0 0` is that fix visible in the statistics. If this
-        // ever stops holding, the guards below are passing for a different reason than documented.
+    test('the partial reading index holds only the rows whose reading differs from the expression', () => {
+        // #36: partial on `reading <> expression`, so it holds the DISTINCT_READING_COUNT rows and
+        // none of the German-shaped majority. This is the saving made real -- on the full dictionary
+        // it is 0 of 947,070 rows (a 25.67 MB index reduced to nothing). The earlier `reading <> ''`
+        // predicate held all 2000, because the importer never writes an empty reading (#35), and this
+        // test used to assert `sqlite_stat1 = '0 0'` against `reading: ''` rows the product never
+        // produces. `<count> 1` is ANALYZE reporting the index is perfectly selective.
         const stat = handle.selectObjects("SELECT stat FROM sqlite_stat1 WHERE idx = 'ix_terms_reading'")[0]?.stat;
-        expect(stat).toBe('0 0');
+        expect(stat).toBe(`${DISTINCT_READING_COUNT} 1`);
+        expect(handle.selectObjects('SELECT count(*) AS n FROM terms WHERE reading <> expression')[0]?.n).toBe(DISTINCT_READING_COUNT);
     });
 
     test('ix_terms_dictionary is gone, and the queries that used it still seek', () => {
@@ -110,18 +119,27 @@ describe('DictionaryDatabaseSqlite term query plans', () => {
         }
     });
 
-    test("the reading probe carries `reading <> ''`, without which it cannot compile", async () => {
+    test('the reading probe carries `reading <> expression`, without which it cannot compile', async () => {
         // The partial index and the query are coupled: SQLite only uses a partial index when the
         // query provably implies its WHERE clause, and it cannot prove that of a bound parameter.
         // Combined with INDEXED BY there is then no plan at all -- this fails hard rather than
-        // silently degrading to a scan, which is why the literal must never be dropped.
+        // silently degrading to a scan, which is why the literal must never be dropped (#36).
         const queries = await captureQueries(() => backend.findTermsBulk(['wort7'], dictionaries, 'exact'));
         const readingQuery = queries.find(({sql}) => /WHERE reading =/.test(sql));
-        expect(readingQuery?.sql).toContain("reading <> ''");
+        expect(readingQuery?.sql).toContain('reading <> expression');
         expect(() => handle.selectObjects(
             'SELECT id FROM terms INDEXED BY ix_terms_reading WHERE reading = ? AND dictionary_id IN (1)',
-            ['wort7'],
+            ['yomi1'],
         )).toThrow(/no query solution/);
+    });
+
+    test('a reading probe still finds a row whose reading is distinct, by seeking the partial index', async () => {
+        // The index is not merely empty on German -- it must still serve a real reading lookup on the
+        // rows it does hold. `yomi1` is the reading of `wort1`, so a reading probe must return it.
+        const entries = await backend.findTermsBulk(['yomi1'], dictionaries, 'exact');
+        expect(entries.map((e) => e.term)).toContain('wort1');
+        expect(planOf("SELECT id FROM terms INDEXED BY ix_terms_reading WHERE reading = 'yomi1' AND reading <> expression AND dictionary_id IN (1)", []))
+            .toMatch(/SEARCH terms USING INDEX ix_terms_reading/);
     });
 
     /**

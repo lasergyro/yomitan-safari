@@ -1447,21 +1447,20 @@ export class DictionaryDatabaseSqlite {
         this._require(); // guard: throws if the database is not open
         const idFilter = `dictionary_id IN (${dictionaryIds.join(',')})`;
         const columns = 'id, dictionary_id, expression, reading, sequence, payload';
-        // `INDEXED BY` forces the seek instead of letting the planner choose, because on real data it
-        // chooses catastrophically: every row of a German dictionary has `reading = ''` (readings are
-        // a Japanese concept), so ANALYZE records ix_terms_reading as completely unselective and the
-        // planner full-scans the table for a reading probe — ~75 ms per lookup on a ~1M-row
-        // dictionary, on the hover path, versus 0.02 ms with the index. Its estimate is not wrong on
-        // average, it just cannot know the probe value is not the one dominant value. IndexedDB had
-        // no such failure mode: it always seeks the index, which is exactly what these probes want.
+        // `INDEXED BY` forces the seek instead of letting the planner choose. It always seeks the
+        // index — which is what these probes want, and what IndexedDB did unconditionally — so it can
+        // never regress into the full table scan the planner once chose for a reading probe (that was
+        // the ~75 ms/hover bug of plan/02-decisions.md #27, on the mistaken premise that all readings
+        // were ''; the premise is gone, see #35, but the guarantee is still worth keeping).
         const index = column === 'expression' ? 'ix_terms_expression' : 'ix_terms_reading';
-        // ix_terms_reading is partial (`WHERE reading <> ''`), so the probe has to repeat that
+        // ix_terms_reading is partial (`WHERE reading <> expression`), so the probe has to repeat that
         // predicate literally: SQLite only uses a partial index when the query provably implies its
-        // WHERE clause, and it cannot prove that of a bound parameter. Without this the `INDEXED BY`
+        // WHERE clause, and it cannot prove that of a bound parameter. Without it the `INDEXED BY`
         // above does not degrade to a scan — the statement fails to compile at all, with
-        // "no query solution". Dropping empty readings is also the correct semantics: a row with
-        // reading = '' has no reading, so nothing should match it *as* a reading.
-        const partial = column === 'reading' ? " AND reading <> ''" : '';
+        // "no query solution". It is also the correct semantics: a row whose reading equals its
+        // expression is already found by the expression probe (findTermsBulk dedups by id), so the
+        // reading probe contributing it too would be redundant. See #35/#36.
+        const partial = column === 'reading' ? ' AND reading <> expression' : '';
         switch (matchType) {
             case 'prefix':
                 // Inclusive bound [term, term+'￿'], matching IDBKeyRange.bound(term, term+'￿').

@@ -241,3 +241,135 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     difference in candidates and therefore in lookup cost. Any latency claim about the deinflection
     path is meaningless without stating which mode it assumes. — _recorded; both modes are measured in
     [sizing/](sizing/README.md) §5.4._
+34. **The induced rules belong in the database backend, not in the translator — and #31's recorded
+    blocker was wrong.** — [03-progress.md](03-progress.md) recorded Stage B as blocked on an
+    architectural clash: the rules are per-dictionary and live in the database, while algorithm
+    deinflections come from `MultiLanguageTransformer`, which is language-static and built at
+    construction, so "both deinflection paths change together". That framing assumed the rules had to
+    enter as _algorithm_ transforms. They do not. The rules compress the **dictionary** deinflection
+    path, and that path is driven entirely by what `findTermsBulk` returns, so the backend can delete
+    a derivable form-of row at import and synthesize it back on lookup — `_addDerivedTerms` rebuilds
+    the same `[lemma, labels]` glossary entry the row held, `translator._getDictionaryDeinflections`
+    follows it exactly as before, and `translator._getDeinflections` then strips it as it always did.
+    **The translator does not change at all**, and no rule ever reaches
+    `MultiLanguageTransformer`. — _implemented (Stage B)._
+
+    **Measured end to end through the real `DictionaryImporter`**, one backend, uncontended: 947,070
+    → **293,262 rows**, 170.5 → **56.8 MB** at schema v4, of which the rules cost 1.42 MB and the
+    template 17 B. (#36 then empties the now-useless reading index, taking this to **49.4 MB** at
+    schema v5 — so the full end state is **170.5 → 49.4 MB, −71%**.) Correctness was verified against
+    **the ZIP itself** rather than against a second instance of the same code — for each of 41,921
+    sampled forms, the `[lemma, labels]` pointers a lookup yields versus the ones the dictionary
+    states: **100.00% exact, 0 lost, 0 invented** (that run used the terms-only harness, whose
+    row-level output is identical; only its byte totals were understated). Cost: `finalizeImport`
+    124.0s on top of a 152.0s import.
+
+    Four measurements on `kty-de-en` decided the shape, and each killed a simpler design:
+
+    - **The dictionary groups its pointers per row, and the rules cannot recover the grouping.**
+      `Rappen` states all nine of its pointers in one row's glossary
+      (`[["Rappe",["plural"]],["Rappe",["genitive"]],…]`), in the dictionary's own order. Emitting one
+      synthesized entry per derived pointer therefore differs from the stored row on **39% of real
+      lookups** while being semantically identical (the translator loops entries × definitions), so
+      synthesis emits **one entry per term** carrying every pointer. The lesson generalizes past the
+      shape: **entry-identity is the wrong equivalence** — the right one is what
+      `translator._getDeinflections` consumes, namely the displayed entries (untouched rows, so exact)
+      plus the _set_ of `[lemma, labels]` pointers (order- and grouping-insensitive). A fixture with
+      one pointer per row passed the wrong assertion happily.
+    - **No mixed rows exist** (0 of 947,070: 94,931 pure-real, 852,139 pure-stub). Dropping a
+      derivable row can therefore never destroy glossary text a reader would see — but the code still
+      checks, because that is a fact about this dictionary, not about the format.
+    - **Every stub row is field-identical** (`definitionTags='non-lemma'`, `rules=''`, `score=0`,
+      `termTags=''`, `sequence=0`). So one stored `stub_template` reproduces any of them, and a row
+      whose fields differ simply keeps its row. This is why the template is _recorded_ rather than
+      assumed: it generalizes to a dictionary whose stubs vary, at the cost of keeping those rows.
+    - **12,025 expressions carry both a real row and a stub row.** This is what rules out the obvious
+      shortcut of synthesizing only when the lookup found nothing: for those 12,025 the real row
+      would suppress the deinflection. Synthesis is therefore unconditional, which in turn forces the
+      drop and the synthesis to land in the same commit — with rows present _and_ synthesis on, every
+      deinflection would be returned twice.
+
+    Consequences worth stating plainly:
+
+    - **`stub_template` non-null is the sole licence to synthesize** (schema v4). Gating on the rules
+      existing instead would double every deinflection on a v3 database, which has the rules but all
+      of its rows.
+    - **A wildcard lookup cannot see a dropped form.** A wildcard asks which _stored_ forms match a
+      pattern, and a dropped form is not stored; synthesis only answers an exact probe. `matchType`
+      is `'exact'` on the hover path (`backend.js` defaults it), so this is confined to the search
+      page's explicit `*`. Accepted, and pinned by a test rather than left to be discovered.
+    - **`findTermsExactBulk` and `findTermsBySequenceBulk` no longer see dropped stub rows either.**
+      Both are merge-mode paths, and a form-of stub surfacing there is arguably the latent bug of #29
+      / [sizing/](sizing/README.md) §6 rather than a feature — but this is a behaviour change and is
+      recorded as one, not discovered later.
+    - **Dictionary ids are reused.** `deleteDictionary` must evict `_inflectionCache`: SQLite reissues
+      `INTEGER PRIMARY KEY` values once the rows holding them are gone, so the next imported
+      dictionary can be handed a deleted one's id and inherit its rules. Found while writing the
+      cache, confirmed by a test that fails without the eviction.
+
+    Two measurement traps worth recording, because both produced a wrong number first:
+
+    - **`finalizeImport` is 300.4s, and it took three tries to measure.** First 2086s — a harness
+      holding two 133 MB backends plus every parsed term bank live, in GC thrash; that measured the
+      harness. Then "~125s", from summing a phase profile that omitted `ANALYZE`. Then "300.4s", from
+      a harness holding an 838k-entry truth Map beside the backend. The honest figure, **through the
+      real importer with nothing else held, is 124.0s** on top of a 152.0s import. What the profile
+      did establish and the reruns confirmed: the **DELETEs are 1.3s**, i.e. noise, against ~120s for
+      the two full decode passes — the opposite of the guess that sent me profiling. (The delete
+      alternatives both lose: prepared `DELETE ... WHERE id = ?` per id and a temp-table
+      `IN (SELECT …)` are 1.8s each, against 1.3s for batched `IN` lists.) The two decode passes are
+      fusable and worth ~60s if this ever matters.
+    - **`_selectObjects` materializes.** Walking the 947,070 terms through it holds every payload BLOB
+      live at once, twice per `finalizeImport`. The table walks now use a streaming `_iterateObjects`.
+    - **Every size number in this section was terms-only until the real importer ran.** The harnesses
+      imported only `term_bank_*.json` _and_ wrote `reading: ''`, which left the partial reading index
+      empty. Through the real importer the drop-pass result is **170.5 → 56.8 MB at v4, 49.4 MB at v5
+      (#36)**, not the 136.65 → 44.56 MB reported earlier. The row count (293,262) was right all along;
+      only
+      the bytes around it were understated.
+
+## Corrections found by driving the real importer
+
+35. **#27 and #28 were measured on data the importer never produces, and #28's saving does not
+    exist.** — `dictionary-importer.js`'s `_convertTermBankEntryV3` does
+    `reading = reading.length > 0 ? reading : expression`. So a German dictionary has
+    **`reading === expression` on every one of its 947,070 rows, never `''`**. Every measurement
+    behind #27, #28 and [sizing/](sizing/README.md) came from harnesses that wrote packed rows
+    straight into `bulkAdd` with `reading: ''`, bypassing that line. Measured through the real
+    importer instead (`dbstat`, deflate, all stores):
+
+    | claim                                                  | what was believed             | what is true                                  |
+    | ------------------------------------------------------ | ----------------------------- | --------------------------------------------- |
+    | rows with `reading = ''`                               | 947,070 (all)                 | **0**                                         |
+    | `ix_terms_reading` entries under `WHERE reading <> ''` | 0 (index empty)               | **947,070 (excludes nothing)**                |
+    | `ix_terms_reading` size                                | ~0 after #28, was ~8.5 MB     | **25.67 MB**                                  |
+    | `sqlite_stat1` for it                                  | `947070 947070` (unselective) | **`947070 1` (perfectly selective)**          |
+    | reading probe plan without `INDEXED BY`                | full scan (#27's bug)         | **`SEARCH ... USING INDEX ix_terms_reading`** |
+
+    So: **#28's −8.5 MB is fiction** — its partial predicate excludes nothing. **#27's premise is
+    gone** — the planner picks the index unaided, because readings are unique rather than 947,070
+    copies of one value; the `INDEXED BY` pin is harmless but is not preventing what it documents.
+    `dictionary-database-sqlite-query-plan.test.js` asserting `sqlite_stat1 = '0 0'` was green only
+    because it builds `reading: ''` rows through `bulkAdd`. — _correction recorded; #28's predicate is
+    replaced by #36. #27's pin is kept deliberately (see #36)._
+
+36. **The right partial predicate is `reading <> expression`, and it delivers what #28 promised.** —
+    `findTermsBulk` probes the expression column first and dedups by row id, so a row with
+    `reading === expression` is _always_ already returned by the expression probe; the reading probe
+    can never contribute it. The reading index therefore only needs rows whose reading differs from
+    their expression. On German that is **0 of 947,070 rows — a genuinely empty index** (its B-tree
+    was 25.67 MB by `dbstat`); measured through the real importer the whole file drops **170.5 →
+    147.5 MB (−23.0 after VACUUM) undropped, and 56.8 → 49.4 MB combined with the Stage B drop**. On a
+    Japanese dictionary it indexes exactly the rows that need it.
+    Same coupling caveat as #28: the probe must carry the literal `AND reading <> expression` or
+    SQLite cannot use the index, and with `INDEXED BY` it fails hard with `no query solution`. The
+    `INDEXED BY` pin (#27) is kept even though its original premise is gone: it guarantees a reading
+    probe always seeks the index rather than ever letting the planner reconsider a scan, which is what
+    IndexedDB did and what the hover path wants. — _implemented (schema v5); the query-plan test now
+    builds `reading === expression` rows and asserts the index holds only the distinct-reading ones._
+
+37. **Import is ~90% pako deflate, and that is a knob nobody had priced.** — Through the real
+    importer on `kty-de-en`: **identity 15.1s → 366.4 MB, deflate 152.0s → 170.5 MB**. So the codec
+    costs ~136s of the ~152s import and buys 2.15×. Unzip is 1.7s and `JSON.parse` 1.5s — the file
+    handling is free, and the SQL inserts are ~15s. Any future "the import is slow" work starts at
+    the deflate level, not at the schema. — _recorded._

@@ -200,12 +200,16 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
    **~46 MB at K=1,000 (~0.2 ms/hover) down to ~20 MB at K=70,247 (~3.4 ms/hover)**, benchmarked
    ([sizing/](sizing/README.md) §5.4). **Not blocked on UX after all**: form-of rows never render —
    they are pure deinflection pointers, and the label-set table reproduces their chip text, so the
-   only visible change is the inflection chain's `source`. The real work is architectural: the rules
-   are derived **per dictionary** and live in the database, while algorithm deinflections come from
-   `MultiLanguageTransformer`, which is **language-static and built at construction**; and dropping
-   the stub rows removes what `_getDictionaryDeinflections` reads, so both paths change together.
-   Import also has to pay the induction (LCS over 2.17M pairs) — measured at **3.1s**, negligible
-   against a multi-minute import. **Decided: K = 1,000** (~46 MB at ~0.2 ms/hover), staged.
+   only visible change is the inflection chain's `source`. ~~The real work is architectural: the
+   rules are derived per dictionary and live in the database, while algorithm deinflections come from
+   `MultiLanguageTransformer`, which is language-static and built at construction; and dropping the
+   stub rows removes what `_getDictionaryDeinflections` reads, so both paths change together.~~
+   **That was wrong** — it assumed the rules had to enter as _algorithm_ transforms. They compress
+   the **dictionary** deinflection path, which is driven entirely by what `findTermsBulk` returns, so
+   the backend synthesizes the dropped rows on lookup and the translator does not change at all. See
+   [02-decisions.md](02-decisions.md) #34. Import also has to pay the induction (LCS over 2.17M
+   pairs) — measured at **3.1s**, negligible against a multi-minute import. **Decided: K = 1,000**
+   (~46 MB at ~0.2 ms/hover), staged.
 
    - **Stage A1 — DONE:** `ext/js/dictionary/sqlite/inflection-rules.js` + `test/inflection-rules.test.js`
      (13 tests). Pure functions: `induceInflectionRule` / `applyInflectionRule` (core = longest
@@ -230,8 +234,32 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
      - **Soundness holds on real data**: 85.8% of the 2,170,986 pairs are derivable at K=1,000, and
        over 20,000 forms the table derived 88,399 results with **0 the dictionary does not state**.
        That is the property Stage B depends on.
-   - **Stage B — NOT STARTED:** skip derivable rows at import, load the rules into the translator,
-     generate candidates + paradigm-verify. Both deinflection paths change together.
+   - **Stage B — DONE:** schema v4 adds `dictionaries.stub_template`. `finalizeImport()` now deletes
+     the form-of rows the rules reproduce, and `findTermsBulk` synthesizes them back on an exact
+     probe. **The translator does not change at all** — the rules compress the _dictionary_
+     deinflection path, which `findTermsBulk` alone feeds, so nothing reaches
+     `MultiLanguageTransformer`. See [02-decisions.md](02-decisions.md) #34 for why the recorded
+     blocker was wrong. Measured **through the real `DictionaryImporter`**, one backend, uncontended:
+     - **947,070 → 293,262 rows, 170.5 → 56.8 MB at schema v4** (→ **49.4 MB** once #36 empties the
+       reading index, so **−71%** end to end). The rules cost 1.42 MB and the template 17 B. (Earlier
+       notes said 136.65 → 44.56 MB — those came from a terms-only harness that also wrote
+       `reading: ''`, understating the total; see #35.)
+     - **Correctness checked against the ZIP, not against a second copy of the same code**: for each
+       of 41,921 sampled forms, the `[lemma, labels]` pointers a lookup yields versus the ones the
+       dictionary states — **100.00% exact, 0 lost, 0 invented**.
+     - **`finalizeImport` costs 124.0s** on top of a 152.0s import (was 0.6s with induction off; the
+       drop pass adds a second full decode of every payload, ~120s of the 124, fusable). The DELETEs
+       are 1.3s, i.e. noise.
+     - **Four timing/size claims were retracted getting here** (2086s, 436s, ~125s, 300.4s; and every
+       terms-only MB figure) — all from measuring a contended machine, a harness, or the wrong input
+       rather than the code through the real importer. See #34's and #35's measurement traps.
+     - Known gap, tested and accepted: **a wildcard lookup cannot see a dropped form**, since a
+       wildcard asks which _stored_ forms match a pattern. The hover path is `matchType: 'exact'`.
+     - Coverage: `test/dictionary-database-sqlite-inflection.test.js` (12 tests) imports a real
+       fixture dictionary through the real importer, with induction off and on, and asserts the
+       lookups agree. It now drives the importer rather than hand-writing rows — the previous
+       hand-written version wrote `reading: ''`, which the importer never produces, and so the drop
+       pass silently dropped nothing on real imports while the tests stayed green (#35).
 
 ## Stage 5 — NOT STARTED: what is required before flipping `USE_SQLITE_BACKEND`
 

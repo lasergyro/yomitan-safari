@@ -25,8 +25,11 @@
  * 3. Added `dictionaries.inflection_table`. See plan/02-decisions.md #31.
  * 4. Added `dictionaries.stub_template`, which is also the "derivable rows were dropped" flag.
  *    See plan/02-decisions.md #34.
+ * 5. `ix_terms_reading` predicate `reading <> ''` → `reading <> expression`. The `''` form excluded
+ *    nothing (the importer rewrites an empty reading to the expression), so it saved nothing; the new
+ *    form indexes only rows a reading probe can actually contribute. See plan/02-decisions.md #35/#36.
  */
-export const DICTIONARY_SQLITE_SCHEMA_VERSION = 4;
+export const DICTIONARY_SQLITE_SCHEMA_VERSION = 5;
 
 /**
  * The dictionary storage schema (see plan/01-design.md §8.1). Columnar tables — no per-row property
@@ -69,12 +72,17 @@ CREATE TABLE IF NOT EXISTS terms (
     payload       BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_terms_expression ON terms(expression);
--- Partial: on a German dictionary every one of ~947k rows has reading = '', so a full index is
--- ~8.5 MB of one repeated value. Restricting it to real readings costs Japanese dictionaries
--- nothing and costs German nothing at all. The reading probe in _queryTermColumn MUST carry the
--- literal \`AND reading <> ''\` or SQLite cannot use this index -- with INDEXED BY it fails outright
--- with "no query solution". See plan/02-decisions.md #28.
-CREATE INDEX IF NOT EXISTS ix_terms_reading    ON terms(reading) WHERE reading <> '';
+-- Partial on \`reading <> expression\`, NOT \`reading <> ''\`. The importer rewrites an empty reading to
+-- the expression (dictionary-importer.js: \`reading = reading.length > 0 ? reading : expression\`), so
+-- on a German dictionary every one of ~947k rows has reading = expression and NONE has reading = '' --
+-- a \`<> ''\` predicate would exclude nothing and index all 947k rows (~25.67 MB of a column the
+-- expression index already covers). \`<> expression\` indexes only the rows a reading probe can
+-- actually contribute: findTermsBulk probes expression first and dedups by id, so a row whose reading
+-- equals its expression is always already found by the expression probe. On German that is 0 rows (an
+-- empty index); on Japanese it is exactly the rows with a distinct reading. The reading probe in
+-- _queryTermColumn MUST carry the literal \`AND reading <> expression\` or SQLite cannot use this index
+-- -- with INDEXED BY it fails outright with "no query solution". See plan/02-decisions.md #35/#36.
+CREATE INDEX IF NOT EXISTS ix_terms_reading    ON terms(reading) WHERE reading <> expression;
 -- Serves both the sequence lookup and, on its dictionary_id prefix, the per-dictionary count and
 -- delete. A separate ix_terms_dictionary(dictionary_id) would be a strict prefix-duplicate of this.
 CREATE INDEX IF NOT EXISTS ix_terms_sequence   ON terms(dictionary_id, sequence);
@@ -164,6 +172,12 @@ export function createDictionarySchema(db) {
         // true of every v3 database, and exactly what stops the query path from synthesizing rows
         // that are still stored.
         db.exec('ALTER TABLE dictionaries ADD COLUMN stub_template BLOB');
+    }
+    if (version > 0 && version < 5) {
+        // v4 -> v5: ix_terms_reading's predicate changed (reading <> '' → reading <> expression), and
+        // CREATE INDEX IF NOT EXISTS keeps an index that already exists, so it has to be dropped for
+        // the create below to rebuild it. Index-only change — the imported rows are untouched.
+        db.exec('DROP INDEX IF EXISTS ix_terms_reading');
     }
     db.exec(SCHEMA_SQL);
     db.exec(`PRAGMA user_version = ${DICTIONARY_SQLITE_SCHEMA_VERSION}`);
