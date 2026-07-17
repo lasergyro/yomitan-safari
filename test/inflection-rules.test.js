@@ -16,12 +16,15 @@
  */
 
 import {describe, expect, test} from 'vitest';
+import {parseJson} from '../ext/js/core/json.js';
 import {
     applyInflectionRule,
     buildInflectionTable,
     deriveLemmas,
+    deserializeInflectionTable,
     induceInflectionRule,
     isDerivable,
+    serializeInflectionTable,
 } from '../ext/js/dictionary/sqlite/inflection-rules.js';
 
 /**
@@ -137,6 +140,25 @@ describe('inflection table', () => {
         // Dropped rules mean rows that must be kept, not wrong answers:
         expect(isDerivable(small, 'bin', 'sein')).toBe(false);
         expect(deriveLemmas(small, 'bin')).toStrictEqual([]);
+    });
+
+    test('survives a round-trip through the codec payload shape', () => {
+        // The identity codec's exact round-trip: JSON out and back, as a stored table really goes.
+        const restored = deserializeInflectionTable(parseJson(JSON.stringify(serializeInflectionTable(table))));
+        expect(restored).not.toBeNull();
+        for (const {form, lemma} of PAIRS) {
+            expect(isDerivable(/** @type {import('../ext/js/dictionary/sqlite/inflection-rules.js').InflectionTable} */ (restored), form, lemma)).toBe(true);
+        }
+        expect(deriveLemmas(/** @type {import('../ext/js/dictionary/sqlite/inflection-rules.js').InflectionTable} */ (restored), 'geschützt'))
+            .toStrictEqual(deriveLemmas(table, 'geschützt'));
+    });
+
+    test('a table from an unknown format derives nothing rather than throwing', () => {
+        // An import written by an older version must degrade to "every row is still stored", which
+        // is safe, rather than breaking the database open.
+        expect(deserializeInflectionTable([999, [], [], []])).toBeNull();
+        expect(deserializeInflectionTable(null)).toBeNull();
+        expect(deserializeInflectionTable(['not a table'])).toBeNull();
     });
 
     test('an identity pair is never a rule', () => {

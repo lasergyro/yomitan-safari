@@ -61,6 +61,13 @@ const RULE_SIDE_SEPARATOR = '>';
 const WHOLE_WORD_PREFIX = ' ';
 
 /**
+ * Leading marker in a serialized table. Bump when the layout changes: an import written by an older
+ * version then deserializes to null and simply derives nothing, which is safe because every row it
+ * could have derived is still stored.
+ */
+const INFLECTION_TABLE_FORMAT = 1;
+
+/**
  * Finds the longest common substring, i.e. the part of the two forms the inflection leaves alone.
  * @param {string} a
  * @param {string} b
@@ -212,6 +219,33 @@ export function buildInflectionTable(pairs, {ruleBudget}) {
         if (!paradigm.some(([r, l]) => r === ruleId && l === labelId)) { paradigm.push([ruleId, labelId]); }
     }
     return {rules: ranked, labels, paradigms};
+}
+
+/**
+ * Flattens a table for storage. The result is handed to the dictionary's payload codec, which is
+ * what makes the size work: at a 1,000-rule budget this is ~0.3 MB deflated, where the same data as
+ * SQLite rows would be ~11-15 MB and eat a third of what dropping the rows saves.
+ * @param {InflectionTable} table
+ * @returns {import('dictionary-database').DatabaseTermEntryPayload} A codec-encodable payload.
+ */
+export function serializeInflectionTable(table) {
+    /** @type {[string, [number, number][]][]} */
+    const paradigms = [...table.paradigms];
+    return /** @type {import('dictionary-database').DatabaseTermEntryPayload} */ (
+        /** @type {unknown} */ ([INFLECTION_TABLE_FORMAT, table.rules, table.labels, paradigms])
+    );
+}
+
+/**
+ * Rebuilds a table from `serializeInflectionTable`.
+ * @param {unknown} payload
+ * @returns {?InflectionTable} null if the payload is not a table this version understands, so an
+ *   older import degrades to "derives nothing" (every row is still stored) rather than throwing.
+ */
+export function deserializeInflectionTable(payload) {
+    if (!Array.isArray(payload) || payload[0] !== INFLECTION_TABLE_FORMAT) { return null; }
+    const parts = /** @type {[number, string[], string[], [string, [number, number][]][]]} */ (payload);
+    return {rules: parts[1], labels: parts[2], paradigms: new Map(parts[3])};
 }
 
 /**

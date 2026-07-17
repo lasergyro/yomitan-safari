@@ -19,6 +19,7 @@ import {parseJson} from '../../core/json.js';
 import {IdentityPayloadCodec} from '../payload-codec.js';
 import {requestPersistentStorage} from './dictionary-storage-migration.js';
 import {DICTIONARY_SQLITE_TABLES} from './dictionary-sqlite-schema.js';
+import {buildInflectionTable, deserializeInflectionTable, serializeInflectionTable} from './inflection-rules.js';
 import {openDictionaryDatabaseHandle} from './open-sqlite.js';
 
 /**
@@ -42,6 +43,12 @@ const STORE_TABLE = {
  * practice. The cap only exists so that toggling dictionaries can never grow the cache without end.
  */
 const STATEMENT_CACHE_SIZE = 32;
+
+/**
+ * Default inflection-rule budget. 1,000 derives 76.6% of `kty-de-en`'s form-of rows while keeping a
+ * hover at ~0.2 ms — the knee of the measured curve (plan/sizing/README.md §5.4).
+ */
+const DEFAULT_RULE_BUDGET = 1000;
 
 /**
  * Memoized vendored sqlite3 module.
@@ -89,11 +96,11 @@ export class DictionaryDatabaseSqlite {
      * @param {import('payload-codec').PayloadCodec[]} [decodeCodecs] Extra codecs available for
      *   decoding rows written by a different codec (rows are self-describing via the `codec`
      *   column). The write codec and an identity codec are always registered.
-     * @param {{trainSampleSize?: number}} [options] `trainSampleSize` is how many payloads a
-     *   compressing codec trains its per-dictionary dictionary from; see the field below for why
-     *   raising it is not free.
+     * @param {{trainSampleSize?: number, ruleBudget?: number}} [options] `trainSampleSize` is how
+     *   many payloads a compressing codec trains its per-dictionary dictionary from; `ruleBudget` is
+     *   how many inflection rules to induce per dictionary. See the fields below for both.
      */
-    constructor(codec = new IdentityPayloadCodec(), decodeCodecs = [], {trainSampleSize = 1000} = {}) {
+    constructor(codec = new IdentityPayloadCodec(), decodeCodecs = [], {trainSampleSize = 1000, ruleBudget = DEFAULT_RULE_BUDGET} = {}) {
         /** @type {import('sqlite-wasm').SqliteDatabaseHandle?} */
         this._db = null;
         /** @type {import('payload-codec').PayloadCodec} The write/default codec for new imports. */
@@ -134,6 +141,16 @@ export class DictionaryDatabaseSqlite {
          * @type {number}
          */
         this._trainSampleSize = trainSampleSize;
+        /**
+         * How many inflection rules to induce per dictionary, ranked by how many lemmas use them.
+         *
+         * The size/latency knob (plan/02-decisions.md #31): every kept rule is another candidate to
+         * generate and look up on every hover, and every rule left out means its forms must stay as
+         * rows. Measured on the real `kty-de-en`: 1,000 rules derive 76.6% of the 852,139 form-of
+         * rows at ~0.2 ms per hover, where all 70,247 derive 100% at ~3.4 ms. 0 disables induction.
+         * @type {number}
+         */
+        this._ruleBudget = ruleBudget;
     }
 
     /**
@@ -282,8 +299,79 @@ export class DictionaryDatabaseSqlite {
      */
     async finalizeImport() {
         const db = this._require();
+        for (const dictionaryId of this._idToTitle.keys()) {
+            this._buildInflectionTable(dictionaryId);
+        }
         db.exec('ANALYZE');
         db.exec('VACUUM');
+    }
+
+    /**
+     * Induces this dictionary's inflection rules from its own form-of entries and stores them, so
+     * that a later import can leave out the rows the rules already derive (plan/02-decisions.md #31).
+     *
+     * Runs here rather than during `bulkAdd` because the ranking needs every pair before it can pick
+     * any rule, and the importer streams. Skips a dictionary that already has a table, so calling
+     * `finalizeImport` again after adding a second dictionary does not redo the first.
+     * @param {number} dictionaryId
+     * @returns {void}
+     */
+    _buildInflectionTable(dictionaryId) {
+        if (this._ruleBudget <= 0) { return; }
+        const db = this._require();
+        if (db.selectValue('SELECT inflection_table IS NOT NULL FROM dictionaries WHERE id = ?', [dictionaryId]) === 1) { return; }
+        const pairs = [...this._readFormOfPairs(dictionaryId)];
+        if (pairs.length === 0) { return; }
+        const table = buildInflectionTable(pairs, {ruleBudget: this._ruleBudget});
+        if (table.rules.length === 0) { return; }
+        const {codec, dict} = this._getDictCodec(dictionaryId);
+        const encoded = codec.encode(serializeInflectionTable(table), dict);
+        const statement = db.prepare('UPDATE dictionaries SET inflection_table = ? WHERE id = ?');
+        try {
+            statement.bind([encoded, dictionaryId]).stepReset();
+        } finally {
+            statement.finalize();
+        }
+    }
+
+    /**
+     * Yields every `form -> lemma` pair this dictionary states, by decoding its term payloads. A
+     * form-of entry is a glossary array `[formOf, inflectionRules]`, exactly what
+     * `translator._getDictionaryDeinflections` follows.
+     * @param {number} dictionaryId
+     * @yields {{form: string, lemma: string, labels: string[]}}
+     * @returns {Generator<{form: string, lemma: string, labels: string[]}, void, void>}
+     */
+    *_readFormOfPairs(dictionaryId) {
+        const {codec, dict} = this._getDictCodec(dictionaryId);
+        for (const row of this._selectObjects('SELECT expression, payload FROM terms WHERE dictionary_id = ?', [dictionaryId])) {
+            const payload = /** @type {import('dictionary-database').DatabaseTermEntryPayload} */ (
+                codec.decode(/** @type {Uint8Array} */ (row.payload), dict)
+            );
+            const glossary = payload[3];
+            if (!Array.isArray(glossary)) { continue; }
+            for (const entry of glossary) {
+                if (!Array.isArray(entry)) { continue; }
+                const [lemma, labels] = entry;
+                if (typeof lemma !== 'string' || lemma.length === 0) { continue; }
+                yield {form: /** @type {string} */ (row.expression), lemma, labels: Array.isArray(labels) ? labels.map(String) : []};
+            }
+        }
+    }
+
+    /**
+     * The inflection table imported with a dictionary, or null if it has none.
+     * @param {string} dictionary
+     * @returns {?import('./inflection-rules.js').InflectionTable}
+     */
+    getInflectionTable(dictionary) {
+        const dictionaryId = this._titleToId.get(dictionary);
+        if (typeof dictionaryId !== 'number') { return null; }
+        const row = this._selectObject('SELECT inflection_table FROM dictionaries WHERE id = ?', [dictionaryId]);
+        const blob = row?.inflection_table;
+        if (!(blob instanceof Uint8Array)) { return null; }
+        const {codec, dict} = this._getDictCodec(dictionaryId);
+        return deserializeInflectionTable(codec.decode(blob, dict));
     }
 
     /**

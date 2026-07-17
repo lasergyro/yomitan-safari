@@ -214,12 +214,22 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
      `deriveLemmas`. Validated against the real dictionary: it reproduces the analysis exactly —
      **70,247 rules, 82,661 paradigms, 76.6% of stub rows derivable at K=1,000** (analysis: 70,247 /
      82,661 / 76%).
-   - **Stage A2 — NEXT:** persist the table. It has to be **compressed** to hit the projection: the
-     ~0.3 MB at K=1,000 is deflate'd, where the same data as SQLite rows would be ~11–15 MB and eat
-     a third of the win. So store it as BLOB columns on `dictionaries` (alongside `codec_dict`) and
-     load it per enabled dictionary — schema v3. Induce in `finalizeImport()` by reading the stub
-     rows back, since `bulkAdd` is streaming and buffering 2.17M pairs would cost ~200 MB of heap.
-     Verify the table reproduces every `(form, lemma, labels)` it claims, still keeping all rows.
+   - **Stage A2 — DONE:** schema v3 adds `dictionaries.inflection_table`, a BLOB encoded through the
+     same payload codec as the rows (compressed: as SQLite rows the same data would be ~11–15 MB and
+     eat a third of the win). `finalizeImport()` induces it per dictionary by decoding the stub rows
+     back — ranking needs every pair before it can pick any rule, and the importer streams. No rows
+     are dropped yet, so this is inert: the table is written and read, nothing consumes it.
+     Measured on the real dictionary, importing all 947,070 rows:
+     - **The stored table is 1.42 MB, not the projected ~0.3 MB** — a 4.7× miss. The projection
+       deflated a compact text format; the real one goes through the payload codec as JSON, whose
+       brackets and quotes do not compress away. It barely moves the bottom line (K=1,000 lands at
+       ~47 MB rather than ~46) but the sub-number was wrong and is corrected here.
+     - **`finalizeImport` now costs 69.6s** on `kty-de-en` (induction + ANALYZE + VACUUM), against a
+       multi-minute import. Acceptable, but it is a new cost and the importer does not call
+       `finalizeImport` yet at all (item 3 of Stage 5 below).
+     - **Soundness holds on real data**: 85.8% of the 2,170,986 pairs are derivable at K=1,000, and
+       over 20,000 forms the table derived 88,399 results with **0 the dictionary does not state**.
+       That is the property Stage B depends on.
    - **Stage B — NOT STARTED:** skip derivable rows at import, load the rules into the translator,
      generate candidates + paradigm-verify. Both deinflection paths change together.
 

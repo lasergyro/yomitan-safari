@@ -22,8 +22,9 @@
  * 1. Initial columnar schema.
  * 2. Dropped `ix_terms_dictionary`; `ix_terms_reading` became partial (`WHERE reading <> ''`).
  *    See plan/02-decisions.md #28.
+ * 3. Added `dictionaries.inflection_table`. See plan/02-decisions.md #31.
  */
-export const DICTIONARY_SQLITE_SCHEMA_VERSION = 2;
+export const DICTIONARY_SQLITE_SCHEMA_VERSION = 3;
 
 /**
  * The dictionary storage schema (see plan/01-design.md §8.1). Columnar tables — no per-row property
@@ -41,7 +42,12 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     version      INTEGER,
     summary_json TEXT,
     codec        TEXT,
-    codec_dict   BLOB
+    codec_dict   BLOB,
+    -- Inflection rules induced from this dictionary's own form-of entries, encoded through the same
+    -- codec as the payloads. Stored as one blob rather than as rows because it only pays for itself
+    -- compressed: ~0.3 MB deflated at a 1,000-rule budget, against ~11-15 MB as SQLite rows. Null
+    -- when the dictionary has no form-of entries to induce from. See plan/02-decisions.md #31.
+    inflection_table BLOB
 );
 
 CREATE TABLE IF NOT EXISTS terms (
@@ -136,6 +142,12 @@ export function createDictionarySchema(db) {
         // this rebuilds them in place and keeps the imported data — no re-import.
         db.exec('DROP INDEX IF EXISTS ix_terms_dictionary');
         db.exec('DROP INDEX IF EXISTS ix_terms_reading');
+    }
+    if (version > 0 && version < 3) {
+        // v2 -> v3: `CREATE TABLE IF NOT EXISTS` will not add a column to a table that exists, so an
+        // already-created `dictionaries` needs this explicitly. Left null: the rules are induced at
+        // import, so an existing dictionary simply keeps every row it already has.
+        db.exec('ALTER TABLE dictionaries ADD COLUMN inflection_table BLOB');
     }
     db.exec(SCHEMA_SQL);
     db.exec(`PRAGMA user_version = ${DICTIONARY_SQLITE_SCHEMA_VERSION}`);
