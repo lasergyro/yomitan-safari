@@ -37,6 +37,13 @@ const STORE_TABLE = {
 };
 
 /**
+ * How many prepared statements to hold. The term queries interpolate the enabled dictionary ids, so
+ * the distinct SQL texts are (column × matchType × the dictionary subsets in use) — a handful in
+ * practice. The cap only exists so that toggling dictionaries can never grow the cache without end.
+ */
+const STATEMENT_CACHE_SIZE = 32;
+
+/**
  * Memoized vendored sqlite3 module.
  *
  * This MUST be a singleton: `installOpfsSAHPoolVfs` caches its pool per VFS name *inside a single
@@ -100,6 +107,17 @@ export class DictionaryDatabaseSqlite {
         }
         /** @type {Map<number, {codec: import('payload-codec').PayloadCodec, dict: ?Uint8Array}>} */
         this._dictCodec = new Map();
+        /**
+         * Prepared statements for the read paths, keyed by SQL text, least-recently-used last.
+         *
+         * `selectObjects` compiles *and finalizes* a statement on every call, and a lookup issues one
+         * query per deinflection candidate, so on a real hover compilation — not the index seek —
+         * dominates: 434 candidates cost 9.44 ms re-prepared versus 1.52 ms with the statements held
+         * (plan/sizing/README.md §5.4). Bounded because the term queries interpolate the enabled
+         * dictionary ids, so the SQL text varies with which dictionaries are switched on.
+         * @type {Map<string, import('sqlite-wasm').SqliteStatement>}
+         */
+        this._statements = new Map();
         /** @type {Map<string, number>} */
         this._titleToId = new Map();
         /** @type {Map<number, string>} */
@@ -160,11 +178,82 @@ export class DictionaryDatabaseSqlite {
     /** @returns {void} */
     close() {
         if (this._db === null) { return; }
+        this._finalizeStatements();
         this._db.close();
         this._db = null;
         this._titleToId.clear();
         this._idToTitle.clear();
         this._dictCodec.clear();
+    }
+
+    /**
+     * Returns a held prepared statement for `sql`, compiling it on first use. The statement is
+     * always returned reset and unbound, and callers must fully drain it before requesting the same
+     * SQL again — every caller here materializes its rows before returning, so no query nests inside
+     * another.
+     * @param {string} sql
+     * @returns {import('sqlite-wasm').SqliteStatement}
+     */
+    _cachedStatement(sql) {
+        const cached = this._statements.get(sql);
+        if (typeof cached !== 'undefined') {
+            // Re-insert to mark it most-recently-used; Map iterates in insertion order.
+            this._statements.delete(sql);
+            this._statements.set(sql, cached);
+            return cached;
+        }
+        const statement = this._require().prepare(sql);
+        this._statements.set(sql, statement);
+        if (this._statements.size > STATEMENT_CACHE_SIZE) {
+            const oldest = this._statements.keys().next();
+            if (!oldest.done) {
+                const evicted = this._statements.get(oldest.value);
+                this._statements.delete(oldest.value);
+                if (typeof evicted !== 'undefined') { evicted.finalize(); }
+            }
+        }
+        return statement;
+    }
+
+    /**
+     * `SqliteDatabaseHandle.selectObjects` with the statement held rather than recompiled per call.
+     * @param {string} sql
+     * @param {import('sqlite-wasm').SqlBind} [args]
+     * @returns {import('sqlite-wasm').SqlRow[]}
+     */
+    _selectObjects(sql, args) {
+        const statement = this._cachedStatement(sql);
+        /** @type {import('sqlite-wasm').SqlRow[]} */
+        const rows = [];
+        try {
+            if (typeof args !== 'undefined') { statement.bind(args); }
+            while (statement.step()) { rows.push(statement.get({})); }
+        } finally {
+            statement.reset(true);
+        }
+        return rows;
+    }
+
+    /**
+     * `SqliteDatabaseHandle.selectObject` with the statement held rather than recompiled per call.
+     * @param {string} sql
+     * @param {import('sqlite-wasm').SqlBind} [args]
+     * @returns {import('sqlite-wasm').SqlRow|undefined}
+     */
+    _selectObject(sql, args) {
+        const statement = this._cachedStatement(sql);
+        try {
+            if (typeof args !== 'undefined') { statement.bind(args); }
+            return statement.step() ? statement.get({}) : void 0;
+        } finally {
+            statement.reset(true);
+        }
+    }
+
+    /** @returns {void} */
+    _finalizeStatements() {
+        for (const statement of this._statements.values()) { statement.finalize(); }
+        this._statements.clear();
     }
 
     /**
@@ -344,14 +433,14 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').TermEntry[]>}
      */
     async findTermsBySequenceBulk(items) {
-        const db = this._require();
+        this._require(); // guard: throws if the database is not open
         /** @type {import('dictionary-database').TermEntry[]} */
         const results = [];
         for (let i = 0, ii = items.length; i < ii; ++i) {
             const {query, dictionary} = items[i];
             const dictionaryId = this._titleToId.get(dictionary);
             if (typeof dictionaryId !== 'number') { continue; }
-            const rows = db.selectObjects(
+            const rows = this._selectObjects(
                 'SELECT id, dictionary_id, expression, reading, sequence, payload FROM terms WHERE sequence = ? AND dictionary_id = ?',
                 [query, dictionaryId],
             );
@@ -374,10 +463,10 @@ export class DictionaryDatabaseSqlite {
         /** @type {import('dictionary-database').TermMeta[]} */
         const results = [];
         if (termList.length === 0 || dictionaryIds.length === 0) { return results; }
-        const db = this._require();
+        this._require(); // guard: throws if the database is not open
         const idFilter = `dictionary_id IN (${dictionaryIds.join(',')})`;
         for (let i = 0, ii = termList.length; i < ii; ++i) {
-            const rows = db.selectObjects(`SELECT expression, mode, data_json, dictionary_id FROM term_meta WHERE expression = ? AND ${idFilter}`, [termList[i]]);
+            const rows = this._selectObjects(`SELECT expression, mode, data_json, dictionary_id FROM term_meta WHERE expression = ? AND ${idFilter}`, [termList[i]]);
             for (const row of rows) {
                 results.push(this._createTermMeta(row, i));
             }
@@ -395,10 +484,10 @@ export class DictionaryDatabaseSqlite {
         /** @type {import('dictionary-database').KanjiEntry[]} */
         const results = [];
         if (kanjiList.length === 0 || dictionaryIds.length === 0) { return results; }
-        const db = this._require();
+        this._require(); // guard: throws if the database is not open
         const idFilter = `dictionary_id IN (${dictionaryIds.join(',')})`;
         for (let i = 0, ii = kanjiList.length; i < ii; ++i) {
-            const rows = db.selectObjects(`SELECT character, payload, dictionary_id FROM kanji WHERE character = ? AND ${idFilter}`, [kanjiList[i]]);
+            const rows = this._selectObjects(`SELECT character, payload, dictionary_id FROM kanji WHERE character = ? AND ${idFilter}`, [kanjiList[i]]);
             for (const row of rows) {
                 results.push(this._createKanji(row, i));
             }
@@ -416,10 +505,10 @@ export class DictionaryDatabaseSqlite {
         /** @type {import('dictionary-database').KanjiMeta[]} */
         const results = [];
         if (kanjiList.length === 0 || dictionaryIds.length === 0) { return results; }
-        const db = this._require();
+        this._require(); // guard: throws if the database is not open
         const idFilter = `dictionary_id IN (${dictionaryIds.join(',')})`;
         for (let i = 0, ii = kanjiList.length; i < ii; ++i) {
-            const rows = db.selectObjects(`SELECT character, mode, data_json, dictionary_id FROM kanji_meta WHERE character = ? AND ${idFilter}`, [kanjiList[i]]);
+            const rows = this._selectObjects(`SELECT character, mode, data_json, dictionary_id FROM kanji_meta WHERE character = ? AND ${idFilter}`, [kanjiList[i]]);
             for (const row of rows) {
                 results.push(this._createKanjiMeta(row, i));
             }
@@ -432,14 +521,14 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<(import('dictionary-database').Tag|undefined)[]>}
      */
     async findTagMetaBulk(items) {
-        const db = this._require();
+        this._require(); // guard: throws if the database is not open
         /** @type {(import('dictionary-database').Tag|undefined)[]} */
         const results = [];
         for (const item of items) {
             const dictionaryId = this._titleToId.get(item.dictionary);
             let tag;
             if (typeof dictionaryId === 'number') {
-                const row = db.selectObject('SELECT name, category, sort_order, notes, score, dictionary_id FROM tag_meta WHERE name = ? AND dictionary_id = ? LIMIT 1', [item.query, dictionaryId]);
+                const row = this._selectObject('SELECT name, category, sort_order, notes, score, dictionary_id FROM tag_meta WHERE name = ? AND dictionary_id = ? LIMIT 1', [item.query, dictionaryId]);
                 if (typeof row !== 'undefined') { tag = this._createTag(row); }
             }
             results.push(tag);
@@ -455,7 +544,7 @@ export class DictionaryDatabaseSqlite {
     async findTagForTitle(name, dictionary) {
         const dictionaryId = this._titleToId.get(dictionary);
         if (typeof dictionaryId !== 'number') { return null; }
-        const row = this._require().selectObject('SELECT name, category, sort_order, notes, score, dictionary_id FROM tag_meta WHERE name = ? AND dictionary_id = ? LIMIT 1', [name, dictionaryId]);
+        const row = this._selectObject('SELECT name, category, sort_order, notes, score, dictionary_id FROM tag_meta WHERE name = ? AND dictionary_id = ? LIMIT 1', [name, dictionaryId]);
         return typeof row === 'undefined' ? null : this._createTag(row);
     }
 
@@ -464,14 +553,14 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').Media[]>}
      */
     async getMedia(items) {
-        const db = this._require();
+        this._require(); // guard: throws if the database is not open
         /** @type {import('dictionary-database').Media[]} */
         const results = [];
         for (let i = 0, ii = items.length; i < ii; ++i) {
             const {path, dictionary} = items[i];
             const dictionaryId = this._titleToId.get(dictionary);
             if (typeof dictionaryId !== 'number') { continue; }
-            const rows = db.selectObjects('SELECT path, media_type, width, height, content, dictionary_id FROM media WHERE path = ? AND dictionary_id = ?', [path, dictionaryId]);
+            const rows = this._selectObjects('SELECT path, media_type, width, height, content, dictionary_id FROM media WHERE path = ? AND dictionary_id = ?', [path, dictionaryId]);
             for (const row of rows) {
                 results.push(this._createMedia(row, i));
             }
@@ -993,7 +1082,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {import('sqlite-wasm').SqlRow[]}
      */
     _queryTermColumn(column, term, matchType, dictionaryIds) {
-        const db = this._require();
+        this._require(); // guard: throws if the database is not open
         const idFilter = `dictionary_id IN (${dictionaryIds.join(',')})`;
         const columns = 'id, dictionary_id, expression, reading, sequence, payload';
         // `INDEXED BY` forces the seek instead of letting the planner choose, because on real data it
@@ -1009,7 +1098,7 @@ export class DictionaryDatabaseSqlite {
                 // Inclusive bound [term, term+'￿'], matching IDBKeyRange.bound(term, term+'￿').
                 // Valid for BMP strings, where SQLite BINARY (UTF-8) and IndexedDB (UTF-16) code-point
                 // orders agree; dictionary data is BMP.
-                return db.selectObjects(
+                return this._selectObjects(
                     `SELECT ${columns} FROM terms INDEXED BY ${index} WHERE ${column} >= ? AND ${column} <= ? || char(65535) AND ${idFilter}`,
                     [term, term],
                 );
@@ -1017,11 +1106,11 @@ export class DictionaryDatabaseSqlite {
                 // No reverse column yet (that is a later schema addition, see plan/03-progress.md
                 // "watch-outs"); filter suffix matches in JS over the enabled dictionaries. Left to
                 // the planner deliberately — no index can serve this, so the scan is the real plan.
-                const rows = db.selectObjects(`SELECT ${columns} FROM terms WHERE ${idFilter}`);
+                const rows = this._selectObjects(`SELECT ${columns} FROM terms WHERE ${idFilter}`);
                 return rows.filter((row) => typeof row[column] === 'string' && /** @type {string} */ (row[column]).endsWith(term));
             }
             default: // 'exact'
-                return db.selectObjects(
+                return this._selectObjects(
                     `SELECT ${columns} FROM terms INDEXED BY ${index} WHERE ${column} = ? AND ${idFilter}`,
                     [term],
                 );

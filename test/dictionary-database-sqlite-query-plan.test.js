@@ -96,22 +96,28 @@ describe('DictionaryDatabaseSqlite term query plans', () => {
 
     /**
      * Captures the SQL the backend actually issues, so this tests the real queries rather than a
-     * copy of them that could silently drift.
+     * copy of them that could silently drift. Patches the backend's own `_selectObjects` rather than
+     * the sqlite handle: the read paths go through held prepared statements
+     * (plan/02-decisions.md #32), so `handle.selectObjects` no longer sees them.
      * @param {() => Promise<unknown>} body
      * @returns {Promise<{sql: string, args: unknown[]}[]>}
      */
     async function captureQueries(body) {
         /** @type {{sql: string, args: unknown[]}[]} */
         const captured = [];
-        const original = handle.selectObjects.bind(handle);
-        handle.selectObjects = (sql, args) => {
+        const internal = /** @type {{_selectObjects: (sql: string, args?: unknown[]) => import('sqlite-wasm').SqlRow[]}} */ (/** @type {unknown} */ (backend));
+        // eslint-disable-next-line no-underscore-dangle
+        const original = internal._selectObjects.bind(internal);
+        // eslint-disable-next-line no-underscore-dangle
+        internal._selectObjects = (sql, args) => {
             captured.push({sql, args: args ?? []});
             return original(sql, args);
         };
         try {
             await body();
         } finally {
-            handle.selectObjects = original;
+            // eslint-disable-next-line no-underscore-dangle
+            internal._selectObjects = original;
         }
         return captured;
     }

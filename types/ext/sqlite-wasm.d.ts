@@ -31,8 +31,11 @@ export interface SqliteStatement {
     bind(value: SqlValue | SqlBind): SqliteStatement;
     step(): boolean;
     stepReset(): SqliteStatement;
-    reset(): SqliteStatement;
+    // `alsoClearBinds` also drops the bound values, so a held statement can be safely rebound.
+    reset(alsoClearBinds?: boolean): SqliteStatement;
     get(index: number): SqlValue;
+    // Passing a plain object collects the whole row into it, keyed by column name.
+    get(target: SqlRow): SqlRow;
     finalize(): number;
 }
 
