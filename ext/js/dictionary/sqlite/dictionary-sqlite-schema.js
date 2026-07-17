@@ -23,8 +23,10 @@
  * 2. Dropped `ix_terms_dictionary`; `ix_terms_reading` became partial (`WHERE reading <> ''`).
  *    See plan/02-decisions.md #28.
  * 3. Added `dictionaries.inflection_table`. See plan/02-decisions.md #31.
+ * 4. Added `dictionaries.stub_template`, which is also the "derivable rows were dropped" flag.
+ *    See plan/02-decisions.md #34.
  */
-export const DICTIONARY_SQLITE_SCHEMA_VERSION = 3;
+export const DICTIONARY_SQLITE_SCHEMA_VERSION = 4;
 
 /**
  * The dictionary storage schema (see plan/01-design.md §8.1). Columnar tables — no per-row property
@@ -45,9 +47,17 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     codec_dict   BLOB,
     -- Inflection rules induced from this dictionary's own form-of entries, encoded through the same
     -- codec as the payloads. Stored as one blob rather than as rows because it only pays for itself
-    -- compressed: ~0.3 MB deflated at a 1,000-rule budget, against ~11-15 MB as SQLite rows. Null
-    -- when the dictionary has no form-of entries to induce from. See plan/02-decisions.md #31.
-    inflection_table BLOB
+    -- compressed: 1.42 MB deflated at a 1,000-rule budget on kty-de-en, against ~11-15 MB as SQLite
+    -- rows. Null when the dictionary has no form-of entries to induce from. See decisions #31.
+    inflection_table BLOB,
+    -- The payload every dropped form-of row shared, minus its glossary: on kty-de-en all 852,139
+    -- stub rows carry byte-identical definitionTags/rules/score/termTags, so one copy reproduces the
+    -- rows the query path synthesizes back. A row whose fields differ from this is kept instead.
+    --
+    -- Doubles as the flag for "rows really were dropped": non-null is the ONLY thing that licenses
+    -- findTermsBulk to synthesize. A v3 database has an inflection_table but every row still stored,
+    -- so keying synthesis off the table alone would return every deinflection twice. See #34.
+    stub_template BLOB
 );
 
 CREATE TABLE IF NOT EXISTS terms (
@@ -148,6 +158,12 @@ export function createDictionarySchema(db) {
         // already-created `dictionaries` needs this explicitly. Left null: the rules are induced at
         // import, so an existing dictionary simply keeps every row it already has.
         db.exec('ALTER TABLE dictionaries ADD COLUMN inflection_table BLOB');
+    }
+    if (version > 0 && version < 4) {
+        // v3 -> v4: same reason. Left null, which reads as "this dictionary had no rows dropped" —
+        // true of every v3 database, and exactly what stops the query path from synthesizing rows
+        // that are still stored.
+        db.exec('ALTER TABLE dictionaries ADD COLUMN stub_template BLOB');
     }
     db.exec(SCHEMA_SQL);
     db.exec(`PRAGMA user_version = ${DICTIONARY_SQLITE_SCHEMA_VERSION}`);

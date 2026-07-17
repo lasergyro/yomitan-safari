@@ -19,7 +19,7 @@ import {parseJson} from '../../core/json.js';
 import {IdentityPayloadCodec} from '../payload-codec.js';
 import {requestPersistentStorage} from './dictionary-storage-migration.js';
 import {DICTIONARY_SQLITE_TABLES} from './dictionary-sqlite-schema.js';
-import {buildInflectionTable, deserializeInflectionTable, serializeInflectionTable} from './inflection-rules.js';
+import {buildInflectionTable, deriveLemmas, deserializeInflectionTable, isDerivable, serializeInflectionTable} from './inflection-rules.js';
 import {openDictionaryDatabaseHandle} from './open-sqlite.js';
 
 /**
@@ -49,6 +49,33 @@ const STATEMENT_CACHE_SIZE = 32;
  * hover at ~0.2 ms — the knee of the measured curve (plan/sizing/README.md §5.4).
  */
 const DEFAULT_RULE_BUDGET = 1000;
+
+/**
+ * Everything a dropped form-of row carried apart from its glossary and its expression, in the order
+ * `[definitionTags, rules, score, termTags, sequence, readingMirrorsExpression]`.
+ *
+ * Of these only `rules` reaches a reader, gating the parts-of-speech filter in
+ * `translator._matchEntriesToDeinflections`. The rest are carried so a synthesized row is
+ * indistinguishable from the one it replaces, which is what lets the two be tested by equality.
+ *
+ * `readingMirrorsExpression` exists because **the importer never writes an empty reading**:
+ * `dictionary-importer.js`'s `_convertTermBankEntryV3` does `reading = reading.length > 0 ? reading
+ * : expression`, so on a German dictionary every row has `reading === expression` rather than `''`.
+ * A row whose reading is neither empty nor the expression is reachable through the reading probe by
+ * a *different* string, which synthesis (keyed on the expression) could not answer — those are never
+ * dropped. The flag says which of the two droppable cases a row was, so the reading can be rebuilt.
+ *
+ * The field types mirror `DatabaseTermEntryPayload`. Note that a `termTags` of `undefined` comes back
+ * as `null` through a JSON codec; `_splitField` maps both to the same empty list, so the round-trip
+ * is still faithful where it counts.
+ * @typedef {[definitionTags: string|null, rules: string, score: number, termTags: string|undefined, sequence: number, readingMirrorsExpression: boolean]} StubTemplate
+ */
+
+/**
+ * How many row ids to name in one `DELETE ... WHERE id IN (...)`. SQLITE_MAX_VARIABLE_NUMBER is 32k
+ * in recent builds but the statement text is what actually costs here, so keep the batches modest.
+ */
+const DELETE_BATCH_SIZE = 512;
 
 /**
  * Memoized vendored sqlite3 module.
@@ -114,6 +141,14 @@ export class DictionaryDatabaseSqlite {
         }
         /** @type {Map<number, {codec: import('payload-codec').PayloadCodec, dict: ?Uint8Array}>} */
         this._dictCodec = new Map();
+        /**
+         * Per-dictionary inflection rules for the query path, or null for a dictionary that had no
+         * rows dropped and therefore needs no synthesis. Cached because a lookup consults this on
+         * every hover and the blob is 1.42 MB on `kty-de-en` — decoding it per query would cost more
+         * than the rows it replaced.
+         * @type {Map<number, ?{table: import('./inflection-rules.js').InflectionTable, template: StubTemplate}>}
+         */
+        this._inflectionCache = new Map();
         /**
          * Prepared statements for the read paths, keyed by SQL text, least-recently-used last.
          *
@@ -201,6 +236,7 @@ export class DictionaryDatabaseSqlite {
         this._titleToId.clear();
         this._idToTitle.clear();
         this._dictCodec.clear();
+        this._inflectionCache.clear();
     }
 
     /**
@@ -252,6 +288,28 @@ export class DictionaryDatabaseSqlite {
     }
 
     /**
+     * Like `_selectObjects` but yields each row instead of materializing them all, for the queries
+     * that walk a whole table: `_selectObjects` on `kty-de-en`'s 947,070 terms would hold every
+     * payload BLOB live at once, hundreds of MB inside a browser extension, purely to iterate them.
+     *
+     * Uses its own statement rather than the LRU: these run once per import, and an abandoned
+     * generator would otherwise leave a cached statement mid-step for the next caller of that SQL.
+     * @param {string} sql
+     * @param {import('sqlite-wasm').SqlBind} [args]
+     * @yields {import('sqlite-wasm').SqlRow}
+     * @returns {Generator<import('sqlite-wasm').SqlRow, void, void>}
+     */
+    *_iterateObjects(sql, args) {
+        const statement = this._require().prepare(sql);
+        try {
+            if (typeof args !== 'undefined') { statement.bind(args); }
+            while (statement.step()) { yield statement.get({}); }
+        } finally {
+            statement.finalize();
+        }
+    }
+
+    /**
      * `SqliteDatabaseHandle.selectObject` with the statement held rather than recompiled per call.
      * @param {string} sql
      * @param {import('sqlite-wasm').SqlBind} [args]
@@ -288,6 +346,7 @@ export class DictionaryDatabaseSqlite {
         this._titleToId.clear();
         this._idToTitle.clear();
         this._dictCodec.clear();
+        this._inflectionCache.clear();
         return true;
     }
 
@@ -301,9 +360,80 @@ export class DictionaryDatabaseSqlite {
         const db = this._require();
         for (const dictionaryId of this._idToTitle.keys()) {
             this._buildInflectionTable(dictionaryId);
+            this._dropDerivableRows(dictionaryId);
         }
         db.exec('ANALYZE');
         db.exec('VACUUM');
+    }
+
+    /**
+     * Deletes the form-of rows this dictionary's own rules can reproduce, and records the payload
+     * they shared so `findTermsBulk` can synthesize them back (plan/02-decisions.md #34). This is
+     * where the size win is actually taken: everything before it only measured the win.
+     *
+     * A row is only dropped when all three hold, so that anything the scheme cannot reproduce
+     * exactly stays a row and costs space instead of correctness:
+     *   - it is a pure stub (no real glossary text a reader would lose) whose reading is either
+     *     empty or the expression itself — a reading that is some *other* string can be found by a
+     *     reading probe that synthesis, keyed on the expression, could never answer,
+     *   - the rules derive every pair it states (not merely some — a row is dropped whole),
+     *   - its non-glossary fields equal the template, which the first droppable row establishes.
+     * @param {number} dictionaryId
+     * @returns {void}
+     */
+    _dropDerivableRows(dictionaryId) {
+        if (this._ruleBudget <= 0) { return; }
+        const db = this._require();
+        // Non-null means this dictionary's rows were already dropped; re-running would be a no-op but
+        // would re-scan every payload, and finalizeImport runs again for each new dictionary.
+        if (db.selectValue('SELECT stub_template IS NOT NULL FROM dictionaries WHERE id = ?', [dictionaryId]) === 1) { return; }
+        const table = this._loadInflectionTable(dictionaryId);
+        if (table === null) { return; }
+
+        /** @type {?StubTemplate} */
+        let template = null;
+        /** @type {number[]} */
+        const ids = [];
+        for (const row of this._readFormOfRows(dictionaryId)) {
+            if (!row.pureStub || (row.reading.length > 0 && row.reading !== row.form)) { continue; }
+            if (!row.pairs.every(({lemma}) => isDerivable(table, row.form, lemma))) { continue; }
+            if (template === null) {
+                template = row.template;
+            } else if (!this._templatesMatch(template, row.template)) {
+                continue;
+            }
+            ids.push(row.id);
+        }
+        if (template === null || ids.length === 0) { return; }
+
+        const {codec, dict} = this._getDictCodec(dictionaryId);
+        const encodedTemplate = codec.encode(/** @type {import('dictionary-database').DatabaseTermEntryPayload} */ (/** @type {unknown} */ (template)), dict);
+        db.transaction(() => {
+            for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
+                const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
+                db.exec(`DELETE FROM terms WHERE id IN (${batch.join(',')})`);
+            }
+            const statement = db.prepare('UPDATE dictionaries SET stub_template = ? WHERE id = ?');
+            try {
+                statement.bind([encodedTemplate, dictionaryId]).stepReset();
+            } finally {
+                statement.finalize();
+            }
+        });
+        // The deletes invalidate any cached decision about this dictionary.
+        this._inflectionCache.delete(dictionaryId);
+    }
+
+    /**
+     * @param {StubTemplate} a
+     * @param {StubTemplate} b
+     * @returns {boolean}
+     */
+    _templatesMatch(a, b) {
+        for (let i = 0; i < a.length; ++i) {
+            if (a[i] !== b[i]) { return false; }
+        }
+        return true;
     }
 
     /**
@@ -335,27 +465,57 @@ export class DictionaryDatabaseSqlite {
     }
 
     /**
-     * Yields every `form -> lemma` pair this dictionary states, by decoding its term payloads. A
-     * form-of entry is a glossary array `[formOf, inflectionRules]`, exactly what
-     * `translator._getDictionaryDeinflections` follows.
+     * Yields every row of this dictionary that states at least one `form -> lemma` pair, by decoding
+     * its term payloads. A form-of entry is a glossary array `[formOf, inflectionRules]`, exactly
+     * what `translator._getDictionaryDeinflections` follows.
+     *
+     * Row-level rather than pair-level because dropping is a per-row decision: a row is only
+     * redundant if the rules derive *every* pair it states, and `pureStub` says whether it carries
+     * real glossary text that would be lost with it.
+     * @param {number} dictionaryId
+     * @yields {{id: number, form: string, reading: string, pureStub: boolean, template: StubTemplate, pairs: {lemma: string, labels: string[]}[]}}
+     * @returns {Generator<{id: number, form: string, reading: string, pureStub: boolean, template: StubTemplate, pairs: {lemma: string, labels: string[]}[]}, void, void>}
+     */
+    *_readFormOfRows(dictionaryId) {
+        const {codec, dict} = this._getDictCodec(dictionaryId);
+        for (const row of this._iterateObjects('SELECT id, expression, reading, sequence, payload FROM terms WHERE dictionary_id = ?', [dictionaryId])) {
+            const [definitionTags, rules, score, glossary, termTags] = /** @type {import('dictionary-database').DatabaseTermEntryPayload} */ (
+                codec.decode(/** @type {Uint8Array} */ (row.payload), dict)
+            );
+            if (!Array.isArray(glossary)) { continue; }
+            /** @type {{lemma: string, labels: string[]}[]} */
+            const pairs = [];
+            let arrays = 0;
+            for (const entry of glossary) {
+                if (!Array.isArray(entry)) { continue; }
+                ++arrays;
+                const [lemma, labels] = entry;
+                if (typeof lemma !== 'string' || lemma.length === 0) { continue; }
+                pairs.push({lemma, labels: Array.isArray(labels) ? labels.map(String) : []});
+            }
+            if (pairs.length === 0) { continue; }
+            yield {
+                id: /** @type {number} */ (row.id),
+                form: /** @type {string} */ (row.expression),
+                reading: /** @type {string} */ (row.reading),
+                // A glossary entry that is not an array is real text a reader would see, so the row
+                // has to stay whatever the rules can derive.
+                pureStub: arrays === glossary.length && pairs.length === arrays,
+                template: [definitionTags, rules, score, termTags, typeof row.sequence === 'number' ? row.sequence : 0, row.reading === row.expression],
+                pairs,
+            };
+        }
+    }
+
+    /**
+     * Yields every `form -> lemma` pair this dictionary states, for induction.
      * @param {number} dictionaryId
      * @yields {{form: string, lemma: string, labels: string[]}}
      * @returns {Generator<{form: string, lemma: string, labels: string[]}, void, void>}
      */
     *_readFormOfPairs(dictionaryId) {
-        const {codec, dict} = this._getDictCodec(dictionaryId);
-        for (const row of this._selectObjects('SELECT expression, payload FROM terms WHERE dictionary_id = ?', [dictionaryId])) {
-            const payload = /** @type {import('dictionary-database').DatabaseTermEntryPayload} */ (
-                codec.decode(/** @type {Uint8Array} */ (row.payload), dict)
-            );
-            const glossary = payload[3];
-            if (!Array.isArray(glossary)) { continue; }
-            for (const entry of glossary) {
-                if (!Array.isArray(entry)) { continue; }
-                const [lemma, labels] = entry;
-                if (typeof lemma !== 'string' || lemma.length === 0) { continue; }
-                yield {form: /** @type {string} */ (row.expression), lemma, labels: Array.isArray(labels) ? labels.map(String) : []};
-            }
+        for (const {form, pairs} of this._readFormOfRows(dictionaryId)) {
+            for (const {lemma, labels} of pairs) { yield {form, lemma, labels}; }
         }
     }
 
@@ -366,12 +526,49 @@ export class DictionaryDatabaseSqlite {
      */
     getInflectionTable(dictionary) {
         const dictionaryId = this._titleToId.get(dictionary);
-        if (typeof dictionaryId !== 'number') { return null; }
+        return typeof dictionaryId === 'number' ? this._loadInflectionTable(dictionaryId) : null;
+    }
+
+    /**
+     * Decodes a dictionary's stored rules. Uncached and ungated — the import path needs the rules
+     * before it has dropped anything, which is exactly when `_getInflection` must still say no.
+     * @param {number} dictionaryId
+     * @returns {?import('./inflection-rules.js').InflectionTable}
+     */
+    _loadInflectionTable(dictionaryId) {
         const row = this._selectObject('SELECT inflection_table FROM dictionaries WHERE id = ?', [dictionaryId]);
         const blob = row?.inflection_table;
         if (!(blob instanceof Uint8Array)) { return null; }
         const {codec, dict} = this._getDictCodec(dictionaryId);
         return deserializeInflectionTable(codec.decode(blob, dict));
+    }
+
+    /**
+     * The rules the query path should synthesize dropped rows with, or null if this dictionary has
+     * every row it ever had.
+     *
+     * Gated on `stub_template` rather than on the rules existing, because the two are not the same
+     * thing: a v3 database (and any v4 one between induction and the drop pass) has rules but a full
+     * set of rows, and synthesizing there would return every deinflection twice.
+     * @param {number} dictionaryId
+     * @returns {?{table: import('./inflection-rules.js').InflectionTable, template: StubTemplate}}
+     */
+    _getInflection(dictionaryId) {
+        const cached = this._inflectionCache.get(dictionaryId);
+        if (typeof cached !== 'undefined') { return cached; }
+        /** @type {?{table: import('./inflection-rules.js').InflectionTable, template: StubTemplate}} */
+        let result = null;
+        const row = this._selectObject('SELECT stub_template FROM dictionaries WHERE id = ?', [dictionaryId]);
+        const blob = row?.stub_template;
+        if (blob instanceof Uint8Array) {
+            const table = this._loadInflectionTable(dictionaryId);
+            if (table !== null) {
+                const {codec, dict} = this._getDictCodec(dictionaryId);
+                result = {table, template: /** @type {StubTemplate} */ (/** @type {unknown} */ (codec.decode(blob, dict)))};
+            }
+        }
+        this._inflectionCache.set(dictionaryId, result);
+        return result;
     }
 
     /**
@@ -480,6 +677,7 @@ export class DictionaryDatabaseSqlite {
         const visited = new Set();
         for (let i = 0, ii = termList.length; i < ii; ++i) {
             const term = termList[i];
+            const stored = results.length;
             for (const matchSource of /** @type {import('dictionary-database').MatchSource[]} */ (['term', 'reading'])) {
                 const column = matchSource === 'term' ? 'expression' : 'reading';
                 for (const row of this._queryTermColumn(column, term, matchType, dictionaryIds)) {
@@ -491,8 +689,79 @@ export class DictionaryDatabaseSqlite {
                     results.push(this._createTerm(matchSource, rowMatchType, row, i));
                 }
             }
+            // Only an exact probe can be answered from the rules: a wildcard asks which *stored*
+            // forms match a pattern, and a dropped form is not stored. See plan/02-decisions.md #34.
+            if (matchType === 'exact') {
+                this._addDerivedTerms(results, stored, term, i, dictionaryIds);
+            }
         }
         return results;
+    }
+
+    /**
+     * Appends the form-of rows `_dropDerivableRows` deleted for `term`, rebuilt from the rules, to
+     * `results`. To everything downstream these are the rows: `translator._getDictionaryDeinflections`
+     * reads their `[lemma, labels]` glossary exactly as it read the stored ones, and
+     * `translator._getDeinflections` then strips them, so no synthesized row is ever displayed.
+     *
+     * One entry per dictionary, holding every derived pointer, because that is the shape the
+     * dictionary itself uses: `kty-de-en` packs all nine of `Rappen`'s pointers into one row's
+     * glossary rather than into nine rows. The translator loops entries × definitions, so the
+     * deinflections are the same either way — but matching the stored shape keeps the two
+     * comparable, and allocates one entry per hover candidate instead of nine.
+     * @param {import('dictionary-database').TermEntry[]} results
+     * @param {number} stored Index in `results` where this term's stored rows begin.
+     * @param {string} term
+     * @param {number} index The term's index in the query list.
+     * @param {number[]} dictionaryIds
+     * @returns {void}
+     */
+    _addDerivedTerms(results, stored, term, index, dictionaryIds) {
+        for (const dictionaryId of dictionaryIds) {
+            const inflection = this._getInflection(dictionaryId);
+            if (inflection === null) { continue; }
+            const derived = deriveLemmas(inflection.table, term);
+            if (derived.length === 0) { continue; }
+            const dictionary = /** @type {string} */ (this._idToTitle.get(dictionaryId));
+            // A row is kept whole when any one of its pairs is underivable, so its derivable pairs
+            // would otherwise be stated twice: once by the surviving row, once by the rules.
+            /** @type {Set<string>} */
+            const alreadyStored = new Set();
+            for (let i = stored, ii = results.length; i < ii; ++i) {
+                const entry = results[i];
+                if (entry.dictionary !== dictionary) { continue; }
+                for (const definition of entry.definitions) {
+                    if (Array.isArray(definition) && typeof definition[0] === 'string') { alreadyStored.add(definition[0]); }
+                }
+            }
+            /** @type {import('dictionary-data').TermGlossary[]} */
+            const definitions = [];
+            for (const {lemma, labels} of derived) {
+                if (alreadyStored.has(lemma)) { continue; }
+                definitions.push(/** @type {import('dictionary-data').TermGlossary} */ (/** @type {unknown} */ ([lemma, labels])));
+            }
+            if (definitions.length === 0) { continue; }
+            const [definitionTags, rules, score, termTags, sequence, readingMirrorsExpression] = inflection.template;
+            results.push({
+                index,
+                matchType: 'exact',
+                matchSource: 'term',
+                term,
+                // The importer never writes an empty reading (see StubTemplate), so on a real German
+                // import this is the term; '' only occurs for rows written around the importer.
+                reading: readingMirrorsExpression ? term : '',
+                definitionTags: this._splitField(definitionTags),
+                termTags: this._splitField(termTags),
+                rules: this._splitField(rules),
+                definitions,
+                score,
+                dictionary,
+                // Negative, so it can never collide with a stored row's id in the `visited` set here
+                // or in the `ids` set merge mode keeps. Distinct per synthesized entry.
+                id: -(results.length + 1),
+                sequence,
+            });
+        }
     }
 
     /**
@@ -741,6 +1010,10 @@ export class DictionaryDatabaseSqlite {
         this._titleToId.delete(dictionaryName);
         this._idToTitle.delete(dictionaryId);
         this._dictCodec.delete(dictionaryId);
+        // Not merely stale but dangerous to keep: SQLite hands out INTEGER PRIMARY KEY values again
+        // once the rows holding them are gone, so the next imported dictionary can be given this id
+        // and would inherit these rules — synthesizing another dictionary's forms into its lookups.
+        this._inflectionCache.delete(dictionaryId);
     }
 
     // Private — inserts (one prepared statement per batch; dictionary ids resolved from the title)
@@ -1141,6 +1414,7 @@ export class DictionaryDatabaseSqlite {
         this._titleToId.clear();
         this._idToTitle.clear();
         this._dictCodec.clear();
+        this._inflectionCache.clear();
         for (const row of this._require().selectObjects('SELECT id, title FROM dictionaries')) {
             this._cacheDictionary(/** @type {number} */ (row.id), /** @type {string} */ (row.title));
         }

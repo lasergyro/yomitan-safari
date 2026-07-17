@@ -156,6 +156,9 @@ export function applyInflectionRule(rule, form) {
  * @property {string[]} labels Distinct label sets ('|'-joined); index is the label id.
  * @property {Map<string, [number, number][]>} paradigms lemma -> the (ruleId, labelId) pairs it
  *   licenses. A candidate produced by a rule is only valid if the lemma's list contains that rule.
+ * @property {Map<string, number>} ruleIds Reverse of `rules`. Derived, not serialized: `isDerivable`
+ *   runs once per stated pair over the whole dictionary (2.17M times on `kty-de-en`), which a linear
+ *   scan of 1,000 rules turns into 2.17 billion string compares.
  */
 
 /**
@@ -218,7 +221,7 @@ export function buildInflectionTable(pairs, {ruleBudget}) {
         }
         if (!paradigm.some(([r, l]) => r === ruleId && l === labelId)) { paradigm.push([ruleId, labelId]); }
     }
-    return {rules: ranked, labels, paradigms};
+    return {rules: ranked, labels, paradigms, ruleIds};
 }
 
 /**
@@ -245,7 +248,8 @@ export function serializeInflectionTable(table) {
 export function deserializeInflectionTable(payload) {
     if (!Array.isArray(payload) || payload[0] !== INFLECTION_TABLE_FORMAT) { return null; }
     const parts = /** @type {[number, string[], string[], [string, [number, number][]][]]} */ (payload);
-    return {rules: parts[1], labels: parts[2], paradigms: new Map(parts[3])};
+    const rules = parts[1];
+    return {rules, labels: parts[2], paradigms: new Map(parts[3]), ruleIds: new Map(rules.map((rule, id) => [rule, id]))};
 }
 
 /**
@@ -261,9 +265,8 @@ export function isDerivable(table, form, lemma) {
     if (form === lemma) { return false; }
     const paradigm = table.paradigms.get(lemma);
     if (typeof paradigm === 'undefined') { return false; }
-    const rule = induceInflectionRule(form, lemma);
-    const ruleId = table.rules.indexOf(rule);
-    return ruleId >= 0 && paradigm.some(([r]) => r === ruleId);
+    const ruleId = table.ruleIds.get(induceInflectionRule(form, lemma));
+    return typeof ruleId !== 'undefined' && paradigm.some(([r]) => r === ruleId);
 }
 
 /**
