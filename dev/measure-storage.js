@@ -19,7 +19,7 @@
  * Measures dictionary storage against the **real** `kty-de-en`, the dictionary the whole storage
  * refactor is sized around. The unit tests can only use the tiny fixture dictionary, and synthetic
  * corpora predict real ratios badly, so this is the only honest source of numbers. It is also what
- * found the 75 ms full table scan on every lookup (see plan/03-progress.md → "Query plans").
+ * found the 75 ms full table scan on every lookup (see plan/progress.md → "Query plans").
  *
  * Usage:
  *   npm run measure:storage                 # payload codec ratios + decode cost
@@ -28,7 +28,7 @@
  *
  * The dictionary (~24 MB) is downloaded on first use into `dictionaries/` (gitignored) and cached.
  *
- * Results and their interpretation live in plan/zstd/README.md; the headline is that ~78 MB of the
+ * Results and their interpretation live in plan/history/zstd.md; the headline is that ~78 MB of the
  * ~150 MB database is indexes, which no codec touches — so that, not compression, is where the
  * remaining weight now is.
  *

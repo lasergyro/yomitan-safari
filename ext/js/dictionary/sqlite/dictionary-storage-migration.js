@@ -15,7 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Migration helpers for moving off the legacy IndexedDB `dict` store (see plan/01-design.md §8.4).
+// Migration helpers for moving off the legacy IndexedDB `dict` store (see plan/design.md → Migration).
 // The SQLite backend uses a new OPFS file and does not read the old IndexedDB; the decision is
 // "require re-import". These helpers detect a legacy store with data (so the UI can prompt for a
 // re-import), delete it to reclaim the ~1.2 GB after re-import, and request persistent storage.

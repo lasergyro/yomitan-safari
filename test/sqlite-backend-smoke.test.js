@@ -21,7 +21,7 @@ import {DICTIONARY_SQLITE_SCHEMA_VERSION, DICTIONARY_SQLITE_TABLES} from '../ext
 import {openDictionaryDatabaseHandle} from '../ext/js/dictionary/sqlite/open-sqlite.js';
 import {IdentityPayloadCodec} from '../ext/js/dictionary/payload-codec.js';
 
-// Stage 1 de-risk (plan/01-design.md §10/§11): confirm the SQLite-WASM backend can run under the vitest
+// Stage 1 de-risk (plan/design.md → Testing): confirm the SQLite-WASM backend can run under the vitest
 // (node) runner with an in-memory database, that BLOB columns round-trip as Uint8Array, and
 // that the PayloadCodec survives a store/load through a BLOB column. This is the test-harness
 // foundation the real SQLite DictionaryDatabase tests will build on.

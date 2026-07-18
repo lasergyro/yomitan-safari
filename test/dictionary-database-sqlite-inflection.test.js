@@ -29,7 +29,7 @@ import {setupStubs} from './utilities/database.js';
 
 /**
  * Guards the "drop the derivable form-of rows and synthesize them back" scheme
- * (plan/02-decisions.md #31, #34), which on `kty-de-en` deletes 69% of the rows.
+ * (plan/decisions.md #31, #34), which on `kty-de-en` deletes 69% of the rows.
  *
  * **Everything here goes through the real `DictionaryImporter`, against a real dictionary archive.**
  * An earlier version of this test hand-wrote packed rows straight into `bulkAdd`, and that is exactly
@@ -111,7 +111,7 @@ describe('DictionaryDatabaseSqlite induced inflection rows', () => {
      * pointers are stripped (untouched rows, so they must match exactly) and the set of
      * `[lemma, labels]` pointers (which drive `_getDictionaryDeinflections`, order-insensitively).
      * Asserting entry-identity instead passed against a one-pointer-per-row fixture and then failed
-     * on 39% of real lookups for no defect — see plan/02-decisions.md #34.
+     * on 39% of real lookups for no defect — see plan/decisions.md #34.
      * @param {DictionaryDatabaseSqlite} backend
      * @param {string} term
      * @param {import('dictionary-database').MatchType} [matchType]
@@ -288,7 +288,7 @@ describe('DictionaryDatabaseSqlite induced inflection rows', () => {
     }, 30000);
 
     test('a wildcard lookup cannot see a dropped form, and says so by finding nothing', async () => {
-        // The known and accepted gap (plan/02-decisions.md #34): a wildcard asks which *stored*
+        // The known and accepted gap (plan/decisions.md #34): a wildcard asks which *stored*
         // forms match a pattern, and a dropped form is not stored. `matchType` is 'exact' on the
         // hover path; only the search page's explicit `*` reaches this.
         expect(await lookup(stored, 'geschütz', 'prefix')).not.toStrictEqual({real: [], pointers: []});

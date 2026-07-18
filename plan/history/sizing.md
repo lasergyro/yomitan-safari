@@ -1,15 +1,25 @@
-# Where the 149.7 MB actually goes — a bottom-up budget for `kty-de-en`
+# Where the bytes go — a bottom-up budget for `kty-de-en`
 
-Status: **analysis, measured; one recommendation not yet applied.** Everything here is measured on the
-real `kty-de-en` (947,070 rows) imported through the real backend with the shipped
-`DeflatePayloadCodec`, except where a row is explicitly marked a projection.
+> **HISTORICAL EVIDENCE.** This is the analysis that found where the storage actually goes and
+> pointed at the inflection scheme now in [../design.md](../design.md). Two things about the numbers,
+> so they are not mistaken for current totals:
+>
+> - **Every absolute MB figure below is terms-only and understated.** These came from harnesses that
+>   imported only `term_bank_*.json` and wrote `reading: ''`, which the real importer never does
+>   (§8). Through the real `DictionaryImporter` the pre-drop database is **170.5 MB** (not 132.7) and
+>   the post-drop database is **49.4 MB** (not 44.56). The _shape_ of every conclusion holds — the
+>   ratios, the split, the direction — only the absolute bytes are low.
+> - **The recommendations here are DONE.** The degenerate-index drop (schema v2, #28/#36) and the
+>   inflection scheme (schema v4/v5, #31/#34) both shipped; §5.3's "not implemented" and §8's "do
+>   now" are the state at time of writing, not today.
 
-This doc exists because the previous headline — _"~78 MB of the database is indexes"_ — is **wrong**,
-and because "the remaining weight is the schema" turned out to be only a third of the story. The
-weight is the **dictionary's own shape**: 90% of the rows are inflected-form stubs.
+The point of the doc: the previous headline — _"~78 MB of the database is indexes"_ — was **wrong**,
+and "the remaining weight is the schema" turned out to be a third of the story. The weight is the
+**dictionary's own shape**: 90% of the rows are inflected-form stubs.
 
-Related: [../zstd/README.md](../zstd/README.md) (why compression stopped being the lever),
-[../02-decisions.md](../02-decisions.md) #27 (the full-scan fix), #28 (the index recommendation).
+Related: [zstd.md](zstd.md) (why compression stopped being the lever),
+[../decisions.md](../decisions.md) #27 (the full-scan fix), #28/#36 (the index changes),
+#31/#34 (the inflection scheme this analysis motivated).
 
 ---
 
@@ -30,7 +40,7 @@ with `dbstat` (`SELECT name, sum(pgsize) FROM dbstat GROUP BY name`), same impor
 
 So the old `rest` of 78.1 MB = **49.5 MB of indexes + 28.5 MB of table row overhead**. The two
 reconcile exactly, which is what makes the split trustworthy. Fix applied to
-[../README.md](../README.md), [../03-progress.md](../03-progress.md), [../zstd/README.md](../zstd/README.md)
+[../README.md](../README.md), [../progress.md](../progress.md), [zstd.md](zstd.md)
 and `DEV.md`.
 
 `rest` is also not a stable quantity — it is 91.2 MB under identity and 78.1 MB under deflate for the
@@ -497,7 +507,7 @@ Japanese dictionary before deciding.** The 9.2 MB it adds over §2 is not worth 
 > only `term_bank_*.json` and wrote `reading: ''`. Driving the real `DictionaryImporter` (all stores,
 > `reading` rewritten to the expression) the pre-drop database is **170.5 MB**, not 132.7, and the
 > post-drop database is **49.4 MB** (56.8 at schema v4, then 49.4 once #36 empties the reading index),
-> not 44.56 (see [02-decisions.md](../02-decisions.md) #35). The shape of every conclusion holds; the
+> not 44.56 (see [decisions.md](../decisions.md) #35). The shape of every conclusion holds; the
 > absolute bytes were low. Re-measuring §1–§4 through the real importer is itself an open item.
 
 1. **Do now** (small, verified, no capability lost): drop `ix_terms_dictionary`, make
@@ -518,7 +528,7 @@ Japanese dictionary before deciding.** The 9.2 MB it adds over §2 is not worth 
    synthesizes it back on lookup. Measured through the real importer: **170.5 → 49.4 MB, 947,070 →
    293,262 rows** (56.8 MB at v4 from the drop, 49.4 once #36 empties the reading index), with the
    pointers a lookup yields matching the ZIP exactly over 41,921 sampled forms (0 lost, 0 invented).
-   Schema v4/v5; see [02-decisions.md](../02-decisions.md) #31, #34 and #36.
+   Schema v4/v5; see [decisions.md](../decisions.md) #31, #34 and #36.
 
    The whole-file total is now **49.4 MB against the 149.7 MB this document opened on** (both partial
    pictures — the 149.7 was also terms-only — but the direction is real): the morphology that §4

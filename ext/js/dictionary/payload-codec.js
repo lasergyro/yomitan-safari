@@ -30,7 +30,7 @@ import {parseJson} from '../core/json.js';
  *
  * `identity` exists as the correctness baseline; `deflate` (pako + a preset dictionary) is what the
  * extension ships. A trained-dictionary zstd codec was built and measured against real data and did
- * not justify its cost — plan/zstd/README.md records why, and the `codec` column means that decision
+ * not justify its cost — plan/history/zstd.md records why, and the `codec` column means that decision
  * can be revisited without invalidating existing imports. The `PayloadCodec` type lives in
  * types/ext/payload-codec.d.ts.
  * @typedef {import('payload-codec').PayloadCodec} PayloadCodec

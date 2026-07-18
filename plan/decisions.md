@@ -1,11 +1,21 @@
 # Decision log
 
-Condensed record of the decisions behind this refactor, oldest first within each group.
-Rationale/measurements in full are in [01-design.md](01-design.md). Format: **Decision** —
-rationale — _status_.
+_Why_ the backend is the way it is — the historical record of every choice, including the ones that
+were reversed. For _what_ the system does today, read [design.md](design.md) and
+[pseudocode.md](pseudocode.md); this log is where you come to find out why, or to check whether a
+decision still stands.
 
-**Numbers are permanent IDs**, referenced from the code and the other plan docs, so renumbering
-silently breaks every existing reference.
+Format: **Decision** — rationale — _status_. Read the status: several early decisions have been
+superseded or reversed, and are kept only because the constraint behind them is worth not
+rediscovering.
+
+- **LIVE** — describes the code today.
+- **SUPERSEDED** — the conclusion was later refined; the pointer says by which decision.
+- **HISTORICAL** — describes something since removed (chiefly the zstd codec, #21–#25); read as
+  history, not as a description of the tree.
+
+**Numbers are permanent IDs**, referenced from the code (e.g. test comments cite `#27`, `#31`,
+`#34`) and the other plan docs, so renumbering silently breaks every existing reference.
 
 **To add a decision, append it in a new trailing section** — never insert one mid-document, even into
 the group it belongs to thematically. The pre-commit `prettier --write` renumbers each ordered list
@@ -53,15 +63,15 @@ decisions appended to "Implementation patterns" were rewritten 21→16, 22→17,
    (`deflate-payload-codec.js`); pako injected + vendored to `ext/lib/pako.js`. pako is pinned at
    1.0.11 (the transitive version already installed); `deflateRaw`/`inflateRaw` with a `dictionary`
    preset work there._
-9. **Trained zstd dictionary per imported dictionary is the target codec** (~5.5× on the
-   payload). — A shared dictionary is required (per-row compression of tiny payloads is
+9. _(SUPERSEDED by #26 — zstd was measured and rejected.)_ **Trained zstd dictionary per imported
+   dictionary is the target codec** (~5.5× on the payload). — A shared dictionary is required (per-row compression of tiny payloads is
    otherwise net-negative); raw/untrained only gets ~2.8×, trained gets 5.5×. Needs a **custom
    zstd WASM build** exposing `ZDICT_trainFromBuffer`. — _built and tested, **not selected**. The
    ~5.5× **did not reproduce** when finally measured on real `kty-de-en` data: with the parameters
    this decision assumed (110 KB dictionary) zstd gets 3.15× and loses to deflate's 3.55×. Sizing
    the dictionary properly (1.9 MB, needing ~200k training rows buffered) gets 4.47× / 56.8 MB and
    decodes ~8× faster than deflate (2.7 vs 21.4 µs/row). The dictionary-is-mandatory half of this decision holds; the
-   number does not. See [zstd/](zstd/README.md)._
+   number does not. See [zstd.md](history/zstd.md)._
 
 ## Implementation patterns
 
@@ -161,10 +171,10 @@ one — see the note at the top.
     ~1% of the original problem — for a custom emscripten toolchain, ~24 MB of WASM heap in the DB
     worker (a live concern on iOS), and that buffering. Decode speed decided nothing: both are tens
     of microseconds per lookup, ~1000× under a frame. **78.1 MB of the database is indexes + row
-    overhead, which no codec touches** (49.5 + 28.5 — see [sizing/](sizing/README.md) §1; this was
+    overhead, which no codec touches** (49.5 + 28.5 — see [sizing.md](history/sizing.md) §1; this was
     previously miscredited entirely to indexes) — so compression cannot reach the ~100 MB target and
     the remaining weight is the schema. The zstd code is deleted rather than left dormant; the evidence is in
-    [zstd/](zstd/README.md) and the implementation in git history (`58fe1f50`). The `codec` column
+    [zstd.md](history/zstd.md) and the implementation in git history (`58fe1f50`). The `codec` column
     makes this reversible. — _adopted; `createDictionaryDatabase()` now builds
     `new DeflatePayloadCodec()`._
 27. **Pin the term index with `INDEXED BY`; do not let the planner choose.** — Every row of a German
@@ -178,9 +188,11 @@ one — see the note at the top.
 
 ## Storage sizing
 
-Full analysis and every number: [sizing/](sizing/README.md).
+Full analysis and every number: [sizing.md](history/sizing.md).
 
-28. **Drop `ix_terms_dictionary`; make `ix_terms_reading` partial (`WHERE reading <> ''`).** —
+28. _(PARTLY SUPERSEDED — the `ix_terms_dictionary` drop is LIVE; the `WHERE reading <> ''` predicate
+    saved nothing and was replaced by `reading <> expression` in #36.)_ **Drop `ix_terms_dictionary`;
+    make `ix_terms_reading` partial (`WHERE reading <> ''`).** —
     `ix_terms_dictionary(dictionary_id)` is a strict prefix-duplicate of
     `ix_terms_sequence(dictionary_id, sequence)`, so it is redundant **by construction on every
     dictionary**, not just this one; the count/delete queries that used it still plan as seeks on
@@ -191,11 +203,12 @@ Full analysis and every number: [sizing/](sizing/README.md).
     −26.5 MB quoted while this was being analysed also counted `ix_terms_sequence`, which #29 defers;
     that is a further −9.5 MB.) The partial index **requires** adding the literal
     `AND reading <> ''` to the reading probe: without it the existing `INDEXED BY` fails hard with
-    `no query solution` rather than falling back to a scan. — _recommended, NOT yet applied._
+    `no query solution` rather than falling back to a scan. — _shipped (schema v2), but its reading
+    predicate was superseded by #36; see #35 for why `<> ''` excluded nothing._
 29. **Do not make `ix_terms_sequence` partial, and do not adopt `WITHOUT ROWID` yet.** — Both look
     like free wins and neither is. `WHERE sequence > 0` would _change behaviour_: every `kty-de-en`
     row has `sequence = 0` while `index.json` claims `sequenced: true`, so this is a semantics
-    question (what does `sequence = 0` mean?) wearing a storage costume — see [sizing/](sizing/README.md)
+    question (what does `sequence = 0` mean?) wearing a storage costume — see [sizing.md](history/sizing.md)
     §6 for the latent all-rows-match bug it exposes, which is upstream's and not a regression.
     `PRIMARY KEY(expression, id) WITHOUT ROWID` measures well on German (−35.7 MB, seeks still
     0.045 ms) precisely because its reading index is empty — but secondary indexes on a `WITHOUT
@@ -222,7 +235,7 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     DB lookup does not filter a real-but-wrong word); that check is exact but _tautological_ — it is
     equivalent to consulting the original map — so this is a **compression scheme, not a
     generalisation**, and it cannot analyse a form the dictionary never listed. — _measured, not
-    implemented; the open risk is lookup cost, see [sizing/](sizing/README.md) §5.3._
+    implemented; the open risk is lookup cost, see [sizing.md](history/sizing.md) §5.3._
 32. **Cache the term-query prepared statements; `findTermsBulk` re-prepares one per candidate.** —
     It loops per term calling `selectObjects`, which runs `sqlite3_prepare` + finalise on every call,
     so a lookup with 434 candidates pays 868 of them. Measured: **~85% of query time is statement
@@ -232,7 +245,7 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     just the inflection work: it makes every hover ~5–10× cheaper on the SQL. It is also what decides
     whether the §5.3 rule expansion is affordable — with it, the full 70,247-rule set costs ~3.4 ms
     per hover instead of ~12. — _measured, not implemented; small and self-contained
-    ([sizing/](sizing/README.md) §5.4)._
+    ([sizing.md](history/sizing.md) §5.4)._
 33. **`searchResolution` drives lookup cost more than anything else, and German recommends `word`.** —
     `translator._getAlgorithmDeinflections` runs the transforms over **every substring** of the scan
     window (`scanning.length`, default 16), stepping by letter or by word per
@@ -240,9 +253,9 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     for German). Word stepping turns a 16-character window into ~3 substrings instead of 16, a ~5×
     difference in candidates and therefore in lookup cost. Any latency claim about the deinflection
     path is meaningless without stating which mode it assumes. — _recorded; both modes are measured in
-    [sizing/](sizing/README.md) §5.4._
+    [sizing.md](history/sizing.md) §5.4._
 34. **The induced rules belong in the database backend, not in the translator — and #31's recorded
-    blocker was wrong.** — [03-progress.md](03-progress.md) recorded Stage B as blocked on an
+    blocker was wrong.** — [progress.md](progress.md) recorded Stage B as blocked on an
     architectural clash: the rules are per-dictionary and live in the database, while algorithm
     deinflections come from `MultiLanguageTransformer`, which is language-static and built at
     construction, so "both deinflection paths change together". That framing assumed the rules had to
@@ -300,7 +313,7 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
       page's explicit `*`. Accepted, and pinned by a test rather than left to be discovered.
     - **`findTermsExactBulk` and `findTermsBySequenceBulk` no longer see dropped stub rows either.**
       Both are merge-mode paths, and a form-of stub surfacing there is arguably the latent bug of #29
-      / [sizing/](sizing/README.md) §6 rather than a feature — but this is a behaviour change and is
+      / [sizing.md](history/sizing.md) §6 rather than a feature — but this is a behaviour change and is
       recorded as one, not discovered later.
     - **Dictionary ids are reused.** `deleteDictionary` must evict `_inflectionCache`: SQLite reissues
       `INTEGER PRIMARY KEY` values once the rows holding them are gone, so the next imported
@@ -334,7 +347,7 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     exist.** — `dictionary-importer.js`'s `_convertTermBankEntryV3` does
     `reading = reading.length > 0 ? reading : expression`. So a German dictionary has
     **`reading === expression` on every one of its 947,070 rows, never `''`**. Every measurement
-    behind #27, #28 and [sizing/](sizing/README.md) came from harnesses that wrote packed rows
+    behind #27, #28 and [sizing.md](history/sizing.md) came from harnesses that wrote packed rows
     straight into `bulkAdd` with `reading: ''`, bypassing that line. Measured through the real
     importer instead (`dbstat`, deflate, all stores):
 

@@ -1,7 +1,7 @@
 # Task: zstd payload codec with a trained dictionary
 
 **Status: BUILT, MEASURED, REJECTED — and REMOVED. `deflate` ships instead**
-([../02-decisions.md](../02-decisions.md) #26). This file is kept as the record of _why_, so nobody
+([../decisions.md](../decisions.md) #26). This file is kept as the record of _why_, so nobody
 has to rediscover it.
 
 The custom WASM build worked and passed node + real Safari end-to-end. Measured against the real
@@ -11,17 +11,17 @@ reproduce**; with the plan's own parameters zstd is _worse_ than deflate; and si
 that does not exist. **78.1 MB of the database is indexes + row overhead that no codec touches**, so
 compression was never going to reach the ~100 MB target anyway. (That 78.1 is 49.5 MB of index and
 28.5 MB of table row overhead — this doc originally credited all of it to indexes; see
-[../sizing/README.md](../sizing/README.md).)
+[sizing.md](sizing.md).)
 
 The code is deleted rather than left dormant — it is in git history at **`58fe1f50`**
 (`ext/js/dictionary/zstd-payload-codec.js`, `dev/zstd/`, `types/ext/zstd.d.ts`), and the `codec`
 column keeps the decision reversible. The exercise still paid for itself: it found a **75 ms full
-table scan on every lookup** ([../03-progress.md](../03-progress.md) → "Query plans"), which mattered
+table scan on every lookup** ([../progress.md](../progress.md) → "Query plans"), which mattered
 far more than any codec.
 
-It was meant to be the final compression step of the storage refactor
-([../01-design.md](../01-design.md) §4, §6, §8.2). Everything below is written as it was at the time
-of the evaluation; **none of the zstd code is in the tree any more**.
+It was meant to be the final compression step of the storage refactor — the codec plugged into the
+`PayloadCodec` seam ([../design.md](../design.md) → Payload codec). Everything below is written as it
+was at the time of the evaluation; **none of the zstd code is in the tree any more**.
 
 ## Why (the original claim)
 
@@ -49,7 +49,7 @@ reaches 2.82× where a ZDICT-trained one reaches 5.52×.
 `sqlite-zstd` is a Rust **loadable extension**. SQLite-WASM cannot load extensions dynamically (they
 must be statically compiled in, which is bleeding-edge for Rust), and there is no WASM build. We do
 app-level compression of the single heavy column instead, which reaches the same result with a
-standard toolchain. See [../02-decisions.md](../02-decisions.md) #3.
+standard toolchain. See [../decisions.md](../decisions.md) #3.
 
 ## What was built
 
@@ -78,13 +78,13 @@ not, and training is where 2.82× becomes 5.52×.
 `npm run build:libs` copies the built module to `ext/lib/zstd.js`. So a fresh clone must run
 `npm run build:zstd` once (needs `brew install emscripten`) before the zstd tests, the type-checks
 that touch them, or a build. There is no CI to serve, so a locally cached build is enough. See
-[../02-decisions.md](../02-decisions.md) #21.
+[../decisions.md](../decisions.md) #21.
 
 ### 2. The codec — `ext/js/dictionary/zstd-payload-codec.js`
 
 `ZstdPayloadCodec` implements the existing `PayloadCodec` interface. The module is injected
 (node tests pass the `dev/vendor` build; the extension self-loads `ext/lib/zstd.js`), mirroring
-sqlite3/pako — [../02-decisions.md](../02-decisions.md) #10. `CDict`/`DDict` are compiled once per
+sqlite3/pako — [../decisions.md](../decisions.md) #10. `CDict`/`DDict` are compiled once per
 distinct dictionary and cached in a `WeakMap`, never per row.
 
 One interface change was needed: **`PayloadCodec.prepare?()`**, awaited by
@@ -221,20 +221,20 @@ This reframes the whole codec argument:
 - **`rest` is ~78 MB and does not compress.** Indexes, keys and row overhead are over half the
   database once the payload is squeezed. So the payload win of 71.5 → 56.8 MB (−15) only moves the
   total 149.7 → ~137 MB (**−8%**). (`rest` is **49.5 MB of index + 28.5 MB of table row overhead** —
-  see [../sizing/README.md](../sizing/README.md) §1. Note it is not even a stable quantity: 91.2 MB
+  see [sizing.md](sizing.md) §1. Note it is not even a stable quantity: 91.2 MB
   under identity vs 78.1 under deflate for the same rows, because it absorbs page-fill differences.
   `dbstat` is the right tool.)
 - **Nothing reaches the ~100 MB target**, and no codec can: even a _free, perfect_ codec (payload → 0)
   would land at ~78 MB, and deflate is already within 70 MB of that floor. If ~100 MB matters, the
   next work is the schema, not the codec — and **~26.5 MB of that 78 is degenerate index**, 17.0 MB
-  of which is now simply dropped ([../02-decisions.md](../02-decisions.md) #28).
+  of which is now simply dropped ([../decisions.md](../decisions.md) #28).
 - **The real win is already banked**: ~1.2 GB → ~150 MB with deflate. zstd's extra 13 MB is ~1% of
   the original problem.
 
 ## Does any of this affect the UI?
 
 **No — and the thing that did was not the codec.** Per-lookup cost after the index fix
-([../02-decisions.md](../02-decisions.md) #27), on the full 947k-row dictionary:
+([../decisions.md](../decisions.md) #27), on the full 947k-row dictionary:
 
 | Codec    | SQL      | decode/row | lookup total |
 | -------- | -------- | ---------- | ------------ |
@@ -248,7 +248,7 @@ magnitude below a 16 ms frame. **Decode speed is not a reason to choose either c
 
 What _did_ threaten the UI was a full table scan on every lookup — 75 ms — caused by the query
 planner, not compression. Measuring the real dictionary is what exposed it; see
-[../03-progress.md](../03-progress.md) → "Query plans".
+[../progress.md](../progress.md) → "Query plans".
 
 ## RAM
 
@@ -301,7 +301,7 @@ Still open, and deliberately not decided here:
    trainer more than one `bulkAdd` batch), lower `-sINITIAL_MEMORY`, and check the training heap
    spike on iOS.
 3. **Attack the 78.1 MB of `rest`** if ~100 MB is a real target — that is where the remaining weight
-   is, and no codec reaches it. **Now analysed in full: [../sizing/README.md](../sizing/README.md).**
+   is, and no codec reaches it. **Now analysed in full: [sizing.md](sizing.md).**
    26.5 MB of it is degenerate index (17.0 MB now dropped, schema v2), and the real prize is bigger than
    `rest` — 90% of the rows are inflected-form stubs costing 60.5 MB of the 71.5 MB payload.
 4. **Reclaim the ~10 B/row zstd frame overhead** (`ZSTD_f_zstd1_magicless`, dictID/content-size flags

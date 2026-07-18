@@ -1,60 +1,68 @@
 # plan/ — dictionary storage backend refactor
 
-Replace the Safari fork's IndexedDB dictionary store with **SQLite-WASM on OPFS**, storing the heavy
-definition payload as a **deflate-compressed BLOB with a preset dictionary** in a **columnar schema**
-that eliminates repeated strings. Branch: **`safari-refactor`**.
+Replace the Safari fork's IndexedDB dictionary store with **SQLite-WASM on OPFS**: a columnar schema,
+a per-row deflate-compressed payload, and inflection rules induced from each dictionary so its
+form-of rows can be dropped and synthesized on lookup. Branch: **`safari-refactor`**.
 
-**Measured result: ~700 MB of IndexedDB → ~150 MB.** The original "~1.2 GB → ~100 MB" framing did not
-survive measurement — the 1.2 GB baseline is unverified (the app reports ~700 MB), and ~100 MB is
-unreachable by compression because 78.1 MB of the database is indexes and row overhead rather than
-payload. See the numbers below, and [sizing/](sizing/README.md) for where every byte goes.
+**Measured result: ~700 MB of IndexedDB → 49.4 MB** on the real `kty-de-en`, through the real
+importer. The flag is still off, so the extension still runs the IndexedDB backend — see Stage 5.
 
-## Resume here (after a context reset)
+## Read order
 
-- **Read order:** this file → [03-progress.md](03-progress.md) (what's done + what's left) →
-  [02-decisions.md](02-decisions.md) (why) → [01-design.md](01-design.md) (full reference: schema,
-  measured numbers, feasibility).
-- **Status:** Stages 0–4 are implemented and green and the codec is **decided: deflate**
-  ([02-decisions.md](02-decisions.md) #26) — `createDictionaryDatabase()` now builds the SQLite
-  backend with `DeflatePayloadCodec`. **The flag is still off**, so the extension still runs the
-  IndexedDB backend and nothing user-visible has changed. `DictionaryDatabaseSqlite` has full API
-  parity, passes the real importer/translator fixtures end-to-end (identity and deflate), and passes
-  the **real Safari** checks.
-- **Heads-up on the numbers — measured on the real `kty-de-en` (`npm run measure:storage`).
-  Several claims in [01-design.md](01-design.md) do not survive it; its header lists them.**
-  - **Whole-database sizes**: identity 345 MB, **deflate 149.7 MB** (from ~700 MB of IndexedDB).
-    **78.1 MB of that is indexes + row overhead, which no codec touches** — so **~100 MB is
-    unreachable by compression**, and the remaining weight is the schema and the dictionary's shape,
-    not the payload. That, not the codec, is where any further size work goes.
-  - **Where the 149.7 MB goes is now fully broken down: [sizing/](sizing/README.md).** Headlines:
-    indexes are **49.5 MB, not ~78** (the old figure conflated indexes with the table's own row
-    overhead); **26.5 MB of index is degenerate**, of which **17.0 MB is now dropped** (schema v2)
-    with no capability
-    lost; and **90% of the rows are inflected-form stubs**, costing 60.5 MB of the 71.5 MB payload
-    while the real definitions are only 11.1 MB. The inflections, not the codec, are the database.
-  - **zstd was built, measured and rejected**; its ~13 MB edge did not pay for a custom toolchain,
-    ~24 MB of RAM and import buffering. Removed in favour of deflate — [zstd/](zstd/README.md)
-    keeps the evidence.
-  - **A full table scan on every lookup was found and fixed** (75 ms → 0.064 ms). See
-    [03-progress.md](03-progress.md) → "Query plans". This mattered far more than the codec choice,
-    and only appeared on real data.
-- **What gates the Stage 5 flip:** **extension-origin verification** (`./rebuild-safari.sh` + a
-  manual scan pass) — see [03-progress.md](03-progress.md) → "Stage 5".
-- **Feature flag:** `USE_SQLITE_BACKEND` in `ext/js/dictionary/dictionary-backend-config.js`
-  (currently `false` — the IndexedDB path is still the only live one).
+Two clusters. Read across them, not down the old timeline.
 
-## Doc map
+**What it is (the plan):**
 
-Numbered oldest → newest; read them in order.
+| File                           | What it holds                                                      |
+| ------------------------------ | ------------------------------------------------------------------ |
+| [design.md](design.md)         | Current architecture: schema, codec, inflection synthesis, queries |
+| [pseudocode.md](pseudocode.md) | The whole scheme end to end, as pseudocode                         |
+| [progress.md](progress.md)     | What's built, what's left (the Stage 5 gate), watch-outs, file map |
 
-| File                               | Purpose                                                                                                              | Changes                           |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| [README.md](README.md)             | Index + resume-here + status                                                                                         | often                             |
-| [01-design.md](01-design.md)       | Full design reference: baseline, measurements, feasibility, schema, staged plan                                      | rarely                            |
-| [02-decisions.md](02-decisions.md) | Condensed decision log (what + why + status)                                                                         | when a decision is made/revised   |
-| [03-progress.md](03-progress.md)   | Implementation log per stage, watch-outs, file map, what's left                                                      | every work session                |
-| [zstd/](zstd/README.md)            | Why zstd was built, measured and rejected; the real-data numbers                                                     | closed                            |
-| [sizing/](sizing/README.md)        | Bottom-up budget: per-B-tree split, the degenerate indexes, the index floor, and why 90% of the rows are inflections | when the schema or numbers change |
+**Why it is that way (the record):**
+
+| File                                                 | What it holds                                                           |
+| ---------------------------------------------------- | ----------------------------------------------------------------------- |
+| [decisions.md](decisions.md)                         | Decision log — every choice, with rationale and live/dead status        |
+| [history/sizing.md](history/sizing.md)               | Bottom-up byte budget: why the inflections, not the codec, are the DB   |
+| [history/zstd.md](history/zstd.md)                   | Why zstd was built, measured, and rejected in favour of deflate         |
+| [history/original-plan.md](history/original-plan.md) | The first draft (superseded): feasibility spike, rejected architectures |
+
+## Status
+
+- **Stages 0–4 are implemented and green.** The SQLite backend (`DictionaryDatabaseSqlite`) has full
+  API parity with the IndexedDB backend, passes the real importer/translator fixtures end-to-end
+  (identity + deflate), and passes the **real Safari** checks.
+- **The codec is decided: deflate** ([decisions.md](decisions.md) #26).
+- **Inflection synthesis is implemented** (schema v4/v5): rules are induced at import, derivable
+  form-of rows are dropped, and `findTermsBulk` synthesizes them on lookup — 947,070 → 293,262 rows,
+  verified against the source ZIP (0 lost, 0 invented over 41,921 forms).
+- **The flag `USE_SQLITE_BACKEND` is `false`** (`ext/js/dictionary/dictionary-backend-config.js`), so
+  the IndexedDB path is still the only live one and nothing user-visible has changed.
+- **What gates flipping it (Stage 5):** extension-origin verification (`./rebuild-safari.sh` + a
+  manual scan pass), the settings-page migration UX, and calling `finalizeImport()` from the
+  importer. Full checklist in [progress.md](progress.md) → Stage 5.
+
+## The numbers, once
+
+Measured on `kty-de-en` (947,070 term rows) through the real `DictionaryImporter`, deflate:
+
+| Stage                             | Whole DB    |
+| --------------------------------- | ----------- |
+| IndexedDB baseline (app-reported) | ~700 MB     |
+| SQLite, identity codec            | 366.4 MB    |
+| SQLite, deflate                   | 170.5 MB    |
+| + inflection synthesis (v4)       | 56.8 MB     |
+| + empty reading index (v5)        | **49.4 MB** |
+
+Two conclusions the measurements forced, kept here so they are not relitigated elsewhere:
+
+- **The ~100 MB target was unreachable by compression, and irrelevant once the schema changed.** Of
+  the 170.5 MB deflate database, ~78 MB was index + row overhead no codec touches. The lever was
+  never the codec — it was that **90% of the rows are inflections**. See
+  [history/sizing.md](history/sizing.md).
+- **zstd's best case saved ~13 MB on ~150 MB for a custom toolchain and ~24 MB of RAM.** Rejected.
+  See [history/zstd.md](history/zstd.md).
 
 ## Commands
 

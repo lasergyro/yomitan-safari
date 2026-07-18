@@ -29,9 +29,9 @@ import {DictionaryDatabaseSqlite} from './sqlite/dictionary-database-sqlite.js';
  * with no SQLite/WASM/pako touched at runtime — everything they need is dynamically imported inside
  * the SQLite `prepare()`.
  *
- * The write codec is **deflate** (plan/02-decisions.md #26): measured on the real `kty-de-en` it
+ * The write codec is **deflate** (plan/decisions.md #26): measured on the real `kty-de-en` it
  * gives a ~150 MB database against ~700 MB of IndexedDB, for no build step and no extra RAM. zstd
- * was built and measured and did not justify itself — see plan/zstd/README.md.
+ * was built and measured and did not justify itself — see plan/history/zstd.md.
  * @returns {DictionaryDatabase}
  */
 export function createDictionaryDatabase() {

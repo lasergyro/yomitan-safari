@@ -1,8 +1,12 @@
 # Progress log
 
-Living status of the storage-backend refactor. Update this every work session. Stages are ordered
-oldest → newest. Full design in [01-design.md](01-design.md); decisions in
-[02-decisions.md](02-decisions.md); why zstd was rejected in [zstd/](zstd/README.md).
+Living status of the storage-backend refactor: what is built, what remains, and the watch-outs that
+bit us. Update this every work session. Stages are ordered oldest → newest.
+
+The current architecture is [design.md](design.md); the whole scheme in pseudocode is
+[pseudocode.md](pseudocode.md); the rationale for each choice is [decisions.md](decisions.md); the
+byte-budget evidence is [history/sizing.md](history/sizing.md); why zstd was rejected is
+[history/zstd.md](history/zstd.md).
 
 ## Git state
 
@@ -48,7 +52,7 @@ oldest → newest. Full design in [01-design.md](01-design.md); decisions in
   `openDictionaryDatabaseHandle(sqlite3, {vfs, path?, initialCapacity?})`. `vfs:'opfs'` →
   `installOpfsSAHPoolVfs` + `OpfsSAHPoolDb`; `vfs:'memory'` → `new sqlite3.oo1.DB(':memory:')`.
   Sets `page_size`/`synchronous`/`temp_store`, then creates the schema. **`sqlite3` is injected**
-  (not imported here) — see [02-decisions.md](02-decisions.md) #10.
+  (not imported here) — see [decisions.md](decisions.md) #10.
 - **Schema** (`ext/js/dictionary/sqlite/dictionary-sqlite-schema.js`): `createDictionarySchema(db)`
   runs the DDL (`dictionaries, terms, term_meta, kanji, kanji_meta, tag_meta, media`) and sets
   `PRAGMA user_version = DICTIONARY_SQLITE_SCHEMA_VERSION` (=1). Exports `DICTIONARY_SQLITE_TABLES`.
@@ -83,7 +87,7 @@ oldest → newest. Full design in [01-design.md](01-design.md); decisions in
 
 ## Stage 3 — DONE for deflate; zstd is a separate outstanding task
 
-See **[zstd/](zstd/README.md)** for the remaining (blocked) zstd work and the size targets.
+See **[zstd.md](history/zstd.md)** for the remaining (blocked) zstd work and the size targets.
 
 - **Codec self-description**: the backend takes a write codec + optional decode codecs and keeps a
   per-dictionary `{codec, dict}` cache. On import it resolves/trains the write codec per dictionary
@@ -129,11 +133,11 @@ See **[zstd/](zstd/README.md)** for the remaining (blocked) zstd work and the si
 
 ## Codec — DECIDED: deflate ships; zstd built, measured, rejected, removed
 
-Full record in **[zstd/](zstd/README.md)**. The Stage 3 blocker ("needs a custom zstd WASM build") is
+Full record in **[zstd.md](history/zstd.md)**. The Stage 3 blocker ("needs a custom zstd WASM build") is
 resolved; the remaining question is a shipping decision, not an engineering one.
 
 **All of the zstd implementation below was removed** in the same change that selected deflate
-([02-decisions.md](02-decisions.md) #26); it lives in git history at `58fe1f50`. Kept here as the
+([decisions.md](decisions.md) #26); it lives in git history at `58fe1f50`. Kept here as the
 record of what was tried and what it cost.
 
 - **Custom WASM build** (was `dev/zstd/`): `build.sh` downloaded the official zstd 1.5.7 tarball,
@@ -142,17 +146,17 @@ record of what was tried and what it cost.
   the CCtx/DCtx. The custom build was genuinely necessary: no published zstd WASM package exposes
   `ZDICT_trainFromBuffer` (verified — `@bokuweb/zstd-wasm` and `zstd-codec` contain no `ZDICT_*`
   symbols at all).
-- **The build script was committed, not the artifact** ([02-decisions.md](02-decisions.md) #21):
+- **The build script was committed, not the artifact** ([decisions.md](decisions.md) #21):
   `dev/vendor/` was gitignored like `ext/lib/`, so a fresh clone ran `npm run build:zstd` once
   (needs emscripten) before the zstd tests or a build. There is no CI to serve, so a local cache
   sufficed.
 - **`ZstdPayloadCodec`** (`ext/js/dictionary/zstd-payload-codec.js`): module injected as usual;
   CDict/DDict compiled once per dictionary (WeakMap), never per row; `train()` returns empty when
   ZDICT refuses a too-small corpus, which the backend already maps to "no dictionary".
-- **New interface hook `PayloadCodec.prepare?()`** ([02-decisions.md](02-decisions.md) #22), awaited
+- **New interface hook `PayloadCodec.prepare?()`** ([decisions.md](decisions.md) #22), awaited
   by `DictionaryDatabaseSqlite.prepare()` for every registered codec — `encode`/`decode` are sync but
   WASM init is not, and a read path never calls `train()`.
-- **Level 15, not 19** ([02-decisions.md](02-decisions.md) #23): the ratio plateaus at 15 while 19
+- **Level 15, not 19** ([decisions.md](decisions.md) #23): the ratio plateaus at 15 while 19
   costs ~3× the encode time.
 - **Tests**: `zstd-payload-codec.test.js` (12); a 2,000-row zstd import in
   `dictionary-database-sqlite-codec.test.js` asserting the trained dictionary is persisted to
@@ -167,8 +171,8 @@ record of what was tried and what it cost.
   **4.47× / 56.8 MB** at −15 (4.63× / 54.9 MB at −19), and decode is **~8× faster than deflate**
   (2.7 vs 21.4 µs/row) — within 1 µs/row of raw JSON — with dictionary size costing nothing on
   decode. So the codec that saves the most also reads the fastest; deflate is the slow one on the
-  query path. Full tables and the open decision in [zstd/](zstd/README.md).
-- **Tunable rather than baked in** ([02-decisions.md](02-decisions.md) #24, #25):
+  query path. Full tables and the open decision in [zstd.md](history/zstd.md).
+- **Tunable rather than baked in** ([decisions.md](decisions.md) #24, #25):
   `DictionaryDatabaseSqlite` takes `trainSampleSize`, and `measure:storage` takes
   `--train/--rows/--db`. The tradeoff is a judgement call, so it should be re-derivable rather than
   argued from memory.
@@ -179,15 +183,15 @@ record of what was tried and what it cost.
 
 ## Sizing work queue — do these in order
 
-From [sizing/](sizing/README.md). Ordered by ascending risk, and each is independently shippable, so
+From [sizing.md](history/sizing.md). Ordered by ascending risk, and each is independently shippable, so
 stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31.
 
-1. **Cache the term-query prepared statements** ([02-decisions.md](02-decisions.md) #32) —
+1. **Cache the term-query prepared statements** ([decisions.md](decisions.md) #32) —
    `findTermsBulk` loops per term calling `selectObjects`, which prepares **and finalises** a
    statement per call. ~85% of query time is that overhead, not index seeks (434 candidates:
    9.44 → 1.52 ms). Affects the backend as shipped. Small and self-contained; no schema change, no
    behaviour change. **— DONE.**
-2. **Drop the degenerate indexes** ([02-decisions.md](02-decisions.md) #28) — drop
+2. **Drop the degenerate indexes** ([decisions.md](decisions.md) #28) — drop
    `ix_terms_dictionary` (a strict prefix-duplicate of `ix_terms_sequence`, redundant on every
    dictionary) and make `ix_terms_reading` partial (`WHERE reading <> ''`). **Measured −17.0 MB,
    149.7 → 132.7 MB**, no capability lost. (Not −26.5: that figure counted `ix_terms_sequence` too,
@@ -195,10 +199,10 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
    schema-version bump and the literal `AND reading <> ''` in
    the reading probe — without it the existing `INDEXED BY` fails with `no query solution` rather
    than falling back. **— DONE.**
-3. **Rule-derived inflections** ([02-decisions.md](02-decisions.md) #31) — replace the derivable
+3. **Rule-derived inflections** ([decisions.md](decisions.md) #31) — replace the derivable
    subset of the 852,139 form-of stub rows with induced `(prefix,suffix)` rules + paradigm classes.
    **~46 MB at K=1,000 (~0.2 ms/hover) down to ~20 MB at K=70,247 (~3.4 ms/hover)**, benchmarked
-   ([sizing/](sizing/README.md) §5.4). **Not blocked on UX after all**: form-of rows never render —
+   ([sizing.md](history/sizing.md) §5.4). **Not blocked on UX after all**: form-of rows never render —
    they are pure deinflection pointers, and the label-set table reproduces their chip text, so the
    only visible change is the inflection chain's `source`. ~~The real work is architectural: the
    rules are derived per dictionary and live in the database, while algorithm deinflections come from
@@ -207,7 +211,7 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
    **That was wrong** — it assumed the rules had to enter as _algorithm_ transforms. They compress
    the **dictionary** deinflection path, which is driven entirely by what `findTermsBulk` returns, so
    the backend synthesizes the dropped rows on lookup and the translator does not change at all. See
-   [02-decisions.md](02-decisions.md) #34. Import also has to pay the induction (LCS over 2.17M
+   [decisions.md](decisions.md) #34. Import also has to pay the induction (LCS over 2.17M
    pairs) — measured at **3.1s**, negligible against a multi-minute import. **Decided: K = 1,000**
    (~46 MB at ~0.2 ms/hover), staged.
 
@@ -238,7 +242,7 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
      the form-of rows the rules reproduce, and `findTermsBulk` synthesizes them back on an exact
      probe. **The translator does not change at all** — the rules compress the _dictionary_
      deinflection path, which `findTermsBulk` alone feeds, so nothing reaches
-     `MultiLanguageTransformer`. See [02-decisions.md](02-decisions.md) #34 for why the recorded
+     `MultiLanguageTransformer`. See [decisions.md](decisions.md) #34 for why the recorded
      blocker was wrong. Measured **through the real `DictionaryImporter`**, one backend, uncontended:
      - **947,070 → 293,262 rows, 170.5 → 56.8 MB at schema v4** (→ **49.4 MB** once #36 empties the
        reading index, so **−71%** end to end). The rules cost 1.42 MB and the template 17 B. (Earlier
@@ -274,11 +278,11 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
 4. **Real-data measurement** — DONE (`npm run measure:storage -- --db`): **149.7 MB** total with
    deflate, of which **78.1 MB is indexes (49.5) + table row overhead (28.5)** — the earlier "~78 MB
    of indexes" credited all of it to indexes. Fully broken down per B-tree in
-   [sizing/](sizing/README.md), which also found **26.5 MB of degenerate index** (17.0 of it dropped
-   in schema v2, [02-decisions.md](02-decisions.md) #28) and that **90% of the rows are inflected-form
+   [sizing.md](history/sizing.md), which also found **26.5 MB of degenerate index** (17.0 of it dropped
+   in schema v2, [decisions.md](decisions.md) #28) and that **90% of the rows are inflected-form
    stubs** worth 60.5 MB of the 71.5 MB payload (#30). The ~100 MB target is unreachable by
    compression; the work is the schema and the dictionary's shape.
-5. **Pick the shipped codec** — DONE: deflate ([02-decisions.md](02-decisions.md) #26). The factory
+5. **Pick the shipped codec** — DONE: deflate ([decisions.md](decisions.md) #26). The factory
    builds `new DictionaryDatabaseSqlite(new DeflatePayloadCodec())`; the codec self-loads vendored
    pako in `prepare()`, so nothing extra enters the module graph while the flag is off.
 6. **SAH-Pool capacity growth** for large DBs (`initialCapacity` default is 8 files).

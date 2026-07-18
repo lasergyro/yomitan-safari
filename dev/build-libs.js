@@ -44,7 +44,7 @@ async function copyWasm(out) {
  * Vendors the SQLite-WASM ESM build for the dictionary storage backend. The ESM entry is
  * copied verbatim as `sqlite3.js`; it locates `sqlite3.wasm` next to itself at runtime, so
  * both must sit in the same directory (`ext/lib`). Used from the DB worker via the OPFS
- * SAH-Pool VFS. See plan/01-design.md.
+ * SAH-Pool VFS. See plan/design.md.
  * @param {string} out
  */
 async function copySqlite(out) {

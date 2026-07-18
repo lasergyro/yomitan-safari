@@ -1,19 +1,32 @@
-# Plan: replace the dictionary storage backend with SQLite-WASM + zstd
+# The original plan (superseded)
 
-This is the **full design reference** — written to survive a context reset, repeating context,
-measurements, and decisions in full. It changes rarely. For the current status and the
-"resume here" entry point see [README.md](README.md); for the running implementation log and
-what's left see [03-progress.md](03-progress.md); for the condensed decision log see
-[02-decisions.md](02-decisions.md); for the outstanding zstd task see [zstd/](zstd/README.md).
+> **HISTORICAL — the plan as first drafted.** The current architecture is [../design.md](../design.md);
+> this is kept for the record only. Read it for what is _not_ captured elsewhere: the **feasibility
+> spike measurements** (§5 — macOS / iOS / extension-worker init, insert, lookup, quota), the original
+> **rejected-architecture** survey (§6 — DuckDB, wa-sqlite, `sqlite-zstd`), and the original staged
+> plan (§9). Everything forward-looking in it is done or revised.
+>
+> **Do not trust its numbers.** It targeted zstd and ~100 MB, both since abandoned; its size figures
+> are pre-import analysis. The correction block below was appended as the measurements came in, and is
+> itself now superseded by [../decisions.md](../decisions.md), [sizing.md](sizing.md) and
+> [zstd.md](zstd.md) — the outcome, briefly: **deflate ships** (not zstd), the **inflection scheme**
+> (not compression) is what shrank the database, and the real end state is **49.4 MB** measured
+> through the real importer.
+
+Original framing follows, verbatim.
+
+---
+
+The original correction block, kept as written:
 
 > **Note:** this document describes the _plan as originally written_. Where it and
-> [03-progress.md](03-progress.md) disagree, progress wins — it records what was actually built.
+> [progress.md](../progress.md) disagree, progress wins — it records what was actually built.
 > Known drift: the staged plan in §9 is done through Stage 4 (the flag is still off); the zstd
-> codec of §8.2 has since been built and lives in [zstd/](zstd/README.md); the size numbers in
+> codec of §8.2 has since been built and lives in [zstd.md](zstd.md); the size numbers in
 > §3/§4 are measurements from the _analysis_, not from a real import through the new backend.
 >
 > **Corrections from measuring the real dictionary** (`npm run measure:storage`; full tables in
-> [zstd/](zstd/README.md)). §4's deflate rows reproduce exactly, which is what makes the rest of
+> [zstd.md](zstd.md)). §4's deflate rows reproduce exactly, which is what makes the rest of
 > these trustworthy:
 >
 > - **§4's zstd row is wrong.** The **5.52× / ~46 MB** for a ZDICT-trained 112 KB dictionary does not
@@ -24,7 +37,7 @@ what's left see [03-progress.md](03-progress.md); for the condensed decision log
 > - **§3's "`reading` values — 14.4 MB" is wrong: it is 0.** Every one of the 947,070 rows has
 >   `reading = ''` (readings are a Japanese concept; this is a German dictionary). The figure looks
 >   like the `expression` row duplicated. This is not cosmetic — that column's emptiness is what made
->   SQLite's planner full-scan on every lookup (see [03-progress.md](03-progress.md) → "Query plans").
+>   SQLite's planner full-scan on every lookup (see [progress.md](../progress.md) → "Query plans").
 > - **§1's "~1.2 GB" baseline is unverified and looks too high.** It does not reconcile with this
 >   document's own breakdown — 356.8 MB value store + 100–150 MB of index B-trees ≈ **460–510 MB** —
 >   nor with the ~700 MB the app reports. Note the app's number is
@@ -38,13 +51,13 @@ what's left see [03-progress.md](03-progress.md); for the condensed decision log
 >   (`geschützt → past participle of schützen`), not definitions. They cost **60.5 MB of the 71.5 MB**
 >   of shipped payload; all 94,931 real definitions together are **11.1 MB**. §3 counts rows and
 >   bytes but never distinguishes the two populations, so every conclusion drawn from "266.8 MB of
->   definitions" is really a conclusion about inflections. See [sizing/](sizing/README.md) §4.
+>   definitions" is really a conclusion about inflections. See [sizing.md](sizing.md) §4.
 > - **§3's "~10% of rows carry structured content" is right** (94,931 / 947,070 = 10.0%) — it just
 >   was not followed up. That 10% _is_ the dictionary; the other 90% is morphology.
 > - **"~78 MB is indexes" (stated in the other docs, not here) was wrong**: it is 49.5 MB of index
 >   plus 28.5 MB of table row overhead, and **26.5 MB of the index is degenerate** (17.0 MB of that
 >   is dropped as of schema v2) — see
->   [sizing/](sizing/README.md) §1–2 and [02-decisions.md](02-decisions.md) #28.
+>   [sizing.md](sizing.md) §1–2 and [decisions.md](../decisions.md) #28.
 
 ---
 
@@ -418,8 +431,8 @@ connection; the main-thread `DictionaryDatabase` continues to proxy via
 ## 9. Staged implementation plan
 
 > **Historical.** This is the plan as drafted. For what was actually built — Stages 0–4 are done,
-> Stage 5 is not, and zstd moved out to [zstd/](zstd/README.md) — see
-> [03-progress.md](03-progress.md), which is authoritative.
+> Stage 5 is not, and zstd moved out to [zstd.md](zstd.md) — see
+> [progress.md](../progress.md), which is authoritative.
 
 Each stage ends green (lint + tsc + relevant tests). Use a feature flag
 (`useSqliteBackend`, off by default) so the IndexedDB path keeps working until parity is proven,

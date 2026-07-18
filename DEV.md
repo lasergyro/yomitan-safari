@@ -11,7 +11,7 @@ Downloads the real `kty-de-en` (~24 MB, checksum-pinned, cached in the gitignore
 Worth knowing before optimising anything: the fixture dictionary and synthetic corpora predict real
 ratios badly, and this script is what found the 75 ms full table scan on every lookup. Current
 numbers: **~150 MB** total with deflate, of which **78.1 MB is indexes + row overhead that no codec
-touches**. See [plan/zstd/README.md](plan/zstd/README.md).
+touches**. See [plan/history/zstd.md](plan/history/zstd.md).
 
 Note that this script's `rest` column is **not** "indexes" — it is indexes _plus_ the terms table's
 own non-payload bytes, and it is not stable across codecs (page fill differs). For a real per-index
@@ -21,7 +21,7 @@ breakdown use `dbstat`, which is compiled into `@sqlite.org/sqlite-wasm`:
 SELECT name, sum(pgsize) FROM dbstat GROUP BY name ORDER BY 2 DESC;
 ```
 
-[plan/sizing/README.md](plan/sizing/README.md) has the full bottom-up budget — including that 26.5 MB
+[plan/history/sizing.md](plan/history/sizing.md) has the full bottom-up budget — including that 26.5 MB
 of the index is degenerate and droppable, and that 90% of `kty-de-en`'s rows are inflected-form stubs
 costing 60.5 MB of the 71.5 MB payload.
 

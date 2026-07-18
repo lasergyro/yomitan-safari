@@ -61,4 +61,4 @@ training, and a trained dictionary surviving close/reopen).
 
 The extension origin itself (`safari-web-extension://…`): CSP, the DB worker spawned from the
 offscreen document, and the real import/scan flow. That still needs `./rebuild-safari.sh` and a
-manual pass — see [../../plan/03-progress.md](../../plan/03-progress.md).
+manual pass — see [../../plan/progress.md](../../plan/progress.md).

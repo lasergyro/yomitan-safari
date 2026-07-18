@@ -46,7 +46,7 @@ const STATEMENT_CACHE_SIZE = 32;
 
 /**
  * Default inflection-rule budget. 1,000 derives 76.6% of `kty-de-en`'s form-of rows while keeping a
- * hover at ~0.2 ms — the knee of the measured curve (plan/sizing/README.md §5.4).
+ * hover at ~0.2 ms — the knee of the measured curve (plan/history/sizing.md §5.4).
  */
 const DEFAULT_RULE_BUDGET = 1000;
 
@@ -108,11 +108,11 @@ function loadVendoredSqlite3() {
 /**
  * SQLite-WASM implementation of the dictionary store. A drop-in for the IndexedDB
  * `DictionaryDatabase` at the public-API level (same method names/semantics), but stores rows
- * columnar in SQLite (see plan/01-design.md §8): the heavy non-indexed term/kanji fields live in a
+ * columnar in SQLite (see plan/design.md → Schema): the heavy non-indexed term/kanji fields live in a
  * `payload` BLOB encoded through a payload codec (see payload-codec.js), and the repeated
  * dictionary title becomes an integer `dictionary_id`.
  *
- * The `sqlite3` module is injected (see plan/02-decisions.md #10): the extension DB worker builds it
+ * The `sqlite3` module is injected (see plan/decisions.md #10): the extension DB worker builds it
  * from the vendored browser build and passes `vfs: 'opfs'`; node tests build it from the package
  * and pass `vfs: 'memory'`.
  */
@@ -155,7 +155,7 @@ export class DictionaryDatabaseSqlite {
          * `selectObjects` compiles *and finalizes* a statement on every call, and a lookup issues one
          * query per deinflection candidate, so on a real hover compilation — not the index seek —
          * dominates: 434 candidates cost 9.44 ms re-prepared versus 1.52 ms with the statements held
-         * (plan/sizing/README.md §5.4). Bounded because the term queries interpolate the enabled
+         * (plan/history/sizing.md §5.4). Bounded because the term queries interpolate the enabled
          * dictionary ids, so the SQL text varies with which dictionaries are switched on.
          * @type {Map<string, import('sqlite-wasm').SqliteStatement>}
          */
@@ -172,14 +172,14 @@ export class DictionaryDatabaseSqlite {
          * a knob because a codec with a large shared dictionary needs proportionally more samples,
          * which means buffering more of the import before the first insert. deflate's dictionary is
          * capped at DEFLATE's 32 KB window, so 1000 rows already saturate it. `npm run
-         * measure:storage` re-derives the tradeoff; plan/zstd/README.md records it.
+         * measure:storage` re-derives the tradeoff; plan/history/zstd.md records it.
          * @type {number}
          */
         this._trainSampleSize = trainSampleSize;
         /**
          * How many inflection rules to induce per dictionary, ranked by how many lemmas use them.
          *
-         * The size/latency knob (plan/02-decisions.md #31): every kept rule is another candidate to
+         * The size/latency knob (plan/decisions.md #31): every kept rule is another candidate to
          * generate and look up on every hover, and every rule left out means its forms must stay as
          * rows. Measured on the real `kty-de-en`: 1,000 rules derive 76.6% of the 852,139 form-of
          * rows at ~0.2 ms per hover, where all 70,247 derive 100% at ~3.4 ms. 0 disables induction.
@@ -368,7 +368,7 @@ export class DictionaryDatabaseSqlite {
 
     /**
      * Deletes the form-of rows this dictionary's own rules can reproduce, and records the payload
-     * they shared so `findTermsBulk` can synthesize them back (plan/02-decisions.md #34). This is
+     * they shared so `findTermsBulk` can synthesize them back (plan/decisions.md #34). This is
      * where the size win is actually taken: everything before it only measured the win.
      *
      * A row is only dropped when all three hold, so that anything the scheme cannot reproduce
@@ -438,7 +438,7 @@ export class DictionaryDatabaseSqlite {
 
     /**
      * Induces this dictionary's inflection rules from its own form-of entries and stores them, so
-     * that a later import can leave out the rows the rules already derive (plan/02-decisions.md #31).
+     * that a later import can leave out the rows the rules already derive (plan/decisions.md #31).
      *
      * Runs here rather than during `bulkAdd` because the ranking needs every pair before it can pick
      * any rule, and the importer streams. Skips a dictionary that already has a table, so calling
@@ -690,7 +690,7 @@ export class DictionaryDatabaseSqlite {
                 }
             }
             // Only an exact probe can be answered from the rules: a wildcard asks which *stored*
-            // forms match a pattern, and a dropped form is not stored. See plan/02-decisions.md #34.
+            // forms match a pattern, and a dropped form is not stored. See plan/decisions.md #34.
             if (matchType === 'exact') {
                 this._addDerivedTerms(results, stored, term, i, dictionaryIds);
             }
@@ -1450,7 +1450,7 @@ export class DictionaryDatabaseSqlite {
         // `INDEXED BY` forces the seek instead of letting the planner choose. It always seeks the
         // index — which is what these probes want, and what IndexedDB did unconditionally — so it can
         // never regress into the full table scan the planner once chose for a reading probe (that was
-        // the ~75 ms/hover bug of plan/02-decisions.md #27, on the mistaken premise that all readings
+        // the ~75 ms/hover bug of plan/decisions.md #27, on the mistaken premise that all readings
         // were ''; the premise is gone, see #35, but the guarantee is still worth keeping).
         const index = column === 'expression' ? 'ix_terms_expression' : 'ix_terms_reading';
         // ix_terms_reading is partial (`WHERE reading <> expression`), so the probe has to repeat that
@@ -1471,7 +1471,7 @@ export class DictionaryDatabaseSqlite {
                     [term, term],
                 );
             case 'suffix': {
-                // No reverse column yet (that is a later schema addition, see plan/03-progress.md
+                // No reverse column yet (that is a later schema addition, see plan/progress.md
                 // "watch-outs"); filter suffix matches in JS over the enabled dictionaries. Left to
                 // the planner deliberately — no index can serve this, so the scan is the real plan.
                 const rows = this._selectObjects(`SELECT ${columns} FROM terms WHERE ${idFilter}`);

@@ -24,7 +24,7 @@ import {DictionaryDatabaseSqlite} from '../ext/js/dictionary/sqlite/dictionary-d
  * predicate to the shape the real importer produces.
  *
  * `_queryTermColumn` pins `INDEXED BY` so a reading probe always seeks — IndexedDB did that
- * unconditionally, and the planner once chose a ~75 ms/hover scan instead (plan/02-decisions.md #27).
+ * unconditionally, and the planner once chose a ~75 ms/hover scan instead (plan/decisions.md #27).
  *
  * The fixture reproduces what the importer actually writes, which an earlier version of this test got
  * wrong: `dictionary-importer.js` rewrites an empty reading to the expression, so a German dictionary
@@ -146,7 +146,7 @@ describe('DictionaryDatabaseSqlite term query plans', () => {
      * Captures the SQL the backend actually issues, so this tests the real queries rather than a
      * copy of them that could silently drift. Patches the backend's own `_selectObjects` rather than
      * the sqlite handle: the read paths go through held prepared statements
-     * (plan/02-decisions.md #32), so `handle.selectObjects` no longer sees them.
+     * (plan/decisions.md #32), so `handle.selectObjects` no longer sees them.
      * @param {() => Promise<unknown>} body
      * @returns {Promise<{sql: string, args: unknown[]}[]>}
      */

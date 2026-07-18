@@ -38,7 +38,7 @@ function loadVendoredPako() {
 }
 
 /**
- * The shipped compressing codec (plan/02-decisions.md #8, #26): raw DEFLATE via pako with a 32 KB
+ * The shipped compressing codec (plan/decisions.md #8, #26): raw DEFLATE via pako with a 32 KB
  * preset dictionary built from a sample of the dictionary's own payloads. Pure JS (no WASM), and the
  * payload stays randomly decodable — each row is an independent DEFLATE stream sharing only the
  * preset dictionary. Measured on the real `kty-de-en`: 3.55x on the payload, ~150 MB total database
@@ -46,7 +46,7 @@ function loadVendoredPako() {
  *
  * pako is injected (node tests pass the `pako` package); with nothing injected, `prepare()` loads the
  * vendored `ext/lib/pako.js` — the extension path, mirroring how sqlite3 is injected
- * (plan/02-decisions.md #10).
+ * (plan/decisions.md #10).
  * @implements {PayloadCodec}
  */
 export class DeflatePayloadCodec {

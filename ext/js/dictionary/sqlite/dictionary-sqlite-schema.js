@@ -21,18 +21,18 @@
  *
  * 1. Initial columnar schema.
  * 2. Dropped `ix_terms_dictionary`; `ix_terms_reading` became partial (`WHERE reading <> ''`).
- *    See plan/02-decisions.md #28.
- * 3. Added `dictionaries.inflection_table`. See plan/02-decisions.md #31.
+ *    See plan/decisions.md #28.
+ * 3. Added `dictionaries.inflection_table`. See plan/decisions.md #31.
  * 4. Added `dictionaries.stub_template`, which is also the "derivable rows were dropped" flag.
- *    See plan/02-decisions.md #34.
+ *    See plan/decisions.md #34.
  * 5. `ix_terms_reading` predicate `reading <> ''` → `reading <> expression`. The `''` form excluded
  *    nothing (the importer rewrites an empty reading to the expression), so it saved nothing; the new
- *    form indexes only rows a reading probe can actually contribute. See plan/02-decisions.md #35/#36.
+ *    form indexes only rows a reading probe can actually contribute. See plan/decisions.md #35/#36.
  */
 export const DICTIONARY_SQLITE_SCHEMA_VERSION = 5;
 
 /**
- * The dictionary storage schema (see plan/01-design.md §8.1). Columnar tables — no per-row property
+ * The dictionary storage schema (see plan/design.md → Schema). Columnar tables — no per-row property
  * names; `dictionary_id` is an integer FK instead of the repeated title string; the heavy,
  * non-indexed term fields live compressed in `terms.payload`. Indexed columns
  * (expression/reading/sequence/character/path/name) let SQLite serve every lookup the legacy
@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS ix_terms_expression ON terms(expression);
 -- equals its expression is always already found by the expression probe. On German that is 0 rows (an
 -- empty index); on Japanese it is exactly the rows with a distinct reading. The reading probe in
 -- _queryTermColumn MUST carry the literal \`AND reading <> expression\` or SQLite cannot use this index
--- -- with INDEXED BY it fails outright with "no query solution". See plan/02-decisions.md #35/#36.
+-- -- with INDEXED BY it fails outright with "no query solution". See plan/decisions.md #35/#36.
 CREATE INDEX IF NOT EXISTS ix_terms_reading    ON terms(reading) WHERE reading <> expression;
 -- Serves both the sequence lookup and, on its dictionary_id prefix, the per-dictionary count and
 -- delete. A separate ix_terms_dictionary(dictionary_id) would be a strict prefix-duplicate of this.

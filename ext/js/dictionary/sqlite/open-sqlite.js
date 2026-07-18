@@ -23,7 +23,7 @@ import {createDictionarySchema} from './dictionary-sqlite-schema.js';
  * extension DB worker builds `sqlite3` from the vendored `/lib/sqlite3.js` browser build and
  * passes `vfs: 'opfs'` (persistent, OPFS SAH-Pool VFS, no COOP/COEP required); node tests build
  * it from the `@sqlite.org/sqlite-wasm` package and pass `vfs: 'memory'` (`:memory:`). See
- * plan/01-design.md §8.3.
+ * plan/design.md → Storage model.
  * @param {import('sqlite-wasm').Sqlite3Module} sqlite3 The initialized sqlite3 module.
  * @param {{vfs: import('sqlite-wasm').SqliteVfs, path?: string, initialCapacity?: number}} options
  * @returns {Promise<import('sqlite-wasm').SqliteDatabaseHandle>}
