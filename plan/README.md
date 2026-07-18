@@ -39,9 +39,12 @@ Two clusters. Read across them, not down the old timeline.
   verified against the source ZIP (0 lost, 0 invented over 41,921 forms).
 - **The flag `USE_SQLITE_BACKEND` is `false`** (`ext/js/dictionary/dictionary-backend-config.js`), so
   the IndexedDB path is still the only live one and nothing user-visible has changed.
-- **What gates flipping it (Stage 5):** extension-origin verification (`./rebuild-safari.sh` + a
-  manual scan pass), the settings-page migration UX, and calling `finalizeImport()` from the
-  importer. Full checklist in [progress.md](progress.md) → Stage 5.
+- **Stage 5 is in progress.** Done: the importer now calls `finalizeImport()` (item 3, which also
+  routed the import worker through the backend factory), the SAH-Pool grows for large DBs (item 6),
+  and the settings-page migration UX is built and proven against WebKit's IndexedDB (item 2).
+- **What still gates flipping it:** extension-origin verification — `./rebuild-safari.sh` + a manual
+  scan pass, the one thing the `127.0.0.1` runner cannot reach — then the flag flip and removing the
+  IndexedDB path. Full checklist in [progress.md](progress.md) → Stage 5.
 
 ## The numbers, once
 
