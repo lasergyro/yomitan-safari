@@ -55,6 +55,32 @@ Caveats: background tabs get their timers throttled (harmless for WASM/promise-d
 don't build timing assertions on it), and each run leaves a tab open. See
 [test/safari/README.md](test/safari/README.md).
 
+### Driving the _installed extension_ the same way (item 1 of Stage 5)
+
+`test:safari` runs on `127.0.0.1`, which the extension is not injected into — it exercises the
+backend engine, not the `safari-web-extension://…` origin. But the two primitives above compose into
+a real extension-origin check, and the channel is **verified working**:
+
+- `open -g -a Safari <fixture-url>` opens a page with foreign text in real Safari, no focus steal.
+- `do JavaScript "<expr>" in <tab>` (AppleScript, target the tab by URL substring — see the
+  inspection section below) executes JS in that live tab and returns a string. Confirmed end to end:
+  reading `document.title` and page text back as JSON works; so a run can synthesize a scan and read
+  whether Yomitan's popup (`iframe.yomitan-popup`, injected after a scan) appeared with a definition.
+  That popup's `src` is `safari-web-extension://<UUID>/…`, which also _discovers the extension origin_
+  at runtime, so the extension's own `search.html` can then be driven for a clean lookup.
+
+The residual manual gate is not the automation — it is **Apple's security model**: the extension has
+to be _enabled and granted host permission_ in Safari Settings → Extensions once (a deliberate
+manual step; do not synthesize those clicks), and a dictionary imported once. Both persist —
+`rebuild-safari.sh` deliberately updates the bundle in place so Safari keeps the extension registered
+and does not purge its stored data. After that one-time setup, the scan/lookup verification is fully
+scriptable through the channel above.
+
+One-time enablement, if `do JavaScript` returns nothing: **Develop → Developer Settings… → Allow
+JavaScript from Apple Events** must be on (Safari's prefs are sandboxed, so `defaults write
+com.apple.Safari` fails — toggle it in the UI or via System Events, see below). The terminal also
+needs macOS Automation permission for Safari.
+
 ## Automated Safari inspection (macOS)
 
 How to drive a real, logged-in Safari from the shell to inspect a live page's

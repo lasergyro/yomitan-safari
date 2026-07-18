@@ -269,9 +269,19 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
 
 1. **Extension-origin verification.** `npm run test:safari` covers the engine (OPFS, the vendored
    WASM, the whole backend) but runs on `127.0.0.1`, not `safari-web-extension://…`. Still needs
-   `./rebuild-safari.sh` + a manual pass: import a dictionary, scan German text, check
-   popup/Anki/audio, and confirm the DB worker resolves `ext/lib/sqlite3.js` + `sqlite3.wasm` at the
-   extension origin.
+   `./rebuild-safari.sh` + a pass that: imports a dictionary, scans German text, checks
+   popup/Anki/audio, and confirms the DB worker resolves `ext/lib/sqlite3.js` + `sqlite3.wasm` at the
+   extension origin. **Automation feasibility — resolved: it is scriptable.** The
+   `open -g -a Safari` + AppleScript `do JavaScript … in <tab>` channel (DEV.md) is verified working
+   end to end — a fixture page opens without stealing focus and JS reads its rendered DOM back as
+   JSON — so a run can synthesize a scan and read whether `iframe.yomitan-popup` appeared (its `src`
+   also reveals the `safari-web-extension://<UUID>` origin, so `search.html` can then be driven for a
+   clean lookup). The residual manual part is **Apple's security gate, not the tooling**: the
+   extension must be enabled + host-permitted in Safari Settings once (do not synthesize those
+   clicks) and a dictionary imported once; both persist across `rebuild-safari.sh` (it updates the
+   bundle in place so Safari keeps the data). As of this probe the installed extension is not yet
+   enabled (no `safari-web-extension` origin data in Safari's container), and the live build still has
+   the flag off, so the SQLite backend has not run at the extension origin.
 2. **Settings-page migration UX** — DONE. `DictionaryStorageMigrationController`
    (`ext/js/pages/settings/dictionary-storage-migration-controller.js`, wired in `settings-main.js`)
    calls `legacyIndexedDbDictionaryExists()` on settings load and, when a populated legacy `dict` is
