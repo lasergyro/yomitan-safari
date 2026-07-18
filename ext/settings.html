@@ -265,6 +265,21 @@
         <div class="heading-container-left"><h2 id="dictionaries"><a href="#dictionaries">Dictionaries</a> <span class="heading-sub-text no-wrap" data-modal-action="show,dictionaries">(<span id="dictionary-install-count">#</span> installed, <span id="dictionary-enabled-count">#</span> enabled)</span></h2></div>
     </div>
     <div class="settings-group">
+        <div class="settings-item" id="dictionary-legacy-storage-notification" hidden>
+            <div class="settings-item-inner settings-item-inner-wrappable">
+                <div class="settings-item-left">
+                    <div class="settings-item-label">Re-import your dictionaries</div>
+                    <div class="settings-item-description">
+                        Yomitan now stores dictionaries in a new, more compact format. Dictionaries you
+                        imported previously are kept in the old storage and are no longer loaded. Re-import
+                        them below, then reclaim the space the old copies still occupy.
+                    </div>
+                </div>
+                <div class="settings-item-right">
+                    <button type="button" class="danger" id="dictionary-legacy-storage-delete-button">Reclaim old storage</button>
+                </div>
+            </div>
+        </div>
         <div class="settings-item settings-item-button" data-modal-action="show,dictionaries"><div class="settings-item-inner">
             <div class="settings-item-left">
                 <div class="settings-item-label">

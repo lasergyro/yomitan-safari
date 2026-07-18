@@ -125,6 +125,18 @@
         </div>
     </div></div>
 
+    <div id="dictionary-legacy-storage-confirm-delete-modal" class="modal" tabindex="-1" role="dialog" hidden><div class="modal-content modal-content-small">
+        <div class="modal-header"><div class="modal-title">Reclaim Old Storage</div></div>
+        <div class="modal-body">
+            <p>This permanently deletes every dictionary held in the old storage format, freeing the space it uses.</p>
+            <p class="danger-text">Make sure you have re-imported everything you need first. This action cannot be undone.</p>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="low-emphasis" data-modal-action="hide">Cancel</button>
+            <button type="button" class="danger" data-modal-action="hide" id="dictionary-legacy-storage-confirm-delete-button">Delete old storage</button>
+        </div>
+    </div></div>
+
     <div id="dictionary-confirm-update-modal" class="modal" tabindex="-1" role="dialog" hidden><div class="modal-content modal-content-small">
         <div class="modal-header"><div class="modal-title">Confirm Dictionary Update</div></div>
         <div class="modal-body">

@@ -49,13 +49,16 @@ users actually run.
 | `TIMEOUT_MS` | `120000` | How long to wait for results.           |
 | `KEEP_OPEN`  | unset    | Suppress the "tab stays open" reminder. |
 
-Requires `npm run build:libs` to have produced `ext/lib/sqlite3.js`, `ext/lib/sqlite3.wasm`,
-`ext/lib/pako.js` and `ext/lib/zstd.js`. The test uses its own origin (`127.0.0.1`), so its OPFS data
+Requires `npm run build:libs` to have produced `ext/lib/sqlite3.js`, `ext/lib/sqlite3.wasm`, and
+`ext/lib/pako.js`. The test uses its own origin (`127.0.0.1`), so its OPFS data
 is separate from the installed extension's and cannot corrupt your real dictionaries; it purges its
 own data on entry and exit. Each run leaves a Safari tab open.
 
-The checks cover the deflate codec and then the zstd codec (module instantiation under WebKit, ZDICT
-training, and a trained dictionary surviving close/reopen).
+The checks cover the deflate codec end to end (init, import, the query shapes, `finalizeImport`'s
+`VACUUM`, close/reopen durability) and the legacy-storage migration helpers
+(`legacyIndexedDbDictionaryExists` / `deleteLegacyIndexedDbDictionary`) against WebKit's own
+IndexedDB, whose `databases()` and upgrade semantics differ from the node fake-indexeddb the helper
+unit tests use.
 
 ## What it does not cover
 

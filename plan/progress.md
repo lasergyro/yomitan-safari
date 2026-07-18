@@ -272,8 +272,19 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
    `./rebuild-safari.sh` + a manual pass: import a dictionary, scan German text, check
    popup/Anki/audio, and confirm the DB worker resolves `ext/lib/sqlite3.js` + `sqlite3.wasm` at the
    extension origin.
-2. **Settings-page migration UX**: call `legacyIndexedDbDictionaryExists()` on startup, prompt for
-   re-import, then `deleteLegacyIndexedDbDictionary()`. Only the helpers exist today; no UI.
+2. **Settings-page migration UX** — DONE. `DictionaryStorageMigrationController`
+   (`ext/js/pages/settings/dictionary-storage-migration-controller.js`, wired in `settings-main.js`)
+   calls `legacyIndexedDbDictionaryExists()` on settings load and, when a populated legacy `dict` is
+   found, reveals a notification at the top of the Dictionaries section asking the user to re-import
+   (the normal import UI is right there) plus a **Reclaim old storage** button. The button opens a
+   danger confirm modal (`#dictionary-legacy-storage-confirm-delete-modal`) →
+   `deleteLegacyIndexedDbDictionary()` → hides the notification and fires `storageChanged` so the
+   figures refresh. **Inert while the flag is off**: `prepare()` returns immediately when
+   `USE_SQLITE_BACKEND` is false, because the legacy store _is_ the live store then — nothing to
+   migrate. The load-bearing detect/reclaim helpers are exercised against WebKit's own IndexedDB by
+   three new `test:safari` checks (15/15), since its `databases()`/upgrade semantics differ from the
+   node fake-indexeddb the helper unit tests use. The re-import itself is the existing dictionary UI;
+   this only detects, points, and reclaims.
 3. **Call `finalizeImport()`** after an import completes — DONE. `DictionaryImporter.importDictionary`
    calls `dictionaryDatabase.finalizeImport()` once the rows and summary are written, only on
    `importSuccess`, catching into `errors` so a finalize failure does not lose the import. The
@@ -377,6 +388,7 @@ ext/js/dictionary/sqlite/open-sqlite.js          openDictionaryDatabaseHandle()
 ext/js/dictionary/sqlite/dictionary-sqlite-schema.js   DDL + createDictionarySchema()
 ext/js/dictionary/sqlite/dictionary-database-sqlite.js DictionaryDatabaseSqlite (the backend)
 ext/js/dictionary/sqlite/dictionary-storage-migration.js  legacy-IDB detect/delete, persist
+ext/js/pages/settings/dictionary-storage-migration-controller.js  settings-page migration UX (item 2)
 types/ext/sqlite-wasm.d.ts               narrow sqlite oo1 type surface
 types/ext/pako.d.ts                      narrow pako surface
 types/ext/payload-codec.d.ts             PayloadCodec type (+ optional prepare())

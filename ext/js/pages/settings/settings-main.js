@@ -28,6 +28,7 @@ import {BackupController} from './backup-controller.js';
 import {CollapsibleDictionaryController} from './collapsible-dictionary-controller.js';
 import {DictionaryController} from './dictionary-controller.js';
 import {DictionaryImportController} from './dictionary-import-controller.js';
+import {DictionaryStorageMigrationController} from './dictionary-storage-migration-controller.js';
 import {ExtensionKeyboardShortcutController} from './extension-keyboard-shortcuts-controller.js';
 import {GenericSettingController} from './generic-setting-controller.js';
 import {KeyboardShortcutController} from './keyboard-shortcuts-controller.js';
@@ -112,6 +113,9 @@ await Application.main(true, async (application) => {
 
     const dictionaryImportController = new DictionaryImportController(settingsController, modalController, statusFooter);
     dictionaryImportController.prepare();
+
+    const dictionaryStorageMigrationController = new DictionaryStorageMigrationController(application, modalController);
+    preparePromises.push(dictionaryStorageMigrationController.prepare());
 
     const genericSettingController = new GenericSettingController(settingsController);
     preparePromises.push(setupGenericSettingController(genericSettingController));

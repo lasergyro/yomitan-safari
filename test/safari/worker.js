@@ -24,6 +24,7 @@
 
 import {DeflatePayloadCodec} from '/ext/js/dictionary/deflate-payload-codec.js';
 import {DictionaryDatabaseSqlite} from '/ext/js/dictionary/sqlite/dictionary-database-sqlite.js';
+import {deleteLegacyIndexedDbDictionary, legacyIndexedDbDictionaryExists} from '/ext/js/dictionary/sqlite/dictionary-storage-migration.js';
 
 const dictionaryName = 'Safari Check Dictionary';
 const dictionaries = new Set([dictionaryName]);
@@ -71,6 +72,39 @@ function termRows(suffix) {
         {expression: 'いぬごや', reading: 'いぬごや', dictionary: dictionaryName, sequence: 2, m: [null, 'v5', -3, ['kennel'], void 0]},
         {expression: 'ねこ', reading: 'ねこ', dictionary: dictionaryName, sequence: 3, m: ['n', '', 7, ['cat'], '']},
     ];
+}
+
+/**
+ * Creates a legacy IndexedDB `dict` store holding one `dictionaries` row — the exact shape the
+ * migration detector probes for. Used to exercise the detect/reclaim helpers against WebKit's own
+ * IndexedDB, whose `databases()` support and upgrade semantics differ from the fake-indexeddb the
+ * node tests use.
+ * @returns {Promise<void>}
+ */
+function seedLegacyDict() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('dict', 20);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains('dictionaries')) {
+                db.createObjectStore('dictionaries', {autoIncrement: true});
+            }
+        };
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+            const db = request.result;
+            const transaction = db.transaction(['dictionaries'], 'readwrite');
+            transaction.objectStore('dictionaries').add({title: 'Legacy Dict', version: 3});
+            transaction.oncomplete = () => {
+                db.close();
+                resolve();
+            };
+            transaction.onerror = () => {
+                db.close();
+                reject(transaction.error);
+            };
+        };
+    });
 }
 
 /** Entry point. */
@@ -163,9 +197,27 @@ async function main() {
         return `usage ${((usage ?? 0) / 1e6).toFixed(1)} MB / quota ${((quota ?? 0) / 1e6).toFixed(0)} MB`;
     });
 
+    // The settings-page migration UX (DictionaryStorageMigrationController) hinges on these two
+    // helpers reading WebKit's IndexedDB correctly; the DOM wiring around them is thin.
+    await check('legacy-storage detector reports absent when no dict store exists', async () => {
+        await deleteLegacyIndexedDbDictionary();
+        assert((await legacyIndexedDbDictionaryExists()) === false, 'detector reported a legacy store when none exists');
+    });
+
+    await check('legacy-storage detector reports present once a populated dict store exists', async () => {
+        await seedLegacyDict();
+        assert((await legacyIndexedDbDictionaryExists()) === true, 'detector missed a populated legacy store');
+    });
+
+    await check('legacy-storage reclaim deletes the dict store', async () => {
+        await deleteLegacyIndexedDbDictionary();
+        assert((await legacyIndexedDbDictionaryExists()) === false, 'legacy store still present after reclaim');
+    });
+
     await check('cleanup', async () => {
         await db.purge();
         db.close();
+        await deleteLegacyIndexedDbDictionary();
     });
 
     postMessage(checks);
