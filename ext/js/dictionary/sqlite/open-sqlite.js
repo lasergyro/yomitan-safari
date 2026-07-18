@@ -24,15 +24,25 @@ import {createDictionarySchema} from './dictionary-sqlite-schema.js';
  * passes `vfs: 'opfs'` (persistent, OPFS SAH-Pool VFS, no COOP/COEP required); node tests build
  * it from the `@sqlite.org/sqlite-wasm` package and pass `vfs: 'memory'` (`:memory:`). See
  * plan/design.md → Storage model.
+ * The SAH-Pool VFS pre-allocates a fixed number of OPFS file slots (`initialCapacity`). The whole
+ * store is a single database file, but a large import still needs slots for it, its rollback
+ * journal, and any transient file `finalizeImport`'s `VACUUM` opens, so we reserve headroom above
+ * the one-or-two-file default. `reserveMinimumCapacity` (not `addCapacity`) is used because it only
+ * grows when below the target and its effect is persistent: a pool an older build created too small
+ * is healed to the current minimum on the next open, without ratcheting up on every startup.
  * @param {import('sqlite-wasm').Sqlite3Module} sqlite3 The initialized sqlite3 module.
  * @param {{vfs: import('sqlite-wasm').SqliteVfs, path?: string, initialCapacity?: number}} options
  * @returns {Promise<import('sqlite-wasm').SqliteDatabaseHandle>}
  */
-export async function openDictionaryDatabaseHandle(sqlite3, {vfs, path = '/dict.sqlite3', initialCapacity = 8}) {
+export async function openDictionaryDatabaseHandle(sqlite3, {vfs, path = '/dict.sqlite3', initialCapacity = 16}) {
     /** @type {import('sqlite-wasm').SqliteDatabaseHandle} */
     let db;
     if (vfs === 'opfs') {
         const pool = await sqlite3.installOpfsSAHPoolVfs({name: 'yomitan-dict', initialCapacity});
+        // Heal a pool a previous build created with a smaller capacity (no-op when already ≥).
+        if (pool.getCapacity() < initialCapacity) {
+            await pool.reserveMinimumCapacity(initialCapacity);
+        }
         db = new pool.OpfsSAHPoolDb(path);
     } else {
         db = new sqlite3.oo1.DB(':memory:');

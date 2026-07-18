@@ -313,6 +313,18 @@ export class DictionaryImporter {
         const primaryKey = await dictionarySummaryResult;
         await dictionaryDatabase.bulkUpdate('dictionaries', [{data: summary, primaryKey}], 0, 1);
 
+        // Runs once the rows are all in place: on the SQLite backend this induces the inflection
+        // rules, drops the derivable form-of rows, and re-analyzes/compacts the file; on the
+        // IndexedDB backend it is a no-op (plan/design.md § Inflection synthesis). Only after a
+        // successful import — a partial import has nothing consistent to finalize.
+        if (importSuccess) {
+            try {
+                await dictionaryDatabase.finalizeImport();
+            } catch (e) {
+                errors.push(toError(e));
+            }
+        }
+
         this._progress();
 
         return {result: summary, errors};

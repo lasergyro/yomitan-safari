@@ -54,6 +54,12 @@ export interface SqliteSAHPool {
     unlink(path: string): boolean;
     wipeFiles(): Promise<void>;
     getFileCount(): number;
+    // Number of file slots the pool has pre-allocated (not the number in use; see getFileCount).
+    getCapacity(): number;
+    // Grows the pool to at least `minCapacity` slots if it is currently smaller, else no-op. Safe to
+    // call at every startup (unlike addCapacity): the change is persistent, so a pool created small by
+    // an older build is healed to the current minimum. Resolves to the resulting capacity.
+    reserveMinimumCapacity(minCapacity: number): Promise<number>;
 }
 
 export interface Sqlite3Module {

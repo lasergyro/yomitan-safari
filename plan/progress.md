@@ -265,7 +265,7 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
        hand-written version wrote `reading: ''`, which the importer never produces, and so the drop
        pass silently dropped nothing on real imports while the tests stayed green (#35).
 
-## Stage 5 — NOT STARTED: what is required before flipping `USE_SQLITE_BACKEND`
+## Stage 5 — IN PROGRESS: what is required before flipping `USE_SQLITE_BACKEND`
 
 1. **Extension-origin verification.** `npm run test:safari` covers the engine (OPFS, the vendored
    WASM, the whole backend) but runs on `127.0.0.1`, not `safari-web-extension://…`. Still needs
@@ -274,7 +274,15 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
    extension origin.
 2. **Settings-page migration UX**: call `legacyIndexedDbDictionaryExists()` on startup, prompt for
    re-import, then `deleteLegacyIndexedDbDictionary()`. Only the helpers exist today; no UI.
-3. **Call `finalizeImport()`** after an import completes (the importer does not call it yet).
+3. **Call `finalizeImport()`** after an import completes — DONE. `DictionaryImporter.importDictionary`
+   calls `dictionaryDatabase.finalizeImport()` once the rows and summary are written, only on
+   `importSuccess`, catching into `errors` so a finalize failure does not lose the import. The
+   IndexedDB backend gained a no-op `finalizeImport()` so the call is backend-agnostic; on SQLite it
+   induces rules, drops derivable rows, and `ANALYZE`/`VACUUM`s. **Also fixed a Stage-4 wiring gap:**
+   `dictionary-worker-handler.js` (the import/delete worker — distinct from the DB-worker handler)
+   still built `new DictionaryDatabase()` directly, so imports never hit the selected backend; it now
+   goes through `createDictionaryDatabase()`. Exercised by `dictionary-database-sqlite-inflection`
+   (drives the real importer, no manual `finalizeImport`) and confirmed in real Safari (12/12).
 4. **Real-data measurement** — DONE (`npm run measure:storage -- --db`): **149.7 MB** total with
    deflate, of which **78.1 MB is indexes (49.5) + table row overhead (28.5)** — the earlier "~78 MB
    of indexes" credited all of it to indexes. Fully broken down per B-tree in
@@ -285,7 +293,15 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
 5. **Pick the shipped codec** — DONE: deflate ([decisions.md](decisions.md) #26). The factory
    builds `new DictionaryDatabaseSqlite(new DeflatePayloadCodec())`; the codec self-loads vendored
    pako in `prepare()`, so nothing extra enters the module graph while the flag is off.
-6. **SAH-Pool capacity growth** for large DBs (`initialCapacity` default is 8 files).
+6. **SAH-Pool capacity growth** for large DBs — DONE. The opener default is now **16** slots (was 8),
+   and after installing the pool it calls `reserveMinimumCapacity(16)` when the existing capacity is
+   lower — `reserveMinimumCapacity` (not `addCapacity`) because it only grows when below the target
+   and persists, so a pool an older build created too small is healed on the next open without
+   ratcheting every startup. The whole store is one DB file, but a large import also needs slots for
+   its rollback journal and any transient file `VACUUM` opens; 16 is comfortable headroom over the
+   one-or-two-file SAH default. Only the OPFS branch runs this (tests use `vfs:'memory'`); confirmed
+   in real Safari (`test:safari`, 12/12, incl. `finalizeImport`'s VACUUM on OPFS). Type surface gained
+   `getCapacity` / `reserveMinimumCapacity`.
 7. Then: remove the IndexedDB path for `dict` + the flag, and unify the two backends behind one
    interface (today the SQLite backend is cast to `DictionaryDatabase` at the factory/test seams).
 

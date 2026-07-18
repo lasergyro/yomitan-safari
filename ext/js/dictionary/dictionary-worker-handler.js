@@ -17,7 +17,7 @@
  */
 
 import {ExtensionError} from '../core/extension-error.js';
-import {DictionaryDatabase} from './dictionary-database.js';
+import {createDictionaryDatabase} from './dictionary-database-factory.js';
 import {DictionaryImporter} from './dictionary-importer.js';
 import {DictionaryWorkerMediaLoader} from './dictionary-worker-media-loader.js';
 
@@ -127,10 +127,10 @@ export class DictionaryWorkerHandler {
     }
 
     /**
-     * @returns {Promise<DictionaryDatabase>}
+     * @returns {Promise<import('./dictionary-database.js').DictionaryDatabase>}
      */
     async _getPreparedDictionaryDatabase() {
-        const dictionaryDatabase = new DictionaryDatabase();
+        const dictionaryDatabase = createDictionaryDatabase();
         await dictionaryDatabase.prepare();
         return dictionaryDatabase;
     }

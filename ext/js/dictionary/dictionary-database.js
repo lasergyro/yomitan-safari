@@ -185,6 +185,17 @@ export class DictionaryDatabase {
     }
 
     /**
+     * Hook the importer calls once after an import completes. The IndexedDB backend has nothing to
+     * finalize — its indexes are maintained incrementally and there is no query planner to re-analyze
+     * — so this is a no-op. The SQLite backend uses it to induce inflection rules, drop the derivable
+     * form-of rows, and `ANALYZE`/`VACUUM` (plan/design.md § Inflection synthesis).
+     * @returns {Promise<void>}
+     */
+    async finalizeImport() {
+        // No-op: see the doc comment.
+    }
+
+    /**
      * @returns {boolean}
      */
     isPrepared() {
