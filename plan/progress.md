@@ -265,23 +265,33 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
        hand-written version wrote `reading: ''`, which the importer never produces, and so the drop
        pass silently dropped nothing on real imports while the tests stayed green (#35).
 
-## Stage 5 — IN PROGRESS: what is required before flipping `USE_SQLITE_BACKEND`
+## Stage 5 — IN PROGRESS. **Blocked** on the backend-in-a-worker fix ([backend-worker.md](backend-worker.md))
 
-1. **Extension-origin verification.** `npm run test:safari` covers the engine (OPFS, the vendored
-   WASM, the whole backend) but runs on `127.0.0.1`, not `safari-web-extension://…`. Still needs
-   `./rebuild-safari.sh` + a pass that: imports a dictionary, scans German text, checks
-   popup/Anki/audio, and confirms the DB worker resolves `ext/lib/sqlite3.js` + `sqlite3.wasm` at the
-   extension origin. **Automation feasibility — resolved: it is scriptable.** The
-   `open -g -a Safari` + AppleScript `do JavaScript … in <tab>` channel (DEV.md) is verified working
-   end to end — a fixture page opens without stealing focus and JS reads its rendered DOM back as
-   JSON — so a run can synthesize a scan and read whether `iframe.yomitan-popup` appeared (its `src`
-   also reveals the `safari-web-extension://<UUID>` origin, so `search.html` can then be driven for a
-   clean lookup). The residual manual part is **Apple's security gate, not the tooling**: the
-   extension must be enabled + host-permitted in Safari Settings once (do not synthesize those
-   clicks) and a dictionary imported once; both persist across `rebuild-safari.sh` (it updates the
-   bundle in place so Safari keeps the data). As of this probe the installed extension is not yet
-   enabled (no `safari-web-extension` origin data in Safari's container), and the live build still has
-   the flag off, so the SQLite backend has not run at the extension origin.
+Extension-origin verification (item 1) ran and found that the SQLite backend cannot open OPFS in the
+Safari background page — it must run in a dedicated worker. That fix gates the flag flip. Items 2, 3,
+6 are done; the codec and measurement are decided.
+
+1. **Extension-origin verification — RAN, and it found a blocker.** `npm run test:safari` covers the
+   engine (OPFS, the vendored WASM, the whole backend) but runs on `127.0.0.1`, not
+   `safari-web-extension://…`. Driving the _real installed extension_ (flag on, `kty-de-en` imported)
+   over the `open -g` + AppleScript `do JavaScript` channel exposed a **real architectural bug the
+   test suite structurally cannot see** (it runs the backend inside a worker; the extension runs the
+   background in a **page**): **the SQLite backend cannot open OPFS in the Safari background page.**
+   The import succeeds (its own worker; OPFS file lands at the exact 49.4 MB), but the background
+   page's `DictionaryDatabaseSqlite.prepare()` fails — `createSyncAccessHandle` is `undefined` off a
+   Worker — so every lookup is "Database not open". **Full root cause + the proposed fix (run the
+   backend in one dedicated DB worker, background proxies to it) is [backend-worker.md](backend-worker.md).**
+   Until that lands, the flag cannot flip. Everything below (the automation channel, the manual
+   gate) still holds and is how the fix will be verified.
+   - **Automation feasibility — resolved: it is scriptable.** The `open -g -a Safari` + `do
+JavaScript … in <tab>` channel (DEV.md) is verified end to end — including on
+     `safari-web-extension://…` extension pages, which is how the bug above was diagnosed (read
+     `getDictionaryInfo`'s error + stack straight out of the running background). A run can also
+     synthesize a scan and read whether `iframe.yomitan-popup` appeared.
+   - The residual manual part is **Apple's security gate, not the tooling**: the extension must be
+     enabled + host-permitted in Safari Settings once (do not synthesize those clicks) and a
+     dictionary imported once; both persist across `rebuild-safari.sh` (it updates the bundle in
+     place so Safari keeps the data).
 2. **Settings-page migration UX** — DONE. `DictionaryStorageMigrationController`
    (`ext/js/pages/settings/dictionary-storage-migration-controller.js`, wired in `settings-main.js`)
    calls `legacyIndexedDbDictionaryExists()` on settings load and, when a populated legacy `dict` is

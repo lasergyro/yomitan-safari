@@ -13,11 +13,12 @@ Two clusters. Read across them, not down the old timeline.
 
 **What it is (the plan):**
 
-| File                           | What it holds                                                      |
-| ------------------------------ | ------------------------------------------------------------------ |
-| [design.md](design.md)         | Current architecture: schema, codec, inflection synthesis, queries |
-| [pseudocode.md](pseudocode.md) | The whole scheme end to end, as pseudocode                         |
-| [progress.md](progress.md)     | What's built, what's left (the Stage 5 gate), watch-outs, file map |
+| File                                   | What it holds                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| [design.md](design.md)                 | Current architecture: schema, codec, inflection synthesis, queries                          |
+| [pseudocode.md](pseudocode.md)         | The whole scheme end to end, as pseudocode                                                  |
+| [backend-worker.md](backend-worker.md) | **Stage 5 blocker + fix**: the backend must run in a worker, not the Safari background page |
+| [progress.md](progress.md)             | What's built, what's left (the Stage 5 gate), watch-outs, file map                          |
 
 **Why it is that way (the record):**
 
@@ -39,12 +40,16 @@ Two clusters. Read across them, not down the old timeline.
   verified against the source ZIP (0 lost, 0 invented over 41,921 forms).
 - **The flag `USE_SQLITE_BACKEND` is `false`** (`ext/js/dictionary/dictionary-backend-config.js`), so
   the IndexedDB path is still the only live one and nothing user-visible has changed.
-- **Stage 5 is in progress.** Done: the importer now calls `finalizeImport()` (item 3, which also
-  routed the import worker through the backend factory), the SAH-Pool grows for large DBs (item 6),
-  and the settings-page migration UX is built and proven against WebKit's IndexedDB (item 2).
-- **What still gates flipping it:** extension-origin verification — `./rebuild-safari.sh` + a manual
-  scan pass, the one thing the `127.0.0.1` runner cannot reach — then the flag flip and removing the
-  IndexedDB path. Full checklist in [progress.md](progress.md) → Stage 5.
+- **Stage 5 is in progress, and is now BLOCKED on a newly found bug.** Done: the importer calls
+  `finalizeImport()` (item 3), the SAH-Pool grows for large DBs (item 6), and the settings-page
+  migration UX is built and proven against WebKit's IndexedDB (item 2). But **extension-origin
+  verification (item 1) ran against the real installed extension and found that the SQLite backend
+  cannot open OPFS in the Safari background page** (sync access handles are Worker-only): the import
+  succeeds but no lookup can read it back. The fix — run the backend in one dedicated DB worker with
+  the background page proxying to it — is designed in [backend-worker.md](backend-worker.md) and
+  **must land before the flag can flip**.
+- **What still gates flipping it:** the backend-in-a-worker fix, then re-running item 1, then the flag
+  flip and removing the IndexedDB path. Full checklist in [progress.md](progress.md) → Stage 5.
 
 ## The numbers, once
 
