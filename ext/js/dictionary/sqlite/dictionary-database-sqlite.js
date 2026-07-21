@@ -17,6 +17,7 @@
 
 import {parseJson} from '../../core/json.js';
 import {IdentityPayloadCodec} from '../payload-codec.js';
+import {DatabaseOwnerClient} from './database-owner-client.js';
 import {requestPersistentStorage} from './dictionary-storage-migration.js';
 import {DICTIONARY_SQLITE_TABLES} from './dictionary-sqlite-schema.js';
 import {buildInflectionTable, deriveLemmas, deserializeInflectionTable, isDerivable, serializeInflectionTable} from './inflection-rules.js';
@@ -89,6 +90,22 @@ const DELETE_BATCH_SIZE = 512;
  * @type {Promise<import('sqlite-wasm').Sqlite3Module>?}
  */
 let vendoredSqlite3Promise = null;
+
+/**
+ * Whether this instance must proxy to a worker instead of owning the connection.
+ *
+ * True only in a page context that did not inject `sqlite3`. OPFS sync access handles — which the
+ * SAH-Pool VFS needs — exist **only in workers**: in a Window,
+ * `FileSystemFileHandle.prototype.createSyncAccessHandle` is `undefined`, so opening here cannot
+ * work (plan/backend-worker.md). Injecting `sqlite3` means a test or the owning worker is driving
+ * the real path, so those never proxy.
+ * @param {{sqlite3?: import('sqlite-wasm').Sqlite3Module, vfs?: import('sqlite-wasm').SqliteVfs}} [options]
+ * @returns {boolean}
+ */
+function shouldProxyToWorker(options) {
+    if (typeof options?.sqlite3 !== 'undefined') { return false; }
+    return typeof self !== 'undefined' && typeof self.constructor !== 'undefined' && self.constructor.name === 'Window';
+}
 
 /**
  * @returns {Promise<import('sqlite-wasm').Sqlite3Module>}
@@ -177,6 +194,17 @@ export class DictionaryDatabaseSqlite {
          */
         this._trainSampleSize = trainSampleSize;
         /**
+         * The client for the worker that owns the real connection, or null when *this* instance is
+         * the owner. Non-null puts the instance in **proxy mode**: it holds no `_db` and forwards
+         * every public call to the owner (see plan/backend-worker.md).
+         *
+         * A page context cannot own the connection at all — OPFS sync access handles are Worker-only,
+         * so `createSyncAccessHandle` is `undefined` off a Worker — which is exactly the bug that
+         * made the Safari background page report "Database not open" for every lookup.
+         * @type {?DatabaseOwnerClient}
+         */
+        this._link = null;
+        /**
          * How many inflection rules to induce per dictionary, ranked by how many lemmas use them.
          *
          * The size/latency knob (plan/decisions.md #31): every kept rule is another candidate to
@@ -197,7 +225,16 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<void>}
      */
     async prepare(options) {
-        if (this._db !== null) { throw new Error('Database already open'); }
+        if (this._db !== null || this._link !== null) { throw new Error('Database already open'); }
+        // A page context (the Safari background page, the settings page) cannot hold the OPFS
+        // connection, so it proxies to the worker that can. Tests and the owning worker inject
+        // `sqlite3` (or already run in a worker) and take the real path below.
+        if (shouldProxyToWorker(options)) {
+            this._link = new DatabaseOwnerClient();
+            this._link.connect();
+            await this._invoke('prepare', {});
+            return;
+        }
         let {sqlite3} = options ?? {};
         const {vfs = typeof sqlite3 === 'undefined' ? 'opfs' : 'memory', path, initialCapacity} = options ?? {};
         if (typeof sqlite3 === 'undefined') {
@@ -207,6 +244,20 @@ export class DictionaryDatabaseSqlite {
         this._db = await openDictionaryDatabaseHandle(sqlite3, {vfs, path, initialCapacity});
         this._loadDictionaryCache();
         if (vfs === 'opfs') { await requestPersistentStorage(); }
+    }
+
+    /**
+     * Forwards one call to the owning worker. Present so the proxy guards on the public methods stay
+     * one line each; the wire details live in `DatabaseOwnerClient`.
+     * @param {string} action
+     * @param {{[key: string]: unknown}} params
+     * @param {?((...args: any[]) => void)} [onProgress]
+     * @returns {Promise<any>}
+     */
+    async _invoke(action, params, onProgress = null) {
+        const link = this._link;
+        if (link === null) { throw new Error('Not in proxy mode'); }
+        return await link.invoke(action, params, onProgress);
     }
 
     /**
@@ -224,11 +275,19 @@ export class DictionaryDatabaseSqlite {
 
     /** @returns {boolean} */
     isPrepared() {
-        return this._db !== null;
+        return this._db !== null || this._link !== null;
     }
 
     /** @returns {void} */
     close() {
+        if (this._link !== null) {
+            // Detach this client only. The owner is shared, so closing its database here would pull
+            // it out from under the other pages; the SharedWorker goes away by itself once every
+            // client has disconnected, releasing the OPFS handles with it.
+            this._link.disconnect();
+            this._link = null;
+            return;
+        }
         if (this._db === null) { return; }
         this._finalizeStatements();
         this._db.close();
@@ -336,6 +395,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<boolean>}
      */
     async purge() {
+        if (this._link !== null) { return await this._invoke('purge', {}); }
         const db = this._require();
         db.transaction((tx) => {
             for (const table of DICTIONARY_SQLITE_TABLES) {
@@ -357,6 +417,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<void>}
      */
     async finalizeImport() {
+        if (this._link !== null) { return await this._invoke('finalizeImport', {}); }
         const db = this._require();
         for (const dictionaryId of this._idToTitle.keys()) {
             this._buildInflectionTable(dictionaryId);
@@ -576,6 +637,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<boolean>}
      */
     async dictionaryExists(title) {
+        if (this._link !== null) { return await this._invoke('dictionaryExists', {title}); }
         if (this._titleToId.has(title)) { return true; }
         return typeof this._require().selectValue('SELECT id FROM dictionaries WHERE title = ?', [title]) === 'number';
     }
@@ -589,6 +651,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<void>}
      */
     async bulkAdd(objectStoreName, items, start, count) {
+        if (this._link !== null) { return await this._invoke('bulkAdd', {objectStoreName, items, start, count}); }
         const end = Math.min(start + count, items.length);
         if (end <= start) { return; }
         // Payload-bearing stores need their per-dictionary write codec resolved (and trained, which
@@ -638,6 +701,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<void>}
      */
     async bulkUpdate(objectStoreName, items, start, count) {
+        if (this._link !== null) { return await this._invoke('bulkUpdate', {objectStoreName, items, start, count}); }
         if (objectStoreName !== 'dictionaries') {
             throw new Error(`bulkUpdate not implemented for store '${objectStoreName}'`);
         }
@@ -667,6 +731,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').TermEntry[]>}
      */
     async findTermsBulk(termList, dictionaries, matchType) {
+        if (this._link !== null) { return await this._invoke('findTermsBulk', {termList, dictionaries, matchType}); }
         const dictionaryIds = this._enabledDictionaryIds(dictionaries);
         /** @type {import('dictionary-database').TermEntry[]} */
         const results = [];
@@ -770,6 +835,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').TermEntry[]>}
      */
     async findTermsExactBulk(termList, dictionaries) {
+        if (this._link !== null) { return await this._invoke('findTermsExactBulk', {termList, dictionaries}); }
         const dictionaryIds = this._enabledDictionaryIds(dictionaries);
         /** @type {import('dictionary-database').TermEntry[]} */
         const results = [];
@@ -790,6 +856,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').TermEntry[]>}
      */
     async findTermsBySequenceBulk(items) {
+        if (this._link !== null) { return await this._invoke('findTermsBySequenceBulk', {items}); }
         this._require(); // guard: throws if the database is not open
         /** @type {import('dictionary-database').TermEntry[]} */
         const results = [];
@@ -816,6 +883,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').TermMeta[]>}
      */
     async findTermMetaBulk(termList, dictionaries) {
+        if (this._link !== null) { return await this._invoke('findTermMetaBulk', {termList, dictionaries}); }
         const dictionaryIds = this._enabledDictionaryIds(dictionaries);
         /** @type {import('dictionary-database').TermMeta[]} */
         const results = [];
@@ -837,6 +905,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').KanjiEntry[]>}
      */
     async findKanjiBulk(kanjiList, dictionaries) {
+        if (this._link !== null) { return await this._invoke('findKanjiBulk', {kanjiList, dictionaries}); }
         const dictionaryIds = this._enabledDictionaryIds(dictionaries);
         /** @type {import('dictionary-database').KanjiEntry[]} */
         const results = [];
@@ -858,6 +927,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').KanjiMeta[]>}
      */
     async findKanjiMetaBulk(kanjiList, dictionaries) {
+        if (this._link !== null) { return await this._invoke('findKanjiMetaBulk', {kanjiList, dictionaries}); }
         const dictionaryIds = this._enabledDictionaryIds(dictionaries);
         /** @type {import('dictionary-database').KanjiMeta[]} */
         const results = [];
@@ -878,6 +948,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<(import('dictionary-database').Tag|undefined)[]>}
      */
     async findTagMetaBulk(items) {
+        if (this._link !== null) { return await this._invoke('findTagMetaBulk', {items}); }
         this._require(); // guard: throws if the database is not open
         /** @type {(import('dictionary-database').Tag|undefined)[]} */
         const results = [];
@@ -899,6 +970,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<?import('dictionary-database').Tag>}
      */
     async findTagForTitle(name, dictionary) {
+        if (this._link !== null) { return await this._invoke('findTagForTitle', {name, dictionary}); }
         const dictionaryId = this._titleToId.get(dictionary);
         if (typeof dictionaryId !== 'number') { return null; }
         const row = this._selectObject('SELECT name, category, sort_order, notes, score, dictionary_id FROM tag_meta WHERE name = ? AND dictionary_id = ? LIMIT 1', [name, dictionaryId]);
@@ -910,6 +982,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').Media[]>}
      */
     async getMedia(items) {
+        if (this._link !== null) { return await this._invoke('getMedia', {items}); }
         this._require(); // guard: throws if the database is not open
         /** @type {import('dictionary-database').Media[]} */
         const results = [];
@@ -931,6 +1004,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-importer').Summary[]>}
      */
     async getDictionaryInfo() {
+        if (this._link !== null) { return await this._invoke('getDictionaryInfo', {}); }
         const rows = this._require().selectObjects('SELECT summary_json FROM dictionaries ORDER BY id');
         /** @type {import('dictionary-importer').Summary[]} */
         const summaries = [];
@@ -948,6 +1022,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<import('dictionary-database').DictionaryCounts>}
      */
     async getDictionaryCounts(dictionaryNames, getTotal) {
+        if (this._link !== null) { return await this._invoke('getDictionaryCounts', {dictionaryNames, getTotal}); }
         const db = this._require();
         /** @type {import('dictionary-database').ObjectStoreName[]} */
         const stores = ['kanji', 'kanjiMeta', 'terms', 'termMeta', 'tagMeta', 'media'];
@@ -984,6 +1059,7 @@ export class DictionaryDatabaseSqlite {
      * @returns {Promise<void>}
      */
     async deleteDictionary(dictionaryName, progressRate, onProgress) {
+        if (this._link !== null) { return await this._invoke('deleteDictionary', {dictionaryName, progressRate}, onProgress); }
         const db = this._require();
         const dictionaryId = this._titleToId.get(dictionaryName);
         /** @type {import('dictionary-database').ObjectStoreName[]} */

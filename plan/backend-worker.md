@@ -74,6 +74,33 @@ long-lived dedicated worker directly. That is the lever.
 The IndexedDB backend tolerates this fan-out because IndexedDB is multi-connection. SQLite/OPFS is
 not.
 
+## Update: a **SharedWorker** can hold the connection — use it as the hub
+
+Measured in real Safari (a SharedWorker on `127.0.0.1`, driven over the `do JavaScript` channel):
+
+```json
+{ "hasCtor": true, "hasMethod": true, "opened": true }
+```
+
+`FileSystemFileHandle.prototype.createSyncAccessHandle` **exists in a SharedWorker and actually
+opens/writes/closes**. That is strictly better than a background-owned dedicated worker, because a
+SharedWorker is _one instance per (origin, script)_ and every extension page shares the
+`safari-web-extension://<UUID>` origin. So the background page **and** the settings page can each
+connect to the **same** connection owner directly:
+
+- no relaying imports through the background API,
+- no close/reopen handoff dance between a background worker and a transient import worker,
+- single-connection is guaranteed by the SharedWorker itself rather than by convention.
+
+The owner/proxy split below is unchanged — only _which_ worker owns it. The connection handle is
+abstracted behind one acquisition function so falling back to a dedicated worker (proven to work: the
+current import worker uses OPFS at the extension origin) is a one-line change if needed.
+
+**Still to verify:** SharedWorker construction at the _extension origin_ (CSP `script-src 'self'
+'wasm-unsafe-eval'`; worker-src falls back to script-src, and the script is same-origin, so it should
+pass). `safari-web-extension://` pages cannot be reached by `open` or AppleScript navigation — only
+from the extension's own UI — so this check needs a Yomitan page opened by hand.
+
 ## Proposed design: one worker owns the connection; the background proxies to it
 
 Give `DictionaryDatabaseSqlite` **two modes**, picked by context exactly as `DictionaryDatabase`

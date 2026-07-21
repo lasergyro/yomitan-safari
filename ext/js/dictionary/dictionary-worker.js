@@ -17,7 +17,9 @@
  */
 
 import {ExtensionError} from '../core/extension-error.js';
+import {USE_SQLITE_BACKEND} from './dictionary-backend-config.js';
 import {DictionaryImporterMediaLoader} from './dictionary-importer-media-loader.js';
+import {DatabaseOwnerClient} from './sqlite/database-owner-client.js';
 
 export class DictionaryWorker {
     constructor() {
@@ -32,6 +34,15 @@ export class DictionaryWorker {
      * @returns {Promise<import('dictionary-importer').ImportResult>}
      */
     importDictionary(archiveContent, details, onProgress) {
+        if (USE_SQLITE_BACKEND) {
+            return this._invokeOnOwner(
+                'importDictionary',
+                {archiveContent, details},
+                [archiveContent],
+                onProgress,
+                this._formatImportDictionaryResult.bind(this),
+            );
+        }
         return this._invoke(
             'importDictionary',
             {details, archiveContent},
@@ -47,6 +58,11 @@ export class DictionaryWorker {
      * @returns {Promise<void>}
      */
     deleteDictionary(dictionaryTitle, onProgress) {
+        if (USE_SQLITE_BACKEND) {
+            // The owner takes the database's own parameter names; 1000 is the progress rate the
+            // dedicated worker's handler passed on this path.
+            return this._invokeOnOwner('deleteDictionary', {dictionaryName: dictionaryTitle, progressRate: 1000}, [], onProgress, null);
+        }
         return this._invoke('deleteDictionary', {dictionaryTitle}, [], onProgress, null);
     }
 
@@ -56,10 +72,45 @@ export class DictionaryWorker {
      * @returns {Promise<import('dictionary-database').DictionaryCounts>}
      */
     getDictionaryCounts(dictionaryNames, getTotal) {
+        if (USE_SQLITE_BACKEND) {
+            return this._invokeOnOwner('getDictionaryCounts', {dictionaryNames, getTotal}, [], null, null);
+        }
         return this._invoke('getDictionaryCounts', {dictionaryNames, getTotal}, [], null, null);
     }
 
     // Private
+
+    /**
+     * Runs the operation on the SharedWorker that owns the SQLite database, instead of in a
+     * throwaway dedicated worker.
+     *
+     * With the SQLite backend the database cannot be opened twice: the OPFS SAH-Pool admits a single
+     * connection, and the background page already holds it through the same owner. A dedicated
+     * import worker would therefore be refused the pool, so writes go to the owner as well
+     * (plan/backend-worker.md).
+     * @template [TParams=import('core').SerializableObject]
+     * @template [TResponseRaw=unknown]
+     * @template [TResponse=unknown]
+     * @param {string} action
+     * @param {TParams} params
+     * @param {Transferable[]} transfer
+     * @param {?(arg: import('core').SafeAny) => void} onProgress
+     * @param {?(result: TResponseRaw) => TResponse} formatResult
+     * @returns {Promise<TResponse>}
+     */
+    async _invokeOnOwner(action, params, transfer, onProgress, formatResult) {
+        const client = new DatabaseOwnerClient();
+        client.connect();
+        try {
+            const raw = await client.invoke(action, /** @type {import('core').SafeAny} */ (params), onProgress, transfer);
+            // With no formatter the owner's value *is* the result, as it is on the worker path.
+            if (formatResult === null) { return /** @type {TResponse} */ (raw); }
+            return formatResult(/** @type {TResponseRaw} */ (raw));
+        } finally {
+            // Detach this caller only; the owner stays up for the pages still using it.
+            client.disconnect();
+        }
+    }
 
     /**
      * @template [TParams=import('core').SerializableObject]
