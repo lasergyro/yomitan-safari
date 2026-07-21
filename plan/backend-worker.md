@@ -1,6 +1,8 @@
 # Design: run the SQLite backend in a worker (Stage 5 blocker)
 
-**Status: built and verified in real Safari (24/24), except at the extension origin.** This is the fix
+**Status: proxy/owner split built and verified at `127.0.0.1` (24/24); the SharedWorker _hub_ is
+RETRACTED — it does not work in Safari extension pages (see the next section). The owner must become
+a dedicated worker.** This is the fix
 for the bug that real-extension verification (Stage 5 item 1) surfaced: with `USE_SQLITE_BACKEND` on,
 the extension imports correctly but cannot read the database back.
 
@@ -91,7 +93,50 @@ long-lived dedicated worker directly. That is the lever.
 The IndexedDB backend tolerates this fan-out because IndexedDB is multi-connection. SQLite/OPFS is
 not.
 
-## Update: a **SharedWorker** can hold the connection — use it as the hub
+## RETRACTED: `SharedWorker` does not work in Safari **web-extension pages**
+
+The SharedWorker hub below was built, verified at `127.0.0.1` (24/24), then **failed at the extension
+origin**. Driving the real settings page over `do JavaScript`, with the flag on and the extension
+rebuilt:
+
+| Probe (at `safari-web-extension://…`)                 | Result                         |
+| ----------------------------------------------------- | ------------------------------ |
+| `new SharedWorker(script, {type:'module'})`           | constructs, **no error event** |
+| `port.postMessage({action:'isPrepared'})`             | **never replies** (timeout)    |
+| a _fresh_ instance via `{name:'probe-…'}`             | also never replies             |
+| the same module in a **dedicated** `Worker`           | loads fine, no error           |
+| dynamic `import()` of the same module in the page     | loads fine                     |
+| OPFS after all of it (`navigator.storage.estimate()`) | **empty, `usage: 0`**          |
+
+So the module graph is worker-safe and the script is CSP-allowed (construction throws nothing), but
+the `connect` event never fires and the worker never does anything — OPFS is untouched. It is not the
+connect-listener style either: a control page on `127.0.0.1` serving the _same shape_ (module
+SharedWorker + a static import) replied on **both** `self.addEventListener('connect', …)` and
+`self.onconnect = …`.
+
+**Conclusion: SharedWorker is silently non-functional in Safari web-extension pages.** The symptom in
+the extension was the background page hanging forever on `await prepare()` (its RPC never answered),
+which made every API call hang and left the settings page blank with `document.body.hidden === true`.
+
+**Also learned the hard way:** the rebuild changed the extension's origin UUID
+(`8BFC98A7…` → `B218D162…`), and Safari purged the old website data with it — the previously imported
+49.4 MB `kty-de-en` is gone. `rebuild-safari.sh`'s in-place update preserves data only while the
+registration survives; it did not here.
+
+### The fallback (what to build instead)
+
+Back to a **dedicated** worker owned by the persistent background page — already proven to work at
+the extension origin, since the old import worker used OPFS there. The only open piece is how a
+_second_ page (settings, for import) reaches that one owner, and the codebase already has the
+mechanism: `connectToDatabaseWorker`. A page makes a `MessageChannel`, hands one end to the
+background via `api.connectToDatabaseWorker(port)`, and the background forwards it to its worker —
+exactly what `application.js` already does for the media-drawing worker. That gives every page a
+_direct_ port to the single owner with no per-message relaying.
+
+`DatabaseOwnerClient` keeps its whole RPC surface; only `connect()` changes — spawn-and-own in the
+background, request-a-port-via-the-background elsewhere.
+
+## Superseded: a **SharedWorker** can hold the connection — use it as the hub
 
 Measured in real Safari (a SharedWorker on `127.0.0.1`, driven over the `do JavaScript` channel):
 
