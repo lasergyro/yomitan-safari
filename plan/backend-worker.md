@@ -16,12 +16,10 @@ harness **page** — a Window, the same context the extension's background page 
 - **a second page-side client shares the one owner**, which is the single-connection property the
   whole design rests on (a second connection would have been refused by the pool).
 
-**The one thing still unverified is the extension origin itself**: whether a `SharedWorker` can be
-constructed under the extension's CSP. That needs `USE_SQLITE_BACKEND = true`, a rebuild, and a
-Yomitan page opened by hand — `safari-web-extension://` pages cannot be reached by `open` or
-AppleScript navigation. If it turns out to be blocked, the owner falls back to a dedicated worker
-(already proven to work at the extension origin) with import routed through the background instead;
-only `DatabaseOwnerClient.connect()` changes.
+Those checks all still pass and stay valuable — they pin the proxy/owner split itself. **What they
+could not cover is the extension origin**, and that is where the SharedWorker _hub_ died: see
+[RETRACTED](#retracted-sharedworker-does-not-work-in-safari-web-extension-pages) below. The
+proxy/owner split survives; the owner has to become a **dedicated** worker.
 
 ## The bug, and how it was found
 
