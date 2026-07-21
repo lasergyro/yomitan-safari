@@ -67,10 +67,30 @@
             await fetch('/results', {method: 'POST', body: JSON.stringify(checks)});
         }
 
+        /**
+         * The owner-side checks hold the SAH-Pool for the dedicated worker's whole life, so the
+         * page-side (proxy) checks can only run once that worker is gone and its exclusive OPFS
+         * handles are released.
+         * @param {{name: string, ok: boolean, error?: string, info?: string}[]} workerChecks
+         */
+        async function runPageChecksAfterWorker(workerChecks) {
+            let pageChecks;
+            try {
+                const {runPageChecks} = await import('/test/safari/page-checks.js');
+                pageChecks = await runPageChecks();
+            } catch (e) {
+                pageChecks = [{name: 'page (proxy) checks ran', ok: false, error: e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e)}];
+            }
+            await send([...workerChecks, ...pageChecks]);
+        }
+
         const worker = new Worker('/test/safari/worker.js', {type: 'module'});
         worker.addEventListener('message', (event) => {
-            void send(event.data);
+            const workerChecks = event.data;
             worker.terminate();
+            // Give WebKit a moment to actually drop the terminated worker's sync access handles
+            // before the SharedWorker tries to acquire the same pool.
+            setTimeout(() => { void runPageChecksAfterWorker(workerChecks); }, 500);
         });
         worker.addEventListener('error', (event) => {
             void send([{name: 'worker started', ok: false, error: `${event.message} (${event.filename}:${event.lineno})`}]);

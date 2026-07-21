@@ -1,8 +1,25 @@
 # Design: run the SQLite backend in a worker (Stage 5 blocker)
 
-**Status: proposed, not built.** This is the fix for the bug that real-extension verification (Stage 5
-item 1) surfaced: with `USE_SQLITE_BACKEND` on, the extension imports correctly but cannot read the
-database back. Written for review before implementation.
+**Status: built and verified in real Safari (24/24), except at the extension origin.** This is the fix
+for the bug that real-extension verification (Stage 5 item 1) surfaced: with `USE_SQLITE_BACKEND` on,
+the extension imports correctly but cannot read the database back.
+
+`npm run test:safari` now covers **both sides** of the seam. `test/safari/page-checks.js` runs in the
+harness **page** — a Window, the same context the extension's background page is — and asserts:
+
+- `createSyncAccessHandle` is undefined off a Worker (the bug itself, pinned as a regression guard),
+- `prepare()` from a page proxies to the SharedWorker owner and reports prepared,
+- writes, `findTermsBulk` (exact + prefix) and **`getDictionaryInfo` — the exact call that returned
+  "Database not open" in the extension** — all succeed over the proxy,
+- **a second page-side client shares the one owner**, which is the single-connection property the
+  whole design rests on (a second connection would have been refused by the pool).
+
+**The one thing still unverified is the extension origin itself**: whether a `SharedWorker` can be
+constructed under the extension's CSP. That needs `USE_SQLITE_BACKEND = true`, a rebuild, and a
+Yomitan page opened by hand — `safari-web-extension://` pages cannot be reached by `open` or
+AppleScript navigation. If it turns out to be blocked, the owner falls back to a dedicated worker
+(already proven to work at the extension origin) with import routed through the background instead;
+only `DatabaseOwnerClient.connect()` changes.
 
 ## The bug, and how it was found
 

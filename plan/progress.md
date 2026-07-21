@@ -265,10 +265,16 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
        hand-written version wrote `reading: ''`, which the importer never produces, and so the drop
        pass silently dropped nothing on real imports while the tests stayed green (#35).
 
-## Stage 5 — IN PROGRESS. **Blocked** on the backend-in-a-worker fix ([backend-worker.md](backend-worker.md))
+## Stage 5 — IN PROGRESS. Backend-in-a-worker fix **built and verified** ([backend-worker.md](backend-worker.md))
 
-Extension-origin verification (item 1) ran and found that the SQLite backend cannot open OPFS in the
-Safari background page — it must run in a dedicated worker. That fix gates the flag flip. Items 2, 3,
+Extension-origin verification (item 1) found that the SQLite backend cannot open OPFS in the Safari
+background page (sync access handles are Worker-only). **Fixed**: the backend now runs in a
+**SharedWorker** that owns the single OPFS connection, and page contexts proxy to it;
+`DictionaryWorker`'s import/delete/counts route to that same owner, so the pool is never opened twice.
+`npm run test:safari` covers both sides of the seam — **24/24**, including a page-side client doing
+`getDictionaryInfo` (the call that failed in the extension) and two page clients sharing one owner.
+**Remaining before the flag can flip:** confirm a `SharedWorker` can be constructed under the
+extension's CSP, which needs a rebuild with the flag on and a Yomitan page opened by hand. Items 2, 3,
 6 are done; the codec and measurement are decided.
 
 1. **Extension-origin verification — RAN, and it found a blocker.** `npm run test:safari` covers the
