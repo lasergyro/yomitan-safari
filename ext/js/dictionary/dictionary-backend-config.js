@@ -23,4 +23,4 @@
  * path) are removed.
  * @type {boolean}
  */
-export const USE_SQLITE_BACKEND = false;
+export const USE_SQLITE_BACKEND = true;

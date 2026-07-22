@@ -265,7 +265,7 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
        hand-written version wrote `reading: ''`, which the importer never produces, and so the drop
        pass silently dropped nothing on real imports while the tests stayed green (#35).
 
-## Stage 5 — IN PROGRESS. Backend-in-a-worker fix **built and verified** ([backend-worker.md](backend-worker.md))
+## Stage 5 — item 1 PASSES; the flag is now ON ([backend-worker.md](backend-worker.md))
 
 Extension-origin verification (item 1) found that the SQLite backend cannot open OPFS in the Safari
 background page (sync access handles are Worker-only). **Fixed**: the backend now runs in a

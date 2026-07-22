@@ -1,25 +1,35 @@
 # Design: run the SQLite backend in a worker (Stage 5 blocker)
 
-**Status: proxy/owner split built and verified at `127.0.0.1` (24/24); the SharedWorker _hub_ is
-RETRACTED — it does not work in Safari extension pages (see the next section). The owner must become
-a dedicated worker.** This is the fix
-for the bug that real-extension verification (Stage 5 item 1) surfaced: with `USE_SQLITE_BACKEND` on,
-the extension imports correctly but cannot read the database back.
+**Status: BUILT and VERIFIED AT THE EXTENSION ORIGIN.** A dedicated worker owns the connection, the
+background proxies to it, and imports suspend it. 23/23 in real Safari at `127.0.0.1`, and in the
+installed extension `kty-de-en` imports and answers lookups:
 
-`npm run test:safari` now covers **both sides** of the seam. `test/safari/page-checks.js` runs in the
+```
+getDictionaryInfo   -> "kty-de-en (947070 terms)"
+termsFind("geschützt") -> geschützt, schützen
+```
+
+`schützen` is the proof: that form-of row was **dropped at import**, so the pointer came from
+inflection synthesis — the whole path (background page -> proxy -> worker -> OPFS -> SQLite ->
+deflate -> synthesis -> translator) works at `safari-web-extension://`. This
+is the fix for the bug that real-extension verification (Stage 5 item 1) surfaced: with
+`USE_SQLITE_BACKEND` on, the extension imports correctly but cannot read the database back.
+
+Read this document in order: the bug and its root cause, then the constraint, then
+[RETRACTED](#retracted-sharedworker-does-not-work-in-safari-web-extension-pages) (the SharedWorker
+hub that failed at the extension origin), then
+[BUILT](#built-dedicated-worker--suspendresume-23-23-in-real-safari) for the shape that shipped.
+
+`npm run test:safari` covers **both sides** of the seam. `test/safari/page-checks.js` runs in the
 harness **page** — a Window, the same context the extension's background page is — and asserts:
 
 - `createSyncAccessHandle` is undefined off a Worker (the bug itself, pinned as a regression guard),
-- `prepare()` from a page proxies to the SharedWorker owner and reports prepared,
+- `prepare()` from a page proxies to the owning worker and reports prepared (105 ms),
 - writes, `findTermsBulk` (exact + prefix) and **`getDictionaryInfo` — the exact call that returned
-  "Database not open" in the extension** — all succeed over the proxy,
-- **a second page-side client shares the one owner**, which is the single-connection property the
-  whole design rests on (a second connection would have been refused by the pool).
+  "Database not open" in the extension** — all succeed over the proxy.
 
-Those checks all still pass and stay valuable — they pin the proxy/owner split itself. **What they
-could not cover is the extension origin**, and that is where the SharedWorker _hub_ died: see
-[RETRACTED](#retracted-sharedworker-does-not-work-in-safari-web-extension-pages) below. The
-proxy/owner split survives; the owner has to become a **dedicated** worker.
+That layer exists because neither vitest (node, in-memory) nor `worker.js` (already inside a worker)
+can see the page context the bug lived in.
 
 ## The bug, and how it was found
 
