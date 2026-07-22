@@ -121,7 +121,39 @@ which made every API call hang and left the settings page blank with `document.b
 49.4 MB `kty-de-en` is gone. `rebuild-safari.sh`'s in-place update preserves data only while the
 registration survives; it did not here.
 
-### The fallback (what to build instead)
+### BUILT: dedicated worker + suspend/resume (23/23 in real Safari)
+
+The shipped shape, after the SharedWorker retraction:
+
+- **The background page proxies to a dedicated worker** it spawns
+  (`dictionary-database-worker-main.js`), which owns the one OPFS connection.
+  `DatabaseOwnerClient` keeps the whole RPC surface; only `connect()` changed.
+- **The import keeps its own worker.** The archive has to reach it as a _transferable_, which
+  extension messaging cannot carry, so relaying the import through the background was never an
+  option. Instead the background **lets go** for the duration: new `suspendDatabase` /
+  `resumeDatabase` APIs, which `DictionaryWorker` wraps around every worker operation when the flag
+  is on. `suspend` **terminates** the owner — closing the database is not enough, because the
+  SAH-Pool keeps its OPFS handles for the worker's whole life.
+- The `connectToDatabaseWorker` port-relay was evaluated and **rejected**: `_pmInvoke` routes through
+  `navigator.serviceWorker.ready`, and the Safari build registers no service worker at all (its
+  background is a page), so that promise never resolves. It is dead code on this path.
+
+**Two bugs this shook out, both of the same family — a silent hang:**
+
+1. **A message posted to a worker with no `message` listener yet is lost**, not queued. The handler
+   registered its listener only after `await database.prepare()`, so the very first `prepare` request
+   was dropped: it timed out even at 45 s while every later call succeeded. Listeners are now
+   registered synchronously, before anything is awaited. (Measured after the fix: the owner is ready
+   in **105 ms**.)
+2. **A dead owner used to hang the caller forever.** `prepare` is now bounded by a timeout, so a
+   worker that never starts surfaces as an error instead of wedging every API call behind it — which
+   is precisely how the SharedWorker failure presented, with nothing in the log.
+
+`test/safari/run.js` now serves `USE_SQLITE_BACKEND` as **on** regardless of what is committed: the
+page-side checks build the SQLite backend explicitly, but the owner picks its backend through
+`createDictionaryDatabase()`, so with the flag off the two halves would not match.
+
+### The fallback, as originally sketched
 
 Back to a **dedicated** worker owned by the persistent background page — already proven to work at
 the extension origin, since the old import worker used OPFS there. The only open piece is how a

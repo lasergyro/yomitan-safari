@@ -184,6 +184,8 @@ export class Backend {
             ['getDefaultAnkiFieldTemplates', this._onApiGetDefaultAnkiFieldTemplates.bind(this)],
             ['getDictionaryInfo',            this._onApiGetDictionaryInfo.bind(this)],
             ['purgeDatabase',                this._onApiPurgeDatabase.bind(this)],
+            ['suspendDatabase',              this._onApiSuspendDatabase.bind(this)],
+            ['resumeDatabase',               this._onApiResumeDatabase.bind(this)],
             ['getMedia',                     this._onApiGetMedia.bind(this)],
             ['logGenericErrorBackend',       this._onApiLogGenericErrorBackend.bind(this)],
             ['logIndicatorClear',            this._onApiLogIndicatorClear.bind(this)],
@@ -1037,6 +1039,36 @@ export class Backend {
     async _onApiPurgeDatabase() {
         await this._dictionaryDatabase.purge();
         this._triggerDatabaseUpdated('dictionary', 'purge');
+    }
+
+    /**
+     * Releases the dictionary database so that another worker can open it.
+     *
+     * The SQLite backend's OPFS SAH-Pool admits exactly one connection, and the pool keeps its file
+     * handles for its worker's whole life — closing the database does not give them back. An import
+     * runs in its own worker (it needs to receive the archive as a transferable, which extension
+     * messaging cannot carry), so the background has to let go entirely for the duration. `close()`
+     * on the proxy terminates the owning worker, which is what actually frees the pool.
+     *
+     * On the IndexedDB backend this is a harmless close/reopen: it is multi-connection and needs no
+     * such coordination.
+     * @type {import('api').ApiHandler<'suspendDatabase'>}
+     */
+    async _onApiSuspendDatabase() {
+        // Only the direct (non-offscreen) path owns a connection here, and that is the only path the
+        // SQLite backend runs on; the offscreen proxy has nothing of its own to release.
+        if (this._offscreen !== null) { return; }
+        const database = /** @type {import('../dictionary/dictionary-database.js').DictionaryDatabase} */ (this._dictionaryDatabase);
+        await database.close();
+    }
+
+    /** @type {import('api').ApiHandler<'resumeDatabase'>} */
+    async _onApiResumeDatabase() {
+        if (this._offscreen !== null) { return; }
+        const database = /** @type {import('../dictionary/dictionary-database.js').DictionaryDatabase} */ (this._dictionaryDatabase);
+        if (database.isPrepared()) { return; }
+        await database.prepare();
+        this._triggerDatabaseUpdated('dictionary', 'import');
     }
 
     /** @type {import('api').ApiHandler<'getMedia'>} */

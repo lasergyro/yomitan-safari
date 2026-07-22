@@ -113,6 +113,18 @@ async function main() {
         }
 
         const requestPath = url.pathname === '/' ? '/test/safari/harness.html' : url.pathname;
+
+        // Serve the backend flag as ON regardless of what is committed. The page-side checks build a
+        // DictionaryDatabaseSqlite explicitly, but the worker that owns the connection picks its
+        // backend through createDictionaryDatabase() — so with the flag off the owner would come up
+        // as IndexedDB and the two halves would not match. Overriding here keeps these checks
+        // exercising the shipping configuration on either side of the flag flip.
+        if (requestPath === '/ext/js/dictionary/dictionary-backend-config.js') {
+            response.setHeader('content-type', 'text/javascript');
+            response.end('export const USE_SQLITE_BACKEND = true;\n');
+            return;
+        }
+
         const filePath = path.join(repoRoot, path.normalize(requestPath));
         if (!filePath.startsWith(repoRoot) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
             response.statusCode = 404;

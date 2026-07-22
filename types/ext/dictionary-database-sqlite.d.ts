@@ -17,7 +17,6 @@
 
 import type {SerializedError} from './core';
 import type {DictionarySet, MatchType, MediaRequest, ObjectStoreName, TermExactRequest, DictionaryAndQueryRequest} from './dictionary-database';
-import type {ImportDetails} from './dictionary-importer';
 
 // The argument shape of each proxied call, by action. Kept explicit (rather than an index
 // signature) so the owner's dispatch stays type-checked end to end instead of unpacking `any`.
@@ -28,29 +27,24 @@ export type OwnerParams = {
     finalizeImport: Record<string, never>;
     getDictionaryInfo: Record<string, never>;
     dictionaryExists: {title: string};
-    getDictionaryCounts: {dictionaryNames: string[]; getTotal: boolean};
-    deleteDictionary: {dictionaryName: string; progressRate: number};
-    bulkAdd: {objectStoreName: ObjectStoreName; items: unknown[]; start: number; count: number};
-    bulkUpdate: {objectStoreName: ObjectStoreName; items: unknown[]; start: number; count: number};
-    findTermsBulk: {termList: string[]; dictionaries: DictionarySet; matchType: MatchType};
-    findTermsExactBulk: {termList: TermExactRequest[]; dictionaries: DictionarySet};
+    getDictionaryCounts: {dictionaryNames: string[], getTotal: boolean};
+    deleteDictionary: {dictionaryName: string, progressRate: number};
+    bulkAdd: {objectStoreName: ObjectStoreName, items: unknown[], start: number, count: number};
+    bulkUpdate: {objectStoreName: ObjectStoreName, items: unknown[], start: number, count: number};
+    findTermsBulk: {termList: string[], dictionaries: DictionarySet, matchType: MatchType};
+    findTermsExactBulk: {termList: TermExactRequest[], dictionaries: DictionarySet};
     findTermsBySequenceBulk: {items: DictionaryAndQueryRequest[]};
-    findTermMetaBulk: {termList: string[]; dictionaries: DictionarySet};
-    findKanjiBulk: {kanjiList: string[]; dictionaries: DictionarySet};
-    findKanjiMetaBulk: {kanjiList: string[]; dictionaries: DictionarySet};
+    findTermMetaBulk: {termList: string[], dictionaries: DictionarySet};
+    findKanjiBulk: {kanjiList: string[], dictionaries: DictionarySet};
+    findKanjiMetaBulk: {kanjiList: string[], dictionaries: DictionarySet};
     findTagMetaBulk: {items: DictionaryAndQueryRequest[]};
-    findTagForTitle: {name: string; dictionary: string};
+    findTagForTitle: {name: string, dictionary: string};
     getMedia: {items: MediaRequest[]};
-    importDictionary: {archiveContent: ArrayBuffer; details: ImportDetails};
 };
 
 // Wire types for the proxy<->owner split of DictionaryDatabaseSqlite (plan/backend-worker.md).
 // A page context cannot hold the OPFS connection (sync access handles are Worker-only), so it
 // forwards each call to the SharedWorker that owns the database.
-
-// The port a proxy talks to its owner over. `MessagePort` is what `SharedWorker.port` gives, and it
-// carries everything the RPC needs (postMessage with transferables, addEventListener, start, close).
-export type WorkerLink = MessagePort;
 
 export type WorkerRequest = {
     /** Correlates this call with its reply. */

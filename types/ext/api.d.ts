@@ -339,6 +339,14 @@ type ApiSurface = {
         params: void;
         return: void;
     };
+    suspendDatabase: {
+        params: void;
+        return: void;
+    };
+    resumeDatabase: {
+        params: void;
+        return: void;
+    };
     getMedia: {
         params: {
             targets: GetMediaDetailsTarget[];

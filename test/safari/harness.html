@@ -88,9 +88,9 @@
         worker.addEventListener('message', (event) => {
             const workerChecks = event.data;
             worker.terminate();
-            // Give WebKit a moment to actually drop the terminated worker's sync access handles
-            // before the SharedWorker tries to acquire the same pool.
-            setTimeout(() => { void runPageChecksAfterWorker(workerChecks); }, 500);
+            // Give WebKit time to actually drop the terminated worker's sync access handles before
+            // the next owner tries to acquire the same pool. Measured to need well over 500ms.
+            setTimeout(() => { void runPageChecksAfterWorker(workerChecks); }, 3000);
         });
         worker.addEventListener('error', (event) => {
             void send([{name: 'worker started', ok: false, error: `${event.message} (${event.filename}:${event.lineno})`}]);

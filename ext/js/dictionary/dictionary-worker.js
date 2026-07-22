@@ -16,10 +16,12 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import {API} from '../comm/api.js';
 import {ExtensionError} from '../core/extension-error.js';
+import {log} from '../core/log.js';
+import {WebExtension} from '../extension/web-extension.js';
 import {USE_SQLITE_BACKEND} from './dictionary-backend-config.js';
 import {DictionaryImporterMediaLoader} from './dictionary-importer-media-loader.js';
-import {DatabaseOwnerClient} from './sqlite/database-owner-client.js';
 
 export class DictionaryWorker {
     constructor() {
@@ -34,15 +36,6 @@ export class DictionaryWorker {
      * @returns {Promise<import('dictionary-importer').ImportResult>}
      */
     importDictionary(archiveContent, details, onProgress) {
-        if (USE_SQLITE_BACKEND) {
-            return this._invokeOnOwner(
-                'importDictionary',
-                {archiveContent, details},
-                [archiveContent],
-                onProgress,
-                this._formatImportDictionaryResult.bind(this),
-            );
-        }
         return this._invoke(
             'importDictionary',
             {details, archiveContent},
@@ -58,11 +51,6 @@ export class DictionaryWorker {
      * @returns {Promise<void>}
      */
     deleteDictionary(dictionaryTitle, onProgress) {
-        if (USE_SQLITE_BACKEND) {
-            // The owner takes the database's own parameter names; 1000 is the progress rate the
-            // dedicated worker's handler passed on this path.
-            return this._invokeOnOwner('deleteDictionary', {dictionaryName: dictionaryTitle, progressRate: 1000}, [], onProgress, null);
-        }
         return this._invoke('deleteDictionary', {dictionaryTitle}, [], onProgress, null);
     }
 
@@ -72,22 +60,12 @@ export class DictionaryWorker {
      * @returns {Promise<import('dictionary-database').DictionaryCounts>}
      */
     getDictionaryCounts(dictionaryNames, getTotal) {
-        if (USE_SQLITE_BACKEND) {
-            return this._invokeOnOwner('getDictionaryCounts', {dictionaryNames, getTotal}, [], null, null);
-        }
         return this._invoke('getDictionaryCounts', {dictionaryNames, getTotal}, [], null, null);
     }
 
     // Private
 
     /**
-     * Runs the operation on the SharedWorker that owns the SQLite database, instead of in a
-     * throwaway dedicated worker.
-     *
-     * With the SQLite backend the database cannot be opened twice: the OPFS SAH-Pool admits a single
-     * connection, and the background page already holds it through the same owner. A dedicated
-     * import worker would therefore be refused the pool, so writes go to the owner as well
-     * (plan/backend-worker.md).
      * @template [TParams=import('core').SerializableObject]
      * @template [TResponseRaw=unknown]
      * @template [TResponse=unknown]
@@ -98,17 +76,25 @@ export class DictionaryWorker {
      * @param {?(result: TResponseRaw) => TResponse} formatResult
      * @returns {Promise<TResponse>}
      */
-    async _invokeOnOwner(action, params, transfer, onProgress, formatResult) {
-        const client = new DatabaseOwnerClient();
-        client.connect();
+    async _invoke(action, params, transfer, onProgress, formatResult) {
+        // The SQLite backend's OPFS pool takes a single connection, held by the background's worker
+        // for its whole life. This worker needs that pool, so the background lets go for the duration
+        // (plan/backend-worker.md). The import stays in its own worker because the archive has to
+        // arrive as a transferable, which extension messaging cannot carry.
+        if (!USE_SQLITE_BACKEND) {
+            return await this._invokeWorker(action, params, transfer, onProgress, formatResult);
+        }
+        const api = new API(new WebExtension(), null, null);
+        await api.suspendDatabase();
         try {
-            const raw = await client.invoke(action, /** @type {import('core').SafeAny} */ (params), onProgress, transfer);
-            // With no formatter the owner's value *is* the result, as it is on the worker path.
-            if (formatResult === null) { return /** @type {TResponse} */ (raw); }
-            return formatResult(/** @type {TResponseRaw} */ (raw));
+            return await this._invokeWorker(action, params, transfer, onProgress, formatResult);
         } finally {
-            // Detach this caller only; the owner stays up for the pages still using it.
-            client.disconnect();
+            // Always hand the database back, including when the import failed part-way.
+            try {
+                await api.resumeDatabase();
+            } catch (e) {
+                log.error(e);
+            }
         }
     }
 
@@ -122,7 +108,7 @@ export class DictionaryWorker {
      * @param {?(arg: import('core').SafeAny) => void} onProgress
      * @param {?(result: TResponseRaw) => TResponse} formatResult
      */
-    _invoke(action, params, transfer, onProgress, formatResult) {
+    _invokeWorker(action, params, transfer, onProgress, formatResult) {
         return new Promise((resolve, reject) => {
             const worker = new Worker('/js/dictionary/dictionary-worker-main.js', {type: 'module'});
             /** @type {import('dictionary-worker').InvokeDetails<TResponseRaw, TResponse>} */

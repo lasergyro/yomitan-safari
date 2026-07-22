@@ -18,16 +18,30 @@
 import {ExtensionError} from '../../core/extension-error.js';
 
 /**
+ * How long to wait for the owning worker to acknowledge `prepare` before giving up.
+ *
+ * Deliberately generous: it covers loading the sqlite3 WASM *and* acquiring the OPFS SAH-Pool, and
+ * the pool is not released the instant its previous holder is terminated — the extension pays that
+ * same handoff when it resumes after an import. Still finite, so a worker that never starts at all
+ * surfaces as an error rather than hanging every caller behind it forever.
+ */
+const PREPARE_TIMEOUT_MS = 45000;
+
+/**
  * Client side of the database-owner RPC (plan/backend-worker.md).
  *
- * Every context that cannot hold the OPFS connection itself — the background page that reads, the
- * settings-side import — talks to the one SharedWorker that can, through this. It is shared rather
- * than reimplemented per caller so that the correlation and progress-streaming rules live in one
- * place.
+ * The background page cannot hold the OPFS connection itself — sync access handles are Worker-only —
+ * so it spawns the worker that can and drives it through this. The correlation and
+ * progress-streaming rules live here rather than in the backend so the backend's public methods stay
+ * one-line forwards.
+ *
+ * A **dedicated** worker, not a SharedWorker: SharedWorker constructs but never connects in Safari
+ * web-extension pages, which is what made the background hang forever on `prepare()`
+ * (plan/backend-worker.md → RETRACTED).
  */
 export class DatabaseOwnerClient {
     constructor() {
-        /** @type {?import('dictionary-database-sqlite').WorkerLink} */
+        /** @type {?Worker} */
         this._link = null;
         /** @type {number} */
         this._invocationId = 0;
@@ -41,20 +55,20 @@ export class DatabaseOwnerClient {
     }
 
     /**
-     * Connects to the SharedWorker that owns the database, starting it if this is the first client.
+     * Spawns the worker that owns the database.
      *
-     * A **Shared**Worker is what makes "exactly one connection" structural: the SAH-Pool admits a
-     * single connection, and one worker instance per (origin, script) means the background page and
-     * the settings page reach the same owner instead of racing for the pool.
+     * Exactly one of these may exist at a time: the SAH-Pool admits a single connection, and the pool
+     * holds its OPFS handles for the worker's whole life (closing the database does not give them
+     * back — only terminating the worker does, which is what `disconnect()` is for).
      * @returns {void}
      */
     connect() {
         if (this._link !== null) { return; }
-        const worker = new SharedWorker(new URL('dictionary-database-shared-worker.js', import.meta.url), {type: 'module'});
-        const port = worker.port;
-        port.addEventListener('message', this._onMessage.bind(this));
-        port.start();
-        this._link = port;
+        // Resolved against this module rather than as a server-absolute path, so the same code works
+        // both in the extension (/js/…) and under the test server, which serves the tree at /ext/js/….
+        const worker = new Worker(new URL('../dictionary-database-worker-main.js', import.meta.url), {type: 'module'});
+        worker.addEventListener('message', this._onMessage.bind(this));
+        this._link = worker;
     }
 
     /**
@@ -73,24 +87,49 @@ export class DatabaseOwnerClient {
         if (link === null) { throw new Error('Not connected to the database owner'); }
         return new Promise((resolve, reject) => {
             const id = ++this._invocationId;
-            this._invocations.set(id, {resolve, reject, onProgress});
+            // Bound the handshake only. A worker that never answers must not wedge the caller
+            // forever: a silently dead owner is precisely how the SharedWorker attempt failed — the
+            // background hung on `prepare()` and every extension API call queued behind it, with
+            // nothing in the log to say why (plan/backend-worker.md → RETRACTED). The other actions
+            // are deliberately untimed, because `finalizeImport` legitimately runs for minutes.
+            const timer = action !== 'prepare' ?
+null :
+setTimeout(() => {
+    if (!this._invocations.delete(id)) { return; }
+    reject(new Error(`The dictionary database worker did not respond to "${action}" within ${PREPARE_TIMEOUT_MS}ms`));
+}, PREPARE_TIMEOUT_MS);
+            const settle = {
+                /** @param {any} value */
+                resolve: (value) => {
+                    if (timer !== null) { clearTimeout(timer); }
+                    resolve(value);
+                },
+                /** @param {Error} reason */
+                reject: (reason) => {
+                    if (timer !== null) { clearTimeout(timer); }
+                    reject(reason);
+                },
+                onProgress,
+            };
+            this._invocations.set(id, settle);
             try {
                 link.postMessage({id, action, params}, transfer);
             } catch (e) {
                 this._invocations.delete(id);
-                reject(e instanceof Error ? e : new Error(`${e}`));
+                settle.reject(e instanceof Error ? e : new Error(`${e}`));
             }
         });
     }
 
     /**
-     * Detaches this client. The owner is shared, so its database is deliberately left open for the
-     * other clients; the SharedWorker itself goes away once every client has disconnected.
+     * Terminates the owner, which is the only way to give the SAH-Pool's OPFS handles back — a plain
+     * database close leaves the pool holding them for the worker's lifetime. The import runs in its
+     * own worker and needs the pool, so this is what lets it in.
      * @returns {void}
      */
     disconnect() {
         if (this._link === null) { return; }
-        this._link.close();
+        this._link.terminate();
         this._link = null;
         for (const {reject} of this._invocations.values()) {
             reject(new Error('Database owner connection closed'));

@@ -17,8 +17,8 @@
 
 // Runs in the harness **page** — a Window, not a worker — which is the context the real extension's
 // background page runs in, and the one that could not hold the database at all: OPFS sync access
-// handles are Worker-only, so `DictionaryDatabaseSqlite` here must go into *proxy* mode and reach
-// the SharedWorker that owns the connection (plan/backend-worker.md).
+// handles are Worker-only, so `DictionaryDatabaseSqlite` here must go into *proxy* mode and drive
+// the dedicated worker that owns the connection (plan/backend-worker.md).
 //
 // worker.js covers the owner side. These checks cover the seam that bug lived in, which neither
 // vitest (node, in-memory) nor worker.js (already inside a worker) can see.
@@ -65,12 +65,16 @@ export async function runPageChecks() {
     });
 
     // Constructed exactly as createDictionaryDatabase() does. In a Window with nothing injected this
-    // must select proxy mode and connect to the SharedWorker owner.
+    // must select proxy mode and spawn the owning worker.
     const db = new DictionaryDatabaseSqlite(new DeflatePayloadCodec());
 
-    await check('page prepare() proxies to the SharedWorker owner', async () => {
+    await check('page prepare() proxies to the worker that owns the connection', async () => {
+        const start = Date.now();
         await db.prepare();
         if (!db.isPrepared()) { throw new Error('backend did not report prepared'); }
+        // Worth reporting: this covers the previous owner releasing the SAH-Pool, which is the same
+        // handoff the extension pays on suspend/resume around an import.
+        return `owner ready in ${Date.now() - start} ms`;
     });
 
     if (!db.isPrepared()) { return checks; }
@@ -108,18 +112,6 @@ export async function runPageChecks() {
         const info = await db.getDictionaryInfo();
         if (info.length !== 1 || info[0].title !== dictionaryName) {
             throw new Error(`unexpected dictionary info: ${JSON.stringify(info.map((x) => x.title))}`);
-        }
-    });
-
-    await check('a second page-side client shares the one owner', async () => {
-        const second = new DictionaryDatabaseSqlite(new DeflatePayloadCodec());
-        await second.prepare();
-        try {
-            // If this saw a different connection, the SAH-Pool would have refused it outright.
-            const info = await second.getDictionaryInfo();
-            if (info.length !== 1) { throw new Error(`second client saw ${info.length} dictionaries`); }
-        } finally {
-            second.close();
         }
     });
 
