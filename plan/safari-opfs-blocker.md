@@ -67,9 +67,9 @@ the scheme. The way in is the background page's own console:
    Inspector on the background page. Beware: AX reports _stale, duplicated_ positions for the
    repeated "Personal" rows in that submenu, so clicking `menu item i` lands on the wrong extension.
    Derive the row's y from the first row's y plus the uniform 24 pt row pitch and `click at {x, y}`.
-2. In that console, evaluate `chrome.tabs.create({url:'settings.html'})`. **Paste** it (via `pbcopy`
-   - ⌘V) rather than `keystroke` it — the console auto-closes brackets and quotes and mangles typed
-     input.
+2. In that console, evaluate `chrome.tabs.create({url:'settings.html'})`. **Paste** it (`pbcopy`,
+   then ⌘V) rather than `keystroke` it — the console auto-closes brackets and quotes, which mangles
+   typed input.
 3. That tab's URL carries the current origin UUID, and AppleScript `do JavaScript … in <tab>` can
    now drive it normally.
 
