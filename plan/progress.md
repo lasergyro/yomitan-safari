@@ -371,6 +371,23 @@ the extension unusable.
 
 ## Watch-outs (still live)
 
+- **Safari never grants `navigator.storage.persist()`** — and it is not a manifest problem.
+  `unlimitedStorage` **is** declared and present in the installed Safari manifest, `persist` **is**
+  a function, and it still resolves **`false`** — measured both on an extension page and on a plain
+  `127.0.0.1` page, so it is WebKit-wide, not extension-specific. Safari implements the API surface
+  but does not implement the persistence _grant_; it manages eviction with its own policy. Practical
+  consequences: the settings "Persistent storage" toggle is **inert on Safari** (its
+  `_isPersistentStorageSupported()` only checks that the method exists, so it renders a control that
+  can never switch on), and `requestPersistentStorage()` is a no-op there. Do not reach for it to fix
+  storage loss.
+- **The extension's origin UUID is not stable.** Observed `8BFC98A7…` → `B218D162…` → `6CE251D0…`
+  across rebuilds, and `6CE251D0…` → `6DA54F26…` across a **restart with no rebuild**. OPFS _and_
+  IndexedDB are keyed by origin, so every rotation strands the imported dictionary under an origin
+  nothing can reach — it is orphaning, not eviction, and no amount of persistence would prevent it.
+  Whether the rotation is caused by the restart itself or is a delayed effect of the preceding
+  rebuild is **not yet settled**, and it decides whether the OPFS backend is shippable at all: a
+  rebuild-only rotation is a dev papercut, a per-restart rotation is a hard blocker.
+
 - **sqlite3 must be a singleton.** `installOpfsSAHPoolVfs` caches its pool per VFS name _inside one
   sqlite3 instance_, and the pool holds exclusive OPFS sync access handles. A second
   `sqlite3InitModule()` call builds an independent runtime that cannot acquire them →
