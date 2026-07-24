@@ -13,12 +13,14 @@ Two clusters. Read across them, not down the old timeline.
 
 **What it is (the plan):**
 
-| File                                   | What it holds                                                                               |
-| -------------------------------------- | ------------------------------------------------------------------------------------------- |
-| [design.md](design.md)                 | Current architecture: schema, codec, inflection synthesis, queries                          |
-| [pseudocode.md](pseudocode.md)         | The whole scheme end to end, as pseudocode                                                  |
-| [backend-worker.md](backend-worker.md) | **Stage 5 blocker + fix**: the backend must run in a worker, not the Safari background page |
-| [progress.md](progress.md)             | What's built, what's left (the Stage 5 gate), watch-outs, file map                          |
+| File                                             | What it holds                                                                                 |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| [design.md](design.md)                           | Current architecture: schema, codec, inflection synthesis, queries                            |
+| [pseudocode.md](pseudocode.md)                   | The whole scheme end to end, as pseudocode                                                    |
+| [backend-worker.md](backend-worker.md)           | **Stage 5 blocker + fix**: the backend must run in a worker, not the Safari background page   |
+| [safari-opfs-blocker.md](safari-opfs-blocker.md) | **Current blocker**: Safari rotates the extension origin every launch, so OPFS cannot persist |
+| [safari-idb-snapshot.md](safari-idb-snapshot.md) | The fix for it, designed but not built: an IndexedDB snapshot owns the database file          |
+| [progress.md](progress.md)                       | What's built, what's left (the Stage 5 gate), watch-outs, file map                            |
 
 **Why it is that way (the record):**
 
@@ -38,18 +40,22 @@ Two clusters. Read across them, not down the old timeline.
 - **Inflection synthesis is implemented** (schema v4/v5): rules are induced at import, derivable
   form-of rows are dropped, and `findTermsBulk` synthesizes them on lookup — 947,070 → 293,262 rows,
   verified against the source ZIP (0 lost, 0 invented over 41,921 forms).
-- **The flag `USE_SQLITE_BACKEND` is `false`** (`ext/js/dictionary/dictionary-backend-config.js`), so
-  the IndexedDB path is still the only live one and nothing user-visible has changed.
-- **Stage 5 is in progress, and is now BLOCKED on a newly found bug.** Done: the importer calls
-  `finalizeImport()` (item 3), the SAH-Pool grows for large DBs (item 6), and the settings-page
-  migration UX is built and proven against WebKit's IndexedDB (item 2). But **extension-origin
-  verification (item 1) ran against the real installed extension and found that the SQLite backend
-  cannot open OPFS in the Safari background page** (sync access handles are Worker-only): the import
-  succeeds but no lookup can read it back. The fix — run the backend in one dedicated DB worker with
-  the background page proxying to it — is designed in [backend-worker.md](backend-worker.md) and
-  **must land before the flag can flip**.
-- **What still gates flipping it:** the backend-in-a-worker fix, then re-running item 1, then the flag
-  flip and removing the IndexedDB path. Full checklist in [progress.md](progress.md) → Stage 5.
+- **The flag `USE_SQLITE_BACKEND` is `true`** (`ext/js/dictionary/dictionary-backend-config.js`), and
+  the whole path is verified in the installed extension: import, lookup, and inflection synthesis at
+  `safari-web-extension://`.
+- **The backend-in-a-worker blocker is fixed** — a dedicated worker owns the one OPFS connection and
+  the background page proxies to it; imports suspend it ([backend-worker.md](backend-worker.md)).
+- **Stage 5 is BLOCKED on storage durability.** Safari regenerates the extension's origin UUID on
+  **every launch**, and OPFS is partitioned by origin, so an imported dictionary is stranded on every
+  restart — while IndexedDB and `localStorage` survive. Measured and settled in
+  [safari-opfs-blocker.md](safari-opfs-blocker.md). The engine, schema, codec and importer are all
+  fine; only _where the bytes live_ is wrong.
+- **The fix is designed, not built:** an IndexedDB snapshot owns the database file and is restored
+  into a cold OPFS pool at open — [safari-idb-snapshot.md](safari-idb-snapshot.md). Two measurements
+  gate it (whether WebKit reclaims the per-launch orphaned OPFS copies, and the real restore cost).
+- **What still gates the refactor:** that fix, then a restart-survival check at the extension origin,
+  then removing the IndexedDB path and the flag. Full checklist in [progress.md](progress.md) →
+  Stage 5.
 
 ## The numbers, once
 

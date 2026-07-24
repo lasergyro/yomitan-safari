@@ -268,14 +268,18 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
 ## Stage 5 — item 1 PASSES; the flag is now ON ([backend-worker.md](backend-worker.md))
 
 Extension-origin verification (item 1) found that the SQLite backend cannot open OPFS in the Safari
-background page (sync access handles are Worker-only). **Fixed**: the backend now runs in a
-**SharedWorker** that owns the single OPFS connection, and page contexts proxy to it;
-`DictionaryWorker`'s import/delete/counts route to that same owner, so the pool is never opened twice.
-`npm run test:safari` covers both sides of the seam — **24/24**, including a page-side client doing
-`getDictionaryInfo` (the call that failed in the extension) and two page clients sharing one owner.
-**Remaining before the flag can flip:** confirm a `SharedWorker` can be constructed under the
-extension's CSP, which needs a rebuild with the flag on and a Yomitan page opened by hand. Items 2, 3,
-6 are done; the codec and measurement are decided.
+background page (sync access handles are Worker-only). **Fixed**: a **dedicated** worker owns the
+single OPFS connection and page contexts proxy to it; imports keep their own worker and the
+background lets go for the duration via `suspendDatabase`/`resumeDatabase`. (A SharedWorker hub was
+built first and **retracted** — it constructs but never connects in Safari web-extension pages; see
+[backend-worker.md](backend-worker.md) → RETRACTED.) `npm run test:safari` covers both sides of the
+seam — **23/23** — and the flag is now on and verified in the installed extension.
+
+**A second, larger blocker then surfaced: the imported dictionary does not survive a Safari
+restart.** Safari regenerates the extension's origin UUID on every launch and OPFS is partitioned by
+origin — [safari-opfs-blocker.md](safari-opfs-blocker.md). The fix is designed but not built:
+[safari-idb-snapshot.md](safari-idb-snapshot.md). Items 2, 3, 6 are done; the codec and measurement
+are decided.
 
 1. **Extension-origin verification — RAN, and it found a blocker.** `npm run test:safari` covers the
    engine (OPFS, the vendored WASM, the whole backend) but runs on `127.0.0.1`, not

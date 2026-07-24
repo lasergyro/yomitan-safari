@@ -386,3 +386,21 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     costs ~136s of the ~152s import and buys 2.15×. Unzip is 1.7s and `JSON.parse` 1.5s — the file
     handling is free, and the SQL inserts are ~15s. Any future "the import is slow" work starts at
     the deflate level, not at the schema. — _recorded._
+
+## Safari storage durability
+
+38. **The dictionary lives in OPFS but is _owned_ by an IndexedDB snapshot.** — Safari regenerates
+    the extension's origin UUID on every launch (deliberate anti-fingerprinting), and OPFS is
+    partitioned by origin, so an imported dictionary is stranded on every restart; IndexedDB,
+    `localStorage` and `chrome.storage.local` are not. Measured over three consecutive launches with
+    no rebuild between them — see [safari-opfs-blocker.md](safari-opfs-blocker.md). Since SQLite's
+    VFS interface is synchronous and OPFS sync access handles are the only synchronous durable
+    storage in a browser, the choices were: pay Asyncify on every query (a block VFS over IndexedDB),
+    pay grow-only wasm memory proportional to total dictionary size (`:memory:`), or pay one
+    full-file copy per launch. The last is the only one whose cost is flat in dictionary count and
+    paid once per launch, and it is the only one that leaves the schema, codec, importer, inflection
+    synthesis and worker topology untouched. The SAH-Pool already exposes `exportFile` /
+    `importDbChunked`, so no new dependency is involved. Design in
+    [safari-idb-snapshot.md](safari-idb-snapshot.md). — _designed, not built. Two numbers gate it:
+    whether WebKit ever reclaims the per-launch orphaned OPFS copies, and what the restore actually
+    costs on the real 49.4 MB file._
