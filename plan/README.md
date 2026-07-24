@@ -5,7 +5,8 @@ a per-row deflate-compressed payload, and inflection rules induced from each dic
 form-of rows can be dropped and synthesized on lookup. Branch: **`safari-refactor`**.
 
 **Measured result: ~700 MB of IndexedDB → 49.4 MB** on the real `kty-de-en`, through the real
-importer. The flag is still off, so the extension still runs the IndexedDB backend — see Stage 5.
+importer. The flag is on and the whole path works in the installed extension — but the database does
+not survive a Safari restart, which is the open blocker. See Stage 5.
 
 ## Read order
 
