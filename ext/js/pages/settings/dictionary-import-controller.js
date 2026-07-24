@@ -554,7 +554,7 @@ export class DictionaryImportController {
 
             // A compiled database is the *whole* store, not one dictionary added to it, so
             // installing several in a row would mean each silently discarding the last. Compile
-            // them into one file instead: `npm run compile:dictionary a.zip b.zip --out …`.
+            // them into one file instead: `npm run compile:dictionary -- a.zip b.zip --out …`.
             if (importProgressTracker.dictionaryCount > 1) {
                 throw new Error('Select a single dictionary database. A compiled database replaces the whole store, so several archives have to be compiled into one file.');
             }

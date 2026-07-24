@@ -19,7 +19,7 @@
  * Measures dictionary storage against the **real** `kty-de-en`, the dictionary the whole storage
  * refactor is sized around. The unit tests can only use the tiny fixture dictionary, and synthetic
  * corpora predict real ratios badly, so this is the only honest source of numbers. It is also what
- * found the 75 ms full table scan on every lookup (see plan/progress.md → "Query plans").
+ * found the 75 ms full table scan on every lookup (see plan/history/README.md → "Query plans").
  *
  * Usage:
  *   npm run measure:storage                 # payload codec ratios + decode cost

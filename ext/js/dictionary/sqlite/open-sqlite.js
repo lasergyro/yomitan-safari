@@ -26,7 +26,7 @@ import {createDictionarySchema} from './dictionary-sqlite-schema.js';
  * - `vfs: 'native'` — the Safari app extension. `sqlite3` is a Swift binding over the system
  *   libsqlite3 and `path` is a real file in the app container. This is the shipping path; it exists
  *   because Safari rotates the extension origin on every launch, so nothing origin-partitioned can
- *   hold a dictionary (plan/safari-opfs-blocker.md).
+ *   hold a dictionary (plan/history/safari-opfs-blocker.md).
  * - `vfs: 'memory'` — node tests, against `:memory:`.
  * - `vfs: 'memory'` with a `path` — the build-time dictionary compiler, which writes a real file
  *   through the `@sqlite.org/sqlite-wasm` node build.

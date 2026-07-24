@@ -4,7 +4,7 @@
 //
 //  Where the dictionary database lives, and how a compiled one gets there.
 //
-//  This file is the whole answer to plan/safari-opfs-blocker.md. Safari regenerates the extension's
+//  This file is the whole answer to plan/history/safari-opfs-blocker.md. Safari regenerates the extension's
 //  `safari-web-extension://<UUID>` origin on every launch, and OPFS is partitioned by origin, so an
 //  imported dictionary was stranded on every restart. The app container is keyed by bundle
 //  identifier, which does not rotate — so the file simply stays where it was put.
@@ -151,7 +151,8 @@ final class DictionaryInstaller {
         }
     }
 
-    /// Mirrors `DICTIONARY_SQLITE_SCHEMA_VERSION`. `test/native-host-shims.test.js` asserts the JS
-    /// constant matches this literal so the two cannot drift silently.
+    /// Mirrors `DICTIONARY_SQLITE_SCHEMA_VERSION`. `test/native-host-shims.test.js` reads this
+    /// literal out of the source and asserts it matches, so the two cannot drift silently -- a bump
+    /// that missed this line would leave the installer rejecting every valid database.
     static let expectedSchemaVersion = 5
 }

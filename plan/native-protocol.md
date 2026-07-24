@@ -41,8 +41,8 @@ Two kinds of action, and the split is deliberate:
 
 ## Addressing the host
 
-The only browser-specific part of the whole bridge, isolated in
-[`ext/js/native/native-host-ids.js`](../ext/js/native/native-host-ids.js).
+The only browser-specific part of the engine bridge, and the one module a second host's client has to
+care about: [`ext/js/native/native-host-ids.js`](../ext/js/native/native-host-ids.js).
 
 | Browser              | How the host is named                                                                                                                                               |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -60,6 +60,20 @@ failed call on the first lookup of a session:
 A Linux/Windows installer writes a manifest whose `"name"` is exactly that constant, for example to
 `~/.mozilla/native-messaging-hosts/dev.yomitan.engine.json`. **Changing the constant orphans every
 installed host**, so treat it as permanent.
+
+### `ankiRequest` addresses the host separately
+
+`ankiRequest` is in the host-action table below because it is served by the same handler, but its
+client is not `NativeEngineClient`: [`ext/js/comm/anki-connect.js`](../ext/js/comm/anki-connect.js)
+predates the engine and builds its own candidate list, with the **same** bundle-id derivation and a
+**different** last resort — the legacy `yomitan_anki` registered name, not
+`REGISTERED_NATIVE_HOST_NAME`. [`build-safari.sh`](../build-safari.sh) then rewrites that array at
+build time with the concrete bundle ids, so the `--bundle-identifier` flag reaches it.
+
+The two lists are deliberately not merged — an upstream user with a `yomitan_anki` host registered
+would lose it — but the derivation is duplicated, and a second host implementing `ankiRequest` has to
+satisfy both paths. Treat `native-host-ids.js` as authoritative for the engine and this paragraph as
+the note that Anki is the exception.
 
 ---
 
@@ -165,7 +179,7 @@ Binary in the other direction (installing a database) is base64 too, chunked —
 | `installChunk`  | `chunk`        | `{ok, bytesWritten}`                                     | `chunk` is base64.                                                       |
 | `installCommit` | —              | `{ok, databaseBytes}`                                    | Validates, then replaces the live database.                              |
 | `installAbort`  | —              | `{ok}`                                                   | Discards the staging file. Idempotent.                                   |
-| `ankiRequest`   | `url`, …       | `{status, responseText}`                                 | Loopback-only HTTP proxy. Predates the engine; unrelated to it.          |
+| `ankiRequest`   | `url`, …       | `{status, responseText}`                                 | Loopback-only HTTP proxy. Predates the engine; addressed separately.     |
 | `ping`          | `echoBytes`, … | `{ok, receivedBytes, nativeTimestampMs, payload}`        | The latency probe. Inert unless called.                                  |
 
 ### Install requirements
@@ -260,8 +274,11 @@ Stated so nobody adds them by reflex:
   (`npm run compile:dictionary`), and a host installs a finished file. There is deliberately no
   action that hands an archive across the bridge — the importer, the trained-codec handshake and the
   ~152 s of deflate stay off every user's machine. See [decisions.md](decisions.md) #50.
-- **No push, no server-initiated messages.** Safari cannot, so nothing may depend on it. Long
-  operations poll.
+- **No push, no server-initiated messages.** Safari cannot, so nothing may depend on it. A long
+  operation is therefore driven by the client, one call at a time — which is what the install
+  actions are. **Nothing polls today**, and a `jobId`/`jobStatus` polling API was designed and then
+  dropped in favour of that ([native-rewrite.md](native-rewrite.md) → The protocol); if some future
+  operation cannot be split into client-driven calls, polling is the fallback, not the pattern.
 - **No assumption about maximum message size.** Never measured; chunk anything unbounded.
 - **`maxResults` truncation stays in the extension.** It is a display preference, and the engine's
   answer should not depend on a setting it has no other reason to know.
@@ -275,5 +292,8 @@ Stated so nobody adds them by reflex:
 - **Changing an encoding** means changing `native-protocol.js`, which both ends import — that is the
   point of it being one module.
 - **Changing the schema version** means `DICTIONARY_SQLITE_SCHEMA_VERSION`, the mirror in each host's
-  installer, and recompiling every published database. `test/native-host-shims.test.js` pins the JS
-  constant to the Swift literal so the two cannot drift silently.
+  installer, and recompiling every published database. A host cannot import the JS constant, so every
+  host mirrors it as a literal and a bump that misses one leaves that host rejecting every valid
+  database. `test/native-host-shims.test.js` reads
+  `DictionaryStore.expectedSchemaVersion` out of the Swift source and asserts it matches — **a second
+  host must add its own check there**, because nothing else in the suite can see a host's literal.

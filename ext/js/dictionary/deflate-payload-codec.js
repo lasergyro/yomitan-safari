@@ -21,22 +21,6 @@ import {parseJson} from '../core/json.js';
  * @typedef {import('payload-codec').PayloadCodec} PayloadCodec
  */
 
-/** @type {?Promise<import('pako')>} */
-let vendoredPakoPromise = null;
-
-/**
- * Loads the vendored browser build, memoized. Only reached when nothing is injected (the extension
- * path); the dynamic import keeps pako out of the module graph when the SQLite backend is not
- * selected.
- * @returns {Promise<import('pako')>}
- */
-function loadVendoredPako() {
-    if (vendoredPakoPromise === null) {
-        vendoredPakoPromise = import('../../lib/pako.js');
-    }
-    return vendoredPakoPromise;
-}
-
 /**
  * The shipped compressing codec (plan/decisions.md #8, #26): raw DEFLATE via pako with a 32 KB
  * preset dictionary built from a sample of the dictionary's own payloads. Pure JS (no WASM), and the
@@ -44,19 +28,27 @@ function loadVendoredPako() {
  * preset dictionary. Measured on the real `kty-de-en`: 3.55x on the payload, ~150 MB total database
  * against ~700 MB of IndexedDB.
  *
- * pako is injected (node tests pass the `pako` package); with nothing injected, `prepare()` loads the
- * vendored `ext/lib/pako.js` — the extension path, mirroring how sqlite3 is injected
- * (plan/decisions.md #10).
+ * **pako is injected, always** — mirroring how sqlite3 is injected (plan/decisions.md #10). The
+ * engine bundle, the dictionary compiler, `measure-storage` and the tests all pass the module in.
+ * There used to be a fallback that dynamically imported a vendored `ext/lib/pako.js` when nothing
+ * was injected; it was the extension path before the engine moved native, and after the move no
+ * caller took it while esbuild still resolved the import statically and bundled a second copy of
+ * pako into `yomitan-core.js`. Both the fallback and the vendoring are gone.
  * @implements {PayloadCodec}
  */
 export class DeflatePayloadCodec {
     /**
-     * @param {?import('pako')} [pako] The pako module (needs `deflateRaw`/`inflateRaw`). Omitted, the
-     *   vendored build is loaded on `prepare()`.
+     * @param {import('pako')} pako The pako module, which must provide `deflateRaw`/`inflateRaw`.
      * @param {{level?: number, dictionarySampleBytes?: number}} [options]
+     * @throws {Error} When `pako` is missing or is not a usable module. `encode`/`decode` are
+     *   synchronous by interface contract and sit inside sqlite's transaction paths, so there is no
+     *   later moment at which this could be resolved — failing here beats failing per row.
      */
-    constructor(pako = null, {level = 6, dictionarySampleBytes = 32768} = {}) {
-        /** @type {?import('pako')} */
+    constructor(pako, {level = 6, dictionarySampleBytes = 32768} = {}) {
+        if (typeof pako?.deflateRaw !== 'function' || typeof pako.inflateRaw !== 'function') {
+            throw new Error('DeflatePayloadCodec requires the pako module to be injected');
+        }
+        /** @type {import('pako')} */
         this._pako = pako;
         /** @type {number} */
         this._level = level;
@@ -71,16 +63,6 @@ export class DeflatePayloadCodec {
     /** @returns {import('dictionary-database').PayloadCodecName} */
     get name() {
         return 'deflate';
-    }
-
-    /**
-     * Loads the vendored pako when none was injected. Idempotent. `encode`/`decode` are synchronous
-     * by interface contract, so the module has to be resolved before the first row is touched;
-     * `DictionaryDatabaseSqlite.prepare()` awaits this for every registered codec.
-     * @returns {Promise<void>}
-     */
-    async prepare() {
-        if (this._pako === null) { this._pako = await loadVendoredPako(); }
     }
 
     /**
@@ -119,7 +101,7 @@ export class DeflatePayloadCodec {
      */
     encode(payload, dictionary) {
         const bytes = this._encoder.encode(JSON.stringify(payload));
-        return this._require().deflateRaw(bytes, this._deflateOptions(dictionary));
+        return this._pako.deflateRaw(bytes, this._deflateOptions(dictionary));
     }
 
     /**
@@ -128,20 +110,9 @@ export class DeflatePayloadCodec {
      * @returns {unknown[]}
      */
     decode(blob, dictionary) {
-        const bytes = this._require().inflateRaw(blob, this._inflateOptions(dictionary));
+        const bytes = this._pako.inflateRaw(blob, this._inflateOptions(dictionary));
         const parsed = parseJson(this._decoder.decode(bytes));
         return Array.isArray(parsed) ? parsed : [];
-    }
-
-    /**
-     * @returns {import('pako')}
-     * @throws {Error} If `prepare()` has not completed.
-     */
-    _require() {
-        if (this._pako === null) {
-            throw new Error('DeflatePayloadCodec is not prepared; await prepare() before encode/decode');
-        }
-        return this._pako;
     }
 
     /**

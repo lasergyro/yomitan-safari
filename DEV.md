@@ -3,7 +3,7 @@
 > **Heads-up on direction.** The dictionary engine no longer runs in the extension — it runs in the
 > Safari app extension, in JavaScriptCore, over system `libsqlite3`. See
 > [native/README.md](native/README.md), [plan/native-rewrite.md](plan/native-rewrite.md), and
-> [plan/safari-opfs-blocker.md](plan/safari-opfs-blocker.md) for why. The OPFS notes below are kept
+> [plan/history/safari-opfs-blocker.md](plan/history/safari-opfs-blocker.md) for why. The OPFS notes below are kept
 > for the secure-context facts, which still matter for anything else that wants OPFS.
 
 ## Measuring dictionary storage for real
@@ -15,9 +15,16 @@ npm run measure:storage -- --db    # ...plus a true SQLite database size and per
 
 Downloads the real `kty-de-en` (~24 MB, checksum-pinned, cached in the gitignored `dictionaries/`).
 Worth knowing before optimising anything: the fixture dictionary and synthetic corpora predict real
-ratios badly, and this script is what found the 75 ms full table scan on every lookup. Current
-numbers: **~150 MB** total with deflate, of which **78.1 MB is indexes + row overhead that no codec
-touches**. See [plan/history/zstd.md](plan/history/zstd.md).
+ratios badly, and this script is what found the 75 ms full table scan on every lookup.
+
+**Do not read this script's totals as the shipped database size.** It mirrors the importer's packing
+rather than running it, so its figures are terms-only and understated, and it measures the database
+_before_ the inflection drop: it reports **~150 MB** with deflate, of which **78.1 MB is indexes +
+row overhead that no codec touches**. What actually ships is **49.4 MB**, measured through the real
+`DictionaryImporter` — the table in
+[plan/README.md](plan/README.md#the-numbers-once) is the one to quote. Why the harness understates:
+[plan/decisions.md](plan/decisions.md) #35. Why compression was the wrong lever:
+[plan/history/zstd.md](plan/history/zstd.md).
 
 Note that this script's `rest` column is **not** "indexes" — it is indexes _plus_ the terms table's
 own non-payload bytes, and it is not stable across codecs (page fill differs). For a real per-index
@@ -27,9 +34,12 @@ breakdown use `dbstat`, which is compiled into `@sqlite.org/sqlite-wasm`:
 SELECT name, sum(pgsize) FROM dbstat GROUP BY name ORDER BY 2 DESC;
 ```
 
-[plan/history/sizing.md](plan/history/sizing.md) has the full bottom-up budget — including that 26.5 MB
-of the index is degenerate and droppable, and that 90% of `kty-de-en`'s rows are inflected-form stubs
-costing 60.5 MB of the 71.5 MB payload.
+[plan/history/sizing.md](plan/history/sizing.md) has the full bottom-up budget — including that 90%
+of `kty-de-en`'s rows are inflected-form stubs costing 60.5 MB of the 71.5 MB payload, which is what
+the inflection scheme went after. It also reports 26.5 MB of degenerate index; **~8.5 MB of that was
+fiction** — the partial predicate it assumed excluded no rows, because the importer rewrites an empty
+reading to the expression ([plan/decisions.md](plan/decisions.md) #35). What shipped instead is
+`reading <> expression` (#36), which does empty the index on a German dictionary.
 
 `--db` runs the real importer headless in node, which is where
 [dev/bin/compile-dictionary.js](dev/bin/compile-dictionary.js) came from. That script is now the
@@ -60,10 +70,15 @@ Two things that will otherwise cost an afternoon:
   Run it after touching anything under `ext/js/native/`, `ext/js/dictionary/sqlite/`, or
   `native/Sources/`.
 
+`rebuild-safari.sh` updates the installed bundle **in place** rather than replacing it, because
+removing the app makes Safari treat the extension as uninstalled — which drops its enablement and
+host permissions, both of which are manual to restore (see below). It does not put the dictionary at
+risk either way: that lives in the app container, keyed by bundle id, not in the extension's website
+data.
+
 There used to be a `npm run test:safari` here, which ran the OPFS backend in real Safari over a
 loopback server. It went with the OPFS backend. What replaces it is `test:jsc` for the engine, plus
-driving the installed extension over the background-page console for a true end-to-end check — the
-recipe is in [plan/safari-opfs-blocker.md](plan/safari-opfs-blocker.md#reproducing-it).
+the manual end-to-end check below.
 
 ### Driving the installed extension
 
@@ -75,10 +90,25 @@ below) and you can synthesize a scan and read back whether Yomitan's popup
 `safari-web-extension://<UUID>/…`, which also _discovers the extension origin at runtime_, so the
 extension's own `search.html` can then be driven for a clean lookup.
 
+The other way to a driveable page at the extension origin, when no page has been scanned yet, is the
+background page's own console. It is the only way in from cold, because `open -a Safari
+"safari-web-extension://…"` is rejected by LaunchServices and AppleScript's `set URL of tab` refuses
+the scheme:
+
+1. **Develop → Web Extension Background Content → Yomitan → Personal** opens a Web Inspector on the
+   background page. Beware: AX reports _stale, duplicated_ positions for the repeated "Personal" rows
+   in that submenu, so clicking `menu item i` lands on the wrong extension. Derive the row's y from
+   the first row's y plus the uniform 24 pt row pitch and `click at {x, y}`.
+2. In that console, evaluate `chrome.tabs.create({url:'search.html'})`. **Paste** it (`pbcopy`, then
+   ⌘V) rather than `keystroke` it — the console auto-closes brackets and quotes, which mangles typed
+   input.
+3. That tab's URL carries the current origin UUID, and `do JavaScript … in <tab>` can drive it
+   normally from there.
+
 The residual manual gate is not the automation — it is **Apple's security model**: the extension has
 to be _enabled and granted host permission_ in Safari Settings → Extensions once (a deliberate
-manual step; do not synthesize those clicks). Both persist — `rebuild-safari.sh` deliberately updates
-the bundle in place so Safari keeps the extension registered and does not purge its stored data.
+manual step; do not synthesize those clicks). Both survive a rebuild, which is why
+`rebuild-safari.sh` updates the bundle in place.
 
 One-time enablement, if `do JavaScript` returns nothing: **Develop → Developer Settings… → Allow
 JavaScript from Apple Events** must be on (Safari's prefs are sandboxed, so `defaults write
@@ -89,6 +119,24 @@ Why not the obvious alternatives for browser automation: **`safaridriver`** (Web
 macOS) has **no headless mode** — every session opens a focus-stealing automation window; and
 **Playwright's `webkit`** is genuinely headless but is a WebKit build from trunk, not the Safari your
 users run. Fine for engine smoke tests; not evidence about Safari itself.
+
+### Checking the installed extension end to end
+
+vitest and `test:jsc` both run the engine **outside Safari**, so neither can see the extension talking
+to its own app extension. This is the only check that covers that seam. It is manual on purpose — a
+single lookup after a change to the bridge, not something worth a runner.
+
+Get a driveable `search.html` at the extension origin by either route above. Then, with `kty-de-en`
+installed, put an **inflected** form into `#search-textbox`, click `#search-button`, and read back the
+entry headwords: **`geschützt` must yield `schützen`.**
+
+That one lookup covers the whole seam — the host answers under the bundle id `native-host-ids.js`
+derives, the database read is the one in the app container, the translator ran natively, and, because
+`geschützt`'s own row is dropped at compile time and rebuilt from the induced rules, inflection
+synthesis survived the round trip. **The failure shape to watch for is an empty result with no
+error**, not an exception: the encoders in `native-protocol.js` exist precisely because a `Map`, `Set`
+or `RegExp` that reaches `JSON.stringify` unencoded stringifies to `{}`, and the lookup then quietly
+returns nothing.
 
 ## Automated Safari inspection (macOS)
 

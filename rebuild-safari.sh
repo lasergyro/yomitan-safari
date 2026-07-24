@@ -15,8 +15,12 @@ BUILT_APP="$DERIVED/Build/Products/Release/Yomitan Safari.app"
 INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 APP="$INSTALL_DIR/Yomitan Safari.app"
 
-# 1. Rebuild the JS/extension bundle and regenerate the web extension + Xcode project.
-# Build only the safari variant; the default `npm run build` builds every browser target.
+# 1. Regenerate the web extension + Xcode project.
+#
+# The build.js run is here for its side effect, not its output: it runs buildLibs(), which
+# regenerates the gitignored ext/lib/*. build-safari.sh then deletes the directory build.js wrote
+# and rebuilds it from ext/ with its own manifest step, so the bundle below is the one that ships.
+# `--target safari` because the default `npm run build` builds every browser target.
 npm run build -- --target safari
 "$ROOT_DIR/build-safari.sh" --version "$VERSION"
 
@@ -34,10 +38,13 @@ xcodebuild \
 # 3. Install into a stable location so the app doesn't depend on the build folder.
 #
 # Update the bundle IN PLACE rather than `rm -rf` + `cp`. Removing the installed
-# app makes Safari treat the extension as UNINSTALLED, and Safari purges the
-# extension's website data (IndexedDB) on uninstall -- which discards imported
-# dictionaries on every rebuild. Syncing into the existing bundle keeps the
-# extension registered, so Safari treats it as an update and preserves the data.
+# app makes Safari treat the extension as UNINSTALLED: it drops the extension's
+# enablement and host permissions (both manual to restore -- Apple does not let
+# them be scripted) and purges its website data. Syncing into the existing bundle
+# keeps the extension registered, so Safari treats it as an update.
+#
+# The dictionary is NOT what this protects, since the native move: it lives in
+# the app container, keyed by bundle id, not in the extension's website data.
 #
 # Safari must not be running while the bundle it has loaded is swapped, otherwise
 # it can observe a partially-updated app and re-register (also purging data). Quit

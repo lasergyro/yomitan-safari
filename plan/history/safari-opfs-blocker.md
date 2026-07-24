@@ -1,8 +1,11 @@
-# OPFS is not durable in a Safari web extension
+# OPFS is not durable in a Safari web extension — HISTORY
 
-Status: **settled by measurement, 2026-07-22.** This invalidates the storage half of the SQLite
-migration on the Safari target. The SQLite engine, schema, importer, codec and inflection synthesis
-are all unaffected — only the question of _where the database bytes live_.
+Status: **settled by measurement, 2026-07-22**, and acted on. This is the finding that killed
+in-browser storage on the Safari target and sent the engine into the native app; it is kept as the
+evidence, not as a live problem. **Nothing in the tree stores anything in OPFS any more** — the
+database lives in the app container ([../native-rewrite.md](../native-rewrite.md)), so none of the
+constraints below bind. What survives it is the SQLite engine itself: schema, importer, codec and
+inflection synthesis were never affected, only the question of _where the database bytes live_.
 
 ## The symptom
 
@@ -21,7 +24,7 @@ reload after a restart for exactly this reason.
 OPFS is partitioned per origin. A rotating origin therefore means a fresh, empty OPFS on every
 launch, with the previous one left behind unreachable. This is **orphaning, not eviction**: no
 storage-persistence grant would prevent it (and Safari never grants one anyway — see the watch-out
-in [progress.md](progress.md)).
+in [README.md](README.md#the-progress-log)).
 
 ## The measurement
 
@@ -56,22 +59,11 @@ delete them. A user who imports once and restarts ten times leaks ten copies.
 
 ### Reproducing it
 
-Everything below is scriptable; no security-relevant clicks are involved (do **not** synthesize the
-host-permission or extension-enable grants — see [DEV.md](../DEV.md)).
-
-Getting a page at the extension origin is the only awkward part, because `open -a Safari
-"safari-web-extension://…"` is rejected by LaunchServices and AppleScript's `set URL of tab` refuses
-the scheme. The way in is the background page's own console:
-
-1. **Develop → Web Extension Background Content → Yomitan Popup Dictionary → Personal** opens a Web
-   Inspector on the background page. Beware: AX reports _stale, duplicated_ positions for the
-   repeated "Personal" rows in that submenu, so clicking `menu item i` lands on the wrong extension.
-   Derive the row's y from the first row's y plus the uniform 24 pt row pitch and `click at {x, y}`.
-2. In that console, evaluate `chrome.tabs.create({url:'settings.html'})`. **Paste** it (`pbcopy`,
-   then ⌘V) rather than `keystroke` it — the console auto-closes brackets and quotes, which mangles
-   typed input.
-3. That tab's URL carries the current origin UUID, and AppleScript `do JavaScript … in <tab>` can
-   now drive it normally.
+Everything here is scriptable; no security-relevant clicks are involved (do **not** synthesize the
+host-permission or extension-enable grants). Getting a driveable page at the rotating extension
+origin is the awkward part, and that recipe outlived this document — it is a live dev tool, so it
+lives in [DEV.md](../../DEV.md) → Driving the installed extension. Read the origin UUID off the URL
+of the tab it gives you.
 
 ## What this rules out
 
@@ -83,6 +75,8 @@ the scheme. The way in is the background page's own console:
 
 ## Options for the storage layer
 
+_What follows was the decision at the time. **It was not what happened** — see below._
+
 **Decided: an IndexedDB snapshot owns the file, with OPFS kept as the working copy.** Designed in
 [safari-idb-snapshot.md](safari-idb-snapshot.md), which also records why the alternatives lost — a
 block VFS over IndexedDB charges an Asyncify tax on every query forever, `:memory:` charges grow-only
@@ -90,3 +84,13 @@ wasm memory proportional to total dictionary size, and native-container storage 
 `nativeMessaging` relocates the durable copy without removing the OPFS working copy, so it solves
 nothing IndexedDB does not already solve more cheaply. See that doc's fallback ladder for what
 happens if the per-launch orphaned OPFS copies turn out never to be reclaimed.
+
+## What actually happened
+
+The snapshot was never built. Measuring the native bridge
+([../native-engine-probe.md](../native-engine-probe.md)) reopened the option this page had dismissed
+in one line: native storage looked pointless because it "does not remove the OPFS working copy" — but
+that assumed the engine stayed in the browser. Moving the **engine** native removes the working copy
+along with everything else, and the bridge turned out to cost ~1 ms rather than the order of
+magnitude more that had been assumed. See [../native-rewrite.md](../native-rewrite.md), and
+[../decisions.md](../decisions.md) #38–#39 for the turn.

@@ -60,22 +60,24 @@ Derived:
 
 ## How to re-run it
 
-The `ping` action lives in the Swift handler template embedded in
-[build-safari.sh](../build-safari.sh) (**not** in the generated
-`builds/yomitan-safari-app/…/SafariWebExtensionHandler.swift`, which
-`safari-web-extension-converter --force` overwrites on every build). It is inert unless called.
+The `ping` action lives in
+[native/Sources/YomitanNative/SafariWebExtensionHandler.swift](../native/Sources/YomitanNative/SafariWebExtensionHandler.swift),
+which `build-safari.sh` copies into the generated Xcode project. It is inert unless called. Edit it
+there and nowhere else — `builds/yomitan-safari-app/…` is regenerated with
+`safari-web-extension-converter --force` on every build. (When this probe was first run the handler
+was a template embedded in `build-safari.sh`; the sources moved into `native/` with the engine.)
 
 The probe script itself is not committed — it is ~90 lines of throwaway JS. To rebuild it: call
 `chrome.runtime.sendNativeMessage(appId, {action: 'ping', payload, echoBytes})` in a loop, where
-`appId` is `chrome.runtime.id` with the trailing ` (TEAMID)` stripped, exactly as
-[anki-connect.js](../ext/js/comm/anki-connect.js) derives it. Safari may return a promise _and_ call
-the callback, so handle both. Warm up once before timing, and report medians rather than means — the
-distribution is tight but the first call is not representative.
+`appId` is the first entry of `getNativeHostCandidates()` from
+[native-host-ids.js](../ext/js/native/native-host-ids.js) — `chrome.runtime.id` with the trailing
+` (TEAMID)` stripped. Safari may return a promise _and_ call the callback, so handle both. Warm up
+once before timing, and report medians rather than means — the distribution is tight but the first
+call is not representative.
 
-Run it from the background page's console, reached via Develop → Web Extension Background Content →
-Yomitan → Personal. The full recipe for driving that console from the shell, including the
-stale-AX-position trap in that submenu, is in
-[safari-opfs-blocker.md](safari-opfs-blocker.md#reproducing-it).
+Run it from the background page's console. The full recipe for reaching and driving that console from
+the shell, including the stale-AX-position trap in the Develop submenu, is in
+[DEV.md](../DEV.md) → Driving the installed extension.
 
 ## Where this leaves the native-engine option
 

@@ -48,8 +48,9 @@ const defaultOutFile = path.join(repoRoot, 'native/Resources/yomitan-core.js');
 function parseArguments(argv) {
     let outFile = defaultOutFile;
     // Minified by default so that the bundle the equivalence gate exercises is byte-identical to
-    // the one that ships. It is also worth ~6 ms of the app extension's cold start (48 ms -> 42 ms
-    // for a 1.3 MB bundle), which is paid every time the process is reclaimed.
+    // the one that ships. It also buys back a few ms of the app extension's cold start, which is
+    // paid every time the process is reclaimed. Sizes and timings: plan/README.md -> The numbers,
+    // once (kept there so a re-measure has one place to land).
     let minify = true;
     let metafile = false;
     for (let i = 0; i < argv.length; ++i) {

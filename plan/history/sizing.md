@@ -40,7 +40,7 @@ with `dbstat` (`SELECT name, sum(pgsize) FROM dbstat GROUP BY name`), same impor
 
 So the old `rest` of 78.1 MB = **49.5 MB of indexes + 28.5 MB of table row overhead**. The two
 reconcile exactly, which is what makes the split trustworthy. Fix applied to
-[../README.md](../README.md), [../progress.md](../progress.md), [zstd.md](zstd.md)
+[../README.md](../README.md), [README.md](README.md#the-progress-log), [zstd.md](zstd.md)
 and `DEV.md`.
 
 `rest` is also not a stable quantity — it is 91.2 MB under identity and 78.1 MB under deflate for the

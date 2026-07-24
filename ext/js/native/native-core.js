@@ -28,7 +28,7 @@ import {decodeDictionarySet, decodeFindKanjiOptions, decodeFindTermsOptions, enc
  * route C in plan/native-rewrite.md is that the engine is re-hosted rather than rewritten. What
  * changes is underneath it: `sqlite3` is a native binding over the system `libsqlite3` instead of a
  * WASM build over an OPFS SAH-Pool, and the file lives in the app container, where Safari's
- * per-launch origin rotation cannot strand it (plan/safari-opfs-blocker.md).
+ * per-launch origin rotation cannot strand it (plan/history/safari-opfs-blocker.md).
  *
  * Everything above the handle interface is untouched, which is why the vitest suites for the
  * backend, the codec and the inflection synthesis keep their value: they test this code.
@@ -40,17 +40,18 @@ import {decodeDictionarySet, decodeFindKanjiOptions, decodeFindTermsOptions, enc
 export class NativeCore {
     /**
      * @param {import('native-bridge').NativeHost} host The platform surface the Swift side installs.
-     * @param {{pako?: import('pako'), databasePath?: string}} [options] `pako` is injected rather
-     *   than dynamically imported so the bundler resolves it statically — JavaScriptCore has no
-     *   module loader, so a live `import()` at runtime would have nothing to load from.
+     * @param {{pako: import('pako'), databasePath?: string}} options `pako` is injected rather than
+     *   dynamically imported so the bundler resolves it statically — JavaScriptCore has no module
+     *   loader, so a live `import()` at runtime would have nothing to load from. It is required:
+     *   the codec has no fallback and throws without it.
      */
-    constructor(host, {pako, databasePath} = {}) {
+    constructor(host, {pako, databasePath}) {
         /** @type {import('native-bridge').NativeHost} */
         this._host = host;
         /** @type {?string} */
         this._databasePath = typeof databasePath === 'string' ? databasePath : null;
         /** @type {DictionaryDatabaseSqlite} */
-        this._database = new DictionaryDatabaseSqlite(new DeflatePayloadCodec(pako ?? null));
+        this._database = new DictionaryDatabaseSqlite(new DeflatePayloadCodec(pako));
         /**
          * The translator, running here rather than in the extension (plan/native-rewrite.md, stage
          * N3). Deinflection, result assembly and every query it issues now happen on this side of

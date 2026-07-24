@@ -1,13 +1,13 @@
 # Design: move the engine into the native app; the extension becomes display and UI
 
-**Status: stages N0–N3 and most of N5 are built.** The engine — storage, queries, the codec,
+**Status: stages N0–N3 and N5 are built.** The engine — storage, queries, the codec,
 inflection synthesis **and the translator** — runs in the Safari app extension, in JavaScriptCore,
 over the system `libsqlite3`, reading a database in the app container. The app builds and signs, and
 `npm run test:jsc` proves the native host answers identically to node on the same compiled database,
 including full deinflected lookups. Stage N4 (options, Anki, audio) and N6 (iOS) remain — see
 [Staging](#staging) for exactly what is done.
 
-Supersedes [safari-idb-snapshot.md](safari-idb-snapshot.md), which was never built and is now
+Supersedes [safari-idb-snapshot.md](history/safari-idb-snapshot.md), which was never built and is now
 abandoned rather than held as a fallback: the OPFS storage layer it patched no longer exists in the
 extension.
 
@@ -15,7 +15,7 @@ extension.
 with display and UI.
 
 **Why this is now on the table:** the storage blocker
-([safari-opfs-blocker.md](safari-opfs-blocker.md)) has no good in-browser answer, and the bridge
+([safari-opfs-blocker.md](history/safari-opfs-blocker.md)) has no good in-browser answer, and the bridge
 turned out to be cheap — ~1 ms fixed, ~60 MB/s ([native-engine-probe.md](native-engine-probe.md)).
 Moving the engine native makes the origin rotation, OPFS, the orphan leak, the per-launch copy, the
 wasm heap and the single-connection worker dance all disappear at once, rather than trading one for
@@ -143,33 +143,27 @@ later.
 
 ## The protocol
 
-**Transport:** one-shot request/response over `sendNativeMessage`. There is **no `connectNative`** in
-Safari, so there is no server push and no long-lived port. Everything is a call.
+**The contract is [native-protocol.md](native-protocol.md), and it is the only place it is written
+down.** Actions, envelope, encodings, install and what a second host must implement all live there;
+`npm run test:jsc` is its executable form. This section keeps only the four constraints that shaped
+the staging below.
 
-**Envelope**, mirroring the existing internal API shape so the shim stays thin:
+1. **One-shot, no push.** Safari has no `connectNative`, so there is no port and no server-side
+   progress streaming. Everything is a call, and nothing may depend on a port.
+2. **Concurrency.** The handler may be invoked for overlapping requests, so engine access is
+   serialized on one queue — a `JSContext` is not re-entrant and the connection is opened `NOMUTEX`.
+3. **Payload sizes.** 4 MB round-trips fine (68 ms); the hard cap was never measured.
+4. **Serialization shape.** The probe timed a flat ASCII string, and a property list of nested rows
+   with BLOBs might have behaved differently.
 
-```
-→  {action: string, params: object}
-←  {result: any}  |  {error: {message, stack?, data?}}
-```
+Constraints 3 and 4 were the two open questions at the start; what they turned into is **Stage N0**
+below.
 
-**Consequences to design around:**
-
-1. **No push ⇒ long operations need job polling.** A dictionary install returns a `jobId`; the UI
-   polls `jobStatus(jobId)` for progress. This replaces today's worker `onProgress` streaming.
-2. **Concurrency.** The handler may be invoked for overlapping requests. SQLite access must be
-   serialized on a dedicated queue (native SQLite is not the single-connection trap SAH-Pool was, but
-   one writer at a time is still the sane model).
-3. **Payload sizes.** 4 MB round-trips fine (68 ms). The hard cap is **unknown — find it early**, and
-   chunk anything that could exceed it (dictionary media, large result sets).
-4. **Serialization shape is unproven.** The probe used a flat ASCII string. Real traffic is nested
-   objects with binary BLOBs, needing base64 (+33%) or `Data`. **Re-measure with a realistic result
-   set before locking the protocol** — this is probe caveat #1 and it is the biggest remaining
-   unknown in the design.
-
-**First-cut action list:** `termsFind`, `kanjiFind`, `termsFindDetails`, `getDictionaryInfo`,
-`getMedia`, `optionsGet`, `optionsSet`, `dictionaryList`, `dictionaryInstall`, `dictionaryDelete`,
-`jobStatus`, `ankiRequest` (exists), `audioFetch`.
+Two things this section used to specify that were **designed away rather than built**, recorded so
+nobody looks for them: a `jobId`/`jobStatus` polling API for long operations (installs are
+`installBegin`/`installChunk`/`installCommit`/`installAbort` instead, driven by the client), and an
+in-bridge dictionary-install action taking an archive ([decisions.md](decisions.md) #50 — archives
+are consumed on the build side and never cross the wire).
 
 ---
 
@@ -202,18 +196,25 @@ for the pre-generated path.
 
 This is the part that removes the most complexity, and it is what makes the whole direction worth it.
 
-**Compile at build time, not in the browser.** A node tool takes a Yomitan dictionary `.zip` and
-emits a finished `.sqlite3` — schema, compressed payloads, trained codec dictionary, induced
-inflection rules, dropped derivable rows, `ANALYZE`, `VACUUM`. This tool **already substantially
-exists**: `npm run measure:storage -- --db` runs the real importer headless in node to produce a real
-database. It needs promoting from a measurement script to a supported build artifact.
+**Compile at build time, not in the browser. BUILT.** A node tool takes a Yomitan dictionary `.zip`
+and emits a finished `.sqlite3` — schema, compressed payloads, trained codec dictionary, induced
+inflection rules, dropped derivable rows, `ANALYZE`, `VACUUM`. It is
+[`dev/bin/compile-dictionary.js`](../dev/bin/compile-dictionary.js) (`npm run compile:dictionary`),
+which drives the real `DictionaryImporter` headless in node against SQLite-WASM.
+
+_The plan originally said this "already substantially exists" as `npm run measure:storage -- --db`.
+It did not: `measure-storage.js` mirrors `DictionaryImporter._packTermEntry` rather than running the
+importer, which is exactly the terms-only harness whose figures [history/README.md](history/README.md#the-progress-log) retracted
+under [decisions.md](decisions.md) #35. It remains a codec/size measurement tool; the compiler is a
+separate, real one._
 
 **Ship or serve.** Either bundled in the app's `Resources` or downloaded and verified (hash +
-schema-version check) into the container.
+schema-version check) into the container. _Neither is built — a user compiles their own `.zip` and
+installs it from the settings page ([decisions.md](decisions.md) #50)._
 
 **Install** is then a file copy plus a schema-version check, not a 152-second import.
 
-**What this deletes from the Safari target:**
+**What this deleted from the Safari target** (all done, stage N5):
 
 - the in-browser importer and its worker,
 - `suspendDatabase`/`resumeDatabase` and the whole OPFS single-connection handoff,
@@ -241,19 +242,23 @@ migration.
 
 The strategy has to survive the core moving hosts. Four layers:
 
-1. **vitest, unchanged.** The core is the same JS, so the existing SQLite-backend, codec, inflection
-   and translator tests keep running in node against `:memory:`. This is the main reason route C
-   beats route A — route A would have thrown this coverage away.
-2. **JSC equivalence harness.** Run the _bundled_ core inside a `JSContext` against a fixture
-   database and assert identical results to the vitest run. This catches bundling breakage, missing
-   shims, and any JSC/V8 behavioral divergence. **This is the new gate and should exist from stage 1.**
+1. **vitest, unchanged. DONE.** The core is the same JS, so the existing SQLite-backend, codec,
+   inflection and translator tests keep running in node against `:memory:`. This is the main reason
+   route C beats route A — route A would have thrown this coverage away.
+2. **JSC equivalence harness. DONE** — `npm run test:jsc`, 21/21. Runs the _bundled_ core inside a
+   `JSContext` against the same compiled database node reads and requires identical results. This
+   catches bundling breakage, missing shims, and any JSC/V8 behavioral divergence. It grew one job
+   the plan did not foresee: it is also the executable form of
+   [native-protocol.md](native-protocol.md).
 3. **XCTest** for the Swift layer: message routing, the SQLite binding, job lifecycle, error
-   mapping, chunking.
-4. **Extension-origin protocol test.** `npm run test:safari` loses its purpose (there is no OPFS
-   backend to prove), and is replaced by driving the installed extension over the console channel
-   from [safari-opfs-blocker.md](safari-opfs-blocker.md#reproducing-it) — assert a real `termsFind`
-   round-trips natively and returns the synthesized `schützen` for `geschützt`, the same end-to-end
-   proof used today.
+   mapping, chunking. _Not built._ What exists instead is `test:jsc` driving the real host end to
+   end, plus `test/native-host-shims.test.js`, which pins the schema version the Swift installer
+   validates against.
+4. **Extension-origin protocol test.** _Not built as a script._ `npm run test:safari` lost its
+   purpose (there is no OPFS backend to prove) and was deleted with it. What replaces it is a manual
+   check against the installed extension: **[DEV.md](../DEV.md) → The native engine → Checking the
+   installed extension end to end**, which is the only place that recipe is written down. It is the
+   one thing neither vitest nor `test:jsc` can see, because both run the engine outside Safari.
 
 ---
 
@@ -269,10 +274,12 @@ Each stage lands independently and leaves the extension working. **Do not big-ba
 - _Size cap._ Still unmeasured, and now handled by construction: the only payload that could
   plausibly approach it is a database install, which is chunked at 3 MB (#45). Worth measuring if a
   result set ever grows unbounded.
-- _JSC cold start._ **8–10 ms** on macOS for context creation + parsing the 379 KiB bundle + opening
-  the database. Comfortably inside a hover budget even from cold, which is what makes "engine in the
-  appex" viable without a long-lived process. Reported by `NativeEngineHost.startupMilliseconds` and
-  printed by the harness's `--startup`.
+- _JSC cold start._ **8–10 ms** on macOS at the time — context creation + parsing the then-379 KiB
+  bundle + opening the database. Comfortably inside a hover budget even from cold, which is what
+  makes "engine in the appex" viable without a long-lived process. It has since grown with the
+  translator ([README.md](README.md#the-numbers-once)) and is still inside that budget. Reported by
+  `NativeEngineHost.startupMilliseconds`; the harness prints it with `--startup`, which needs a
+  `--request` alongside it because the engine starts lazily.
 
 **Stage N1 — protocol skeleton. DONE.** Swift message router, error mapping, the JS-side client
 shim (`NativeEngineClient`), and the `{action, params}` → `{result} | {error}` envelope.
@@ -292,16 +299,19 @@ objects, all three of which `JSON.stringify` turns into `{}` **silently** — a 
 nothing rather than fail. `encodeFindTermsOptions` in `native-protocol.js` handles them, and the
 equivalence gate passes a real `textReplacements` pattern so the rebuild path is exercised.
 
-Cost: the bundle grew from 379 KiB to 1.3 MB (616 KiB minified) because the language modules came
-with it, and cold start went from 8–10 ms to **~42 ms**. Paid once per app-extension process, which
-stays warm between calls on macOS. The bundle is minified by default so the artifact the gate tests
-is the one that ships.
+Cost: the language modules came with it, roughly tripling the bundle and taking cold start from
+single-digit to tens of milliseconds — sizes and timings in
+[README.md](README.md#the-numbers-once). Paid once per app-extension process, which stays warm
+between calls on macOS. The bundle is minified by default so the artifact the gate tests is the one
+that ships.
 
 **Stage N4 — services.** _Remaining._ Options, Anki and audio still run in the extension.
 
 **Stage N5 — delete. DONE.** The OPFS backend, the owner worker, the suspend/resume API, the
-migration UX, `USE_SQLITE_BACKEND`, **the IndexedDB backend**, the Chrome offscreen document and the
-in-browser importer are all gone. One backend remains.
+migration UX, `USE_SQLITE_BACKEND`, **the IndexedDB backend**, the Chrome offscreen document, the
+real-Safari test runner and the in-browser import path are all gone. One backend remains.
+(`dictionary-importer.js` stays as a build-time module for `npm run compile:dictionary`; nothing in
+the extension imports it.)
 
 **Stage N6 — iOS**, if wanted: drop `--macos-only`, and confront JSC-without-JIT and appex memory on
 device.
@@ -321,11 +331,13 @@ threaded through `dictionary-controller.js`, which is its own change.
 
 ## Relationship to the snapshot plan
 
-[safari-idb-snapshot.md](safari-idb-snapshot.md) is **abandoned.** It was the fallback if N0 raised a
+[safari-idb-snapshot.md](history/safari-idb-snapshot.md) is **abandoned.** It was the fallback if N0 raised a
 red flag — a punitive size cap, a slow cold start, no App Group on a free team. N0 raised none: cold
-start is 8–10 ms, the size question is answered by chunking, and the App Group question does not
-arise until the standalone app does. The layer it patched (OPFS storage inside the extension) has
-since been deleted, so it is kept as a record of the reasoning, not as a plan.
+start has grown with the translator but stays comfortably inside a hover budget
+([README.md](README.md#the-numbers-once)); the size question is answered by chunking; and the App
+Group question does not arise until the standalone app does. The layer it patched (OPFS storage
+inside the extension) has since been deleted, so it is kept as a record of the reasoning, not as a
+plan.
 
 ---
 

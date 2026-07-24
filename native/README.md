@@ -6,7 +6,7 @@ extension**, over the system `libsqlite3`, reading a database in the app contain
 **Why:** Safari regenerates the extension's `safari-web-extension://<UUID>` origin on **every
 launch**, and OPFS is partitioned by origin — so a dictionary imported into OPFS is stranded on
 every restart, and every launch leaks another copy. The app container is keyed by bundle identifier
-and does not rotate. See [../plan/safari-opfs-blocker.md](../plan/safari-opfs-blocker.md) for the
+and does not rotate. See [../plan/history/safari-opfs-blocker.md](../plan/history/safari-opfs-blocker.md) for the
 measurement that settled it, and [../plan/native-rewrite.md](../plan/native-rewrite.md) for the
 design.
 
@@ -36,7 +36,7 @@ directory that the protocol does not describe.
 | `Sources/YomitanNative/SafariWebExtensionHandler.swift` | The message router. Thin by design — the engine may move to a long-lived main-app process later. |
 | `Sources/YomitanNative/DictionaryStore.swift`           | Container paths, and the staged/validated install of a compiled database.                        |
 | `Tools/jsc-harness/`                                    | A CLI that runs the bundle in a real `JSContext`. The equivalence gate.                          |
-| `Resources/yomitan-core.js`                             | **Generated** (`npm run build:native-core`), gitignored. 616 KiB minified.                       |
+| `Resources/yomitan-core.js`                             | **Generated** (`npm run build:native-core`), gitignored. Minified by default.                    |
 
 ## The build
 
@@ -56,15 +56,17 @@ is regenerated on every build. Edit the sources here.
 there is no build-phase change to maintain.
 
 The bundle is **minified by default**, so that the artifact `npm run test:jsc` exercises is the one
-that ships — building it two different ways would defeat the point of the gate. It is also worth
-~6 ms of cold start, which is paid every time the app extension is reclaimed. `--no-minify` gives a
-readable bundle for debugging in the harness.
+that ships — building it two different ways would defeat the point of the gate. It also buys back
+cold start, which is paid every time the app extension is reclaimed
+([plan/README.md](../plan/README.md#the-numbers-once) has the sizes and timings; they are not
+repeated here). `--no-minify` gives a readable bundle for debugging in the harness.
 
 ## Testing
 
 ```sh
 npm run test:jsc          # the equivalence gate: node vs. JavaScriptCore, same compiled database
-npm test                  # vitest, including the host shims and the protocol encoders
+npm run test:unit         # vitest, including the host shims and the protocol encoders
+npm test                  # the whole gate (lint, types, vitest, build); test:jsc is NOT in it
 ```
 
 `test:jsc` builds the bundle, builds the harness with `swiftc`, compiles the fixture dictionary with
@@ -79,6 +81,12 @@ as a float.
 npm run compile:dictionary -- kty-de-en.zip --out dictionaries.sqlite3
 ```
 
-Then stream it into the container with `DictionaryDatabaseNative.installDatabase()`. The transfer is
-staged and the file's header and schema version are checked before the live database is replaced, so
-an interrupted install cannot leave the user without their dictionaries.
+Then stream it into the container with `DictionaryDatabaseNative.installDatabase()` — which is what
+the settings page's dictionary import does. The transfer is staged and the file's header and schema
+version are checked before the live database is replaced, so an interrupted install cannot leave the
+user without their dictionaries.
+
+The version it checks against is `DictionaryStore.expectedSchemaVersion`, a Swift literal mirroring
+`DICTIONARY_SQLITE_SCHEMA_VERSION` because a host cannot import the JS constant.
+`test/native-host-shims.test.js` reads the literal out of this source and asserts the two match: a
+schema bump that missed it would leave the installer rejecting every valid database.

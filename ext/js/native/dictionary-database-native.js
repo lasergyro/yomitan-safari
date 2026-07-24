@@ -53,8 +53,9 @@ export class DictionaryDatabaseNative {
     /**
      * Handshakes with the engine, which opens the database in the app container.
      *
-     * Takes no arguments, matching both other backends, so `createDictionaryDatabase()` callers keep
-     * doing `const db = createDictionaryDatabase(); await db.prepare();`.
+     * Takes no arguments, which is why `prepare` sits outside the `DictionaryDatabaseRead`/`Write`
+     * types (plan/decisions.md #46): opening is the one thing backends genuinely disagreed about,
+     * and only whoever constructed the object calls it.
      * @returns {Promise<void>}
      */
     async prepare() {

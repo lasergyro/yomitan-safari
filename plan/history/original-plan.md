@@ -20,7 +20,7 @@ Original framing follows, verbatim.
 The original correction block, kept as written:
 
 > **Note:** this document describes the _plan as originally written_. Where it and
-> [progress.md](../progress.md) disagree, progress wins — it records what was actually built.
+> [README.md](README.md#the-progress-log) disagree, progress wins — it records what was actually built.
 > Known drift: the staged plan in §9 is done through Stage 4 (the flag is still off); the zstd
 > codec of §8.2 has since been built and lives in [zstd.md](zstd.md); the size numbers in
 > §3/§4 are measurements from the _analysis_, not from a real import through the new backend.
@@ -37,7 +37,7 @@ The original correction block, kept as written:
 > - **§3's "`reading` values — 14.4 MB" is wrong: it is 0.** Every one of the 947,070 rows has
 >   `reading = ''` (readings are a Japanese concept; this is a German dictionary). The figure looks
 >   like the `expression` row duplicated. This is not cosmetic — that column's emptiness is what made
->   SQLite's planner full-scan on every lookup (see [progress.md](../progress.md) → "Query plans").
+>   SQLite's planner full-scan on every lookup (see [README.md](README.md#the-progress-log) → "Query plans").
 > - **§1's "~1.2 GB" baseline is unverified and looks too high.** It does not reconcile with this
 >   document's own breakdown — 356.8 MB value store + 100–150 MB of index B-trees ≈ **460–510 MB** —
 >   nor with the ~700 MB the app reports. Note the app's number is
@@ -432,7 +432,7 @@ connection; the main-thread `DictionaryDatabase` continues to proxy via
 
 > **Historical.** This is the plan as drafted. For what was actually built — Stages 0–4 are done,
 > Stage 5 is not, and zstd moved out to [zstd.md](zstd.md) — see
-> [progress.md](../progress.md), which is authoritative.
+> [README.md](README.md#the-progress-log), which is authoritative.
 
 Each stage ends green (lint + tsc + relevant tests). Use a feature flag
 (`useSqliteBackend`, off by default) so the IndexedDB path keeps working until parity is proven,

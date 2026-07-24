@@ -1,15 +1,15 @@
 # Design: run the SQLite backend in a worker (Stage 5 blocker) — RETIRED
 
-> **Retired to history.** This is built and working, and it is what the extension runs today, but the
-> whole mechanism exists to solve a problem the native direction deletes: it only matters while the
-> OPFS connection lives inside the browser. Once the engine moves into the native app
-> ([../native-rewrite.md](../native-rewrite.md) → stage N5), the owner worker, the background proxy
-> and the `suspendDatabase`/`resumeDatabase` handoff all go with it.
+> **Retired to history — none of this is in the tree.** It was built and working, and for a while it
+> was what the extension ran, but the whole mechanism existed to solve a problem the native direction
+> deletes: it only matters while the OPFS connection lives inside the browser. **Stage N5 has landed**
+> ([../native-rewrite.md](../native-rewrite.md)), and the owner worker, the background proxy and the
+> `suspendDatabase`/`resumeDatabase` handoff went with it. Everything below is written in the present
+> tense about code that no longer exists.
 >
-> Kept for two reasons: it documents code that is still live until N5 lands, and it holds Safari
-> findings that outlive it — **SharedWorker constructs but never connects in Safari web-extension
-> pages**, **a message posted to a worker with no listener yet is silently lost**, and
-> **`createSyncAccessHandle` is undefined outside a Worker**.
+> Kept for the Safari findings that outlive it — **SharedWorker constructs but never connects in
+> Safari web-extension pages**, **a message posted to a worker with no listener yet is silently
+> lost**, and **`createSyncAccessHandle` is undefined outside a Worker**.
 
 **Status: BUILT and VERIFIED AT THE EXTENSION ORIGIN.** A dedicated worker owns the connection, the
 background proxies to it, and imports suspend it. 23/23 in real Safari at `127.0.0.1`, and in the
@@ -29,7 +29,7 @@ is the fix for the bug that real-extension verification (Stage 5 item 1) surface
 Read this document in order: the bug and its root cause, then the constraint, then
 [RETRACTED](#retracted-sharedworker-does-not-work-in-safari-web-extension-pages) (the SharedWorker
 hub that failed at the extension origin), then
-[BUILT](#built-dedicated-worker--suspendresume-23-23-in-real-safari) for the shape that shipped.
+[BUILT](#built-dedicated-worker--suspendresume-2323-in-real-safari) for the shape that shipped.
 
 `npm run test:safari` covers **both sides** of the seam. `test/safari/page-checks.js` runs in the
 harness **page** — a Window, the same context the extension's background page is — and asserts:

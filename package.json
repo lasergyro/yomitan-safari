@@ -70,6 +70,7 @@
         "@eslint/eslintrc": "^3.2.0",
         "@eslint/js": "^9.17.0",
         "@playwright/test": "^1.49.1",
+        "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
         "@stylistic/eslint-plugin": "^2.12.1",
         "@stylistic/stylelint-plugin": "^3.1.1",
         "@types/assert": "^1.5.11",
@@ -117,7 +118,6 @@
     },
     "dependencies": {
         "@resvg/resvg-wasm": "^2.6.2",
-        "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
         "@zip.js/zip.js": "^2.7.54",
         "dexie": "^4.0.10",
         "dexie-export-import": "^4.1.4",

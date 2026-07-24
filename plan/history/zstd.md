@@ -16,7 +16,7 @@ compression was never going to reach the ~100 MB target anyway. (That 78.1 is 49
 The code is deleted rather than left dormant — it is in git history at **`58fe1f50`**
 (`ext/js/dictionary/zstd-payload-codec.js`, `dev/zstd/`, `types/ext/zstd.d.ts`), and the `codec`
 column keeps the decision reversible. The exercise still paid for itself: it found a **75 ms full
-table scan on every lookup** ([../progress.md](../progress.md) → "Query plans"), which mattered
+table scan on every lookup** ([README.md](README.md#the-progress-log) → "Query plans"), which mattered
 far more than any codec.
 
 It was meant to be the final compression step of the storage refactor — the codec plugged into the
@@ -248,7 +248,7 @@ magnitude below a 16 ms frame. **Decode speed is not a reason to choose either c
 
 What _did_ threaten the UI was a full table scan on every lookup — 75 ms — caused by the query
 planner, not compression. Measuring the real dictionary is what exposed it; see
-[../progress.md](../progress.md) → "Query plans".
+[README.md](README.md#the-progress-log) → "Query plans".
 
 ## RAM
 

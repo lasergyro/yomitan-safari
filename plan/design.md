@@ -5,21 +5,25 @@ schema, the codec, the inflection scheme, the query strategy. It describes the c
 how it was arrived at.
 
 > **Scope note.** The **schema, codec, inflection synthesis and query strategy below are current and
-> carry over unchanged** — they are the durable result of this refactor. What is changing underneath
-> them is _where the database lives and what hosts the engine_: OPFS in the extension is being
-> replaced by native SQLite in the app ([native-rewrite.md](native-rewrite.md)), because Safari
-> rotates the extension origin on every launch and OPFS cannot survive it
-> ([safari-opfs-blocker.md](safari-opfs-blocker.md)). Sections marked **▲ superseded** describe the
-> in-browser hosting that is on its way out; read them as the current code, not the plan.
+> carry over unchanged** — they are the durable result of this refactor. What changed underneath them
+> is _where the database lives and what hosts the engine_: OPFS in the extension **has been replaced**
+> by native SQLite in the app ([native-rewrite.md](native-rewrite.md)), because Safari rotates the
+> extension origin on every launch and OPFS cannot survive it
+> ([history/safari-opfs-blocker.md](history/safari-opfs-blocker.md)). See
+> [../native/README.md](../native/README.md) for what hosts the engine now, and
+> [history/README.md](history/README.md) for the in-browser hosting this document used to describe.
 
 - The step-by-step of the two hot paths (import, lookup) is [pseudocode.md](pseudocode.md).
-- _Why_ each choice was made, the dead ends, and the retracted measurements are the decision log
-  ([decisions.md](decisions.md)) and the evidence in [history/](history/zstd.md) — including the
-  feasibility spike and rejected architectures in [history/original-plan.md](history/original-plan.md).
-- What is built vs. what remains is [progress.md](progress.md).
+- _Why_ each choice was made is the decision log ([decisions.md](decisions.md)); the dead ends, the
+  retracted measurements and the evidence are [history/README.md](history/README.md).
+- What is built and what remains is [README.md](README.md) → Status.
 
 The public `DictionaryDatabase` API, the payload shape, and the callers (translator, importer,
-display) are unchanged — this is a storage swap behind the facade, selected by one flag.
+display) are unchanged — this is a storage swap behind the facade. It was selected by a flag while
+two backends existed; there is now one, and the API is a **type** rather than a class — the concrete
+`DictionaryDatabase` class is gone, and what callers are typed against is
+`DictionaryDatabaseRead` / `DictionaryDatabaseWrite` (`DictionaryDatabaseApi` is the two together)
+in `types/ext/dictionary-database.d.ts` ([decisions.md](decisions.md) #46).
 
 ---
 
@@ -37,34 +41,6 @@ that store with **SQLite**, keeping the same public API. Three things do the wor
 
 Measured on the recommended German dictionary `kty-de-en` through the real importer: **~700 MB of
 IndexedDB → 49.4 MB.**
-
----
-
-## Storage model ▲ superseded
-
-_Current code, not the plan — the engine is moving into the native app
-([native-rewrite.md](native-rewrite.md)), which replaces this whole section. The **injected-module
-seam** described here is what makes that swap tractable, so it is the part worth carrying forward._
-
-One SQLite database file on OPFS, opened with the **SAH-Pool VFS** (`installOpfsSAHPoolVfs` →
-`OpfsSAHPoolDb`). SAH-Pool is the VFS that works on Safari without COOP/COEP (no `SharedArrayBuffer`
-/ cross-origin isolation, which an extension cannot arrange). It is single-connection and
-**Worker-only** — sync access handles do not exist on the main thread — so a dedicated worker owns
-the connection and the background page proxies to it (retired design:
-[history/backend-worker.md](history/backend-worker.md)).
-
-`open-sqlite.js` (`openDictionaryDatabaseHandle`) is VFS-agnostic: `vfs:'opfs'` for the extension,
-`vfs:'memory'` for tests. The `sqlite3` module is **injected**, never imported inside backend code —
-the browser build (`ext/lib/sqlite3.js`) and the node build (`@sqlite.org/sqlite-wasm`) resolve
-differently, and the same opener serves both. The vendored module is loaded once and memoized: a
-second `sqlite3InitModule()` builds an independent runtime that cannot acquire the pool's exclusive
-OPFS handles. **That injection point is the seam the native SQLite binding substitutes at**, which is
-why the native work is a re-host rather than a rewrite.
-
-`DictionaryDatabaseSqlite.prepare()` is a drop-in for the IndexedDB `prepare()`: called with no
-arguments it self-loads the vendored build, opens the OPFS VFS, and calls
-`navigator.storage.persist()` — which **never grants on Safari** and is inert there
-([progress.md](progress.md) → Watch-outs). Tests inject `sqlite3` + `vfs:'memory'`.
 
 ---
 
@@ -132,13 +108,16 @@ randomly decodable. The seam is `PayloadCodec`:
 
 ```
 interface PayloadCodec {
-  readonly name: 'identity' | 'deflate' | 'zstd';
-  prepare?(): Promise<void>;                             // load a WASM/JS module (async); read paths never train
-  train(samples: Uint8Array[]): Promise<Uint8Array>;     // build a preset dictionary from sample payloads
+  readonly name: 'identity' | 'deflate';                    // PayloadCodecName; zstd went with #26
+  prepare?(): Promise<void>;                                // load a WASM/JS module (async); read paths never train
+  train(payloadSamples: unknown[][]): Promise<Uint8Array>;  // build a preset dictionary from sample payloads
   encode(payload: unknown[], dict: Uint8Array | null): Uint8Array;
   decode(blob: Uint8Array, dict: Uint8Array | null): unknown[];
 }
 ```
+
+The authority is [`types/ext/payload-codec.d.ts`](../types/ext/payload-codec.d.ts); the union lives in
+`types/ext/dictionary-database.d.ts` as `PayloadCodecName`.
 
 - **The shipped codec is `deflate`** (pako, raw DEFLATE + a 32 KB preset dictionary trained from the
   dictionary's own first batch). Pure JS, no WASM, ~3.55× on the payload. `identity` (JSON, no
@@ -223,57 +202,65 @@ Match semantics: `exact` → `expression = ?`; `prefix` → inclusive range `[te
 
 ---
 
-## Migration ▲ superseded
-
-_The native direction removes in-browser import entirely — dictionaries are compiled to SQLite at
-build time and installed as a file — so this legacy-IndexedDB migration path is scheduled for
-deletion, not completion ([native-rewrite.md](native-rewrite.md) → stage N5)._
-
-The backend uses a **new OPFS file** and does not read the old IndexedDB `dict`. It detects a
-non-empty legacy `dict`, has the user re-import, then `indexedDB.deleteDatabase('dict')` to reclaim
-the old storage. Helpers in `dictionary-storage-migration.js`
-(`legacyIndexedDbDictionaryExists`, `deleteLegacyIndexedDbDictionary`,
-`requestPersistentStorage`); the settings-page UX that drives them is
-`dictionary-storage-migration-controller.js`.
-
-This is a fork; upstream on-disk compatibility is a non-goal, and re-import (rather than a dual-format
-reader) is a deliberate choice.
-
----
-
-## Integration ▲ superseded
-
-_The dual-backend split and its flag are also scheduled for deletion — the native direction reaches
-Stage 5 item 7 by a different road ([native-rewrite.md](native-rewrite.md) → stage N5)._
-
-- **Selection lives in one factory** (`dictionary-database-factory.js`, `createDictionaryDatabase()`),
-  used by all three sites that construct the real database (`background/backend.js`,
-  `background/offscreen.js`, the DB worker handler). With `USE_SQLITE_BACKEND` off it returns exactly
-  `new DictionaryDatabase()` — no SQLite/WASM/pako is touched at runtime. The flag is currently
-  **on**.
-- **The SQLite backend is cast to `DictionaryDatabase`** at the factory/test seams; the two backends
-  share the public surface but are separate classes (a shared interface is a follow-up).
-- **Result builders** (`_createTerm`, `_createKanji`, …) mirror the IndexedDB backend's, sourcing
-  their fields from decoded payloads + columns, so callers see identical objects.
-
----
-
 ## Testing
 
 - **Node/vitest** is the backend test environment, `:memory:` VFS, in the **plain node env** (jsdom
   swaps the global typed-array constructors and breaks sqlite-wasm's heap views). Parity tests import
-  fixtures through the real importer and assert the SQLite backend matches the IndexedDB backend and
-  the canonical translator results, across `{identity, deflate}`.
-- **Real Safari** (`npm run test:safari`) runs the backend against the real vendored WASM in the
-  browser users actually run, driven by `open -g -a Safari` (no focus steal). It has caught two bugs
-  node could not: the singleton requirement, and handing a WASM-heap view to `TextDecoder`. _It is
-  tied to the in-browser WASM backend, so the native direction retires it in favour of an
-  extension-origin protocol test ([native-rewrite.md](native-rewrite.md) → Testing)._
+  fixtures through the real importer and assert the backend reproduces the canonical translator
+  results, across `{identity, deflate}`. (Until #46 they also compared against the IndexedDB backend,
+  which no longer exists.)
+- **The native host** (`npm run test:jsc`) answers the same requests through node and through the
+  real Swift host over system `libsqlite3`, against the same compiled database, and requires
+  identical replies ([native-protocol.md](native-protocol.md)). It replaced `npm run test:safari`,
+  which ran this backend against the vendored WASM in real Safari and was deleted with the
+  in-browser backend; the two bugs only it ever caught — the sqlite3 singleton requirement and
+  handing a WASM-heap view to `TextDecoder` — are recorded in
+  [history/README.md](history/README.md#watch-outs-that-no-longer-bind).
 - **Query-plan regression** (`dictionary-database-sqlite-query-plan.test.js`) runs
   `EXPLAIN QUERY PLAN` on the SQL the backend issues and asserts `SCAN terms` never appears — a class
   of bug correctness tests cannot catch, since results are identical either way.
 
-Full status, the file map, and the live watch-outs are in [progress.md](progress.md).
+---
+
+## Watch-outs
+
+Live traps, each one paid for once. The ones that stopped binding when the engine left the browser
+are in [history/README.md](history/README.md#watch-outs-that-no-longer-bind) — worth a glance before
+assuming a new host is uneventful.
+
+- **Safari's native-messaging bridge is cheap.** ~1 ms fixed per round trip, ~60 MB/s throughput,
+  symmetric and linear, measured against the installed extension
+  ([native-engine-probe.md](native-engine-probe.md)). Assume nothing worse without re-measuring; the
+  earlier assumption that it would be prohibitive was wrong by roughly an order of magnitude. Caveat:
+  that was a flat ASCII payload, not nested objects with BLOBs.
+- **Safari has no `connectNative`.** One-shot request/response only — no long-lived port, no server
+  push. Nothing may depend on being able to push.
+- **Safari never grants `navigator.storage.persist()`**, and it is not a manifest problem:
+  `unlimitedStorage` is declared and present in the installed manifest, `persist` is a function, and
+  it still resolves `false` — on an extension page and on a plain `127.0.0.1` page alike, so it is
+  WebKit-wide. The live consequence is in the UI: the settings **"Persistent storage" toggle is inert
+  on Safari**, because `_isPersistentStorageSupported()` only checks that the method exists, so it
+  renders a control that can never switch on.
+- **jsdom breaks sqlite-wasm.** vitest's jsdom setup swaps the global typed-array constructors
+  mid-test, breaking the WASM heap views (`jstrcpy() target must be an Int8Array or Uint8Array`). The
+  SQLite tests therefore run in the plain node env; findTerms/findKanji don't need the DOM. Node's
+  SQLite-WASM is what vitest and the node half of `test:jsc` run on.
+- **A dead dynamic import can still be bundled — check the metafile, not the call sites.** The
+  deflate codec kept an `import('../../lib/pako.js')` fallback for when nothing was injected. After
+  the engine moved native no caller took it, but esbuild resolves a literal dynamic import
+  statically, so `ext/lib/pako.js` went into `yomitan-core.js` **beside** the `node_modules` copy —
+  pako shipped twice in the artifact whose parse cost is paid on every cold start.
+  `build-native-core.js --metafile` is how it was found and how to check for the next one.
+- **`typedef` aliases of imported types resolve to `any` under typescript-eslint.** Reference types as
+  a **direct** `import('payload-codec').PayloadCodec`; a local `@typedef {import(...)} PayloadCodec`
+  alias type-checks under tsc but the type-aware lint rules see `any`. (`@implements` is the
+  exception — it cannot take an inline `import()`, so it needs the alias.)
+- **`dictionary_id` ordering**: insert the `dictionaries` row before its terms. FK enforcement is
+  currently OFF (no `PRAGMA foreign_keys=ON`).
+- **JSON round-trip quirk**: JSON turns `undefined` array elements into `null` on decode (e.g.
+  missing `termTags`). `_splitField` tolerates it.
+- **Suffix has no reverse column.** It filters in JS over the enabled dictionaries (full scan).
+  Acceptable because suffix is search-page-only (`*foo`), but revisit if it shows up hot.
 
 ---
 
@@ -282,13 +269,56 @@ Full status, the file map, and the live watch-outs are in [progress.md](progress
 Key files:
 
 - Backend: `ext/js/dictionary/sqlite/dictionary-database-sqlite.js` (the whole surface),
-  `open-sqlite.js` (VFS-agnostic opener), `dictionary-sqlite-schema.js` (DDL + migrations),
-  `inflection-rules.js` (induction/derivation), `dictionary-storage-migration.js` (legacy IDB).
-- Codec: `ext/js/dictionary/payload-codec.js` (identity), `deflate-payload-codec.js` (deflate),
-  `dictionary-database-factory.js` (selection), `dictionary-backend-config.js` (`USE_SQLITE_BACKEND`).
+  `open-sqlite.js` (module-injecting opener), `dictionary-sqlite-schema.js` (DDL + migrations),
+  `inflection-rules.js` (induction/derivation).
+- Codec: `ext/js/dictionary/payload-codec.js` (identity), `deflate-payload-codec.js` (deflate).
+- Host: `ext/js/native/` (the engine entry point, the client shim and the wire encoders) and
+  `native/` (the Swift host) — see [native-protocol.md](native-protocol.md).
 - Types: `types/ext/sqlite-wasm.d.ts`, `types/ext/pako.d.ts`, `types/ext/payload-codec.d.ts`,
-  `types/ext/dictionary-database.d.ts` (`PayloadCodecName`, the packed-payload types).
-- Build/vendor: `dev/build-libs.js` (`copySqlite()`, `dev/lib/pako.js`),
-  `dev/data/manifest-variants.json` (safari CSP → `'wasm-unsafe-eval'`).
+  `types/ext/dictionary-database.d.ts` (`PayloadCodecName`, the packed-payload types),
+  `types/ext/native-bridge.d.ts` (`EngineApiSurface`).
+- Build/vendor: `dev/bin/build-native-core.js` (the JSC bundle — and how pako reaches the codec, from
+  `node_modules`; `dev/build-libs.js` no longer vendors either pako or sqlite for the browser).
+  `dev/data/manifest-variants.json`'s safari CSP `'wasm-unsafe-eval'` was added for `sqlite3.wasm`
+  and outlived it; it is still required, but now only by `ext/lib/resvg.wasm`.
+
+The map of what this refactor added or changed, as it stands in the tree. The native side has its own
+in [../native/README.md](../native/README.md); what was **deleted** along the way is in
+[history/README.md](history/README.md#what-the-refactor-deleted).
+
+```
+plan/                                    README, design, pseudocode, decisions,
+                                         native-rewrite, native-protocol, native-engine-probe
+plan/history/                            the record: README (historical decisions, the progress
+                                         log), safari-opfs-blocker, safari-idb-snapshot,
+                                         backend-worker, sizing, zstd, original-plan
+ext/js/dictionary/payload-codec.js               IdentityPayloadCodec
+ext/js/dictionary/deflate-payload-codec.js       DeflatePayloadCodec (pako, injected)
+ext/js/dictionary/dictionary-importer.js         build-time only now: compile:dictionary + tests
+ext/js/dictionary/sqlite/open-sqlite.js          openDictionaryDatabaseHandle()
+ext/js/dictionary/sqlite/dictionary-sqlite-schema.js   DDL + createDictionarySchema()
+ext/js/dictionary/sqlite/dictionary-database-sqlite.js DictionaryDatabaseSqlite (the backend)
+ext/js/dictionary/sqlite/inflection-rules.js     induction/derivation
+ext/js/native/                           the engine entry point, the client shims, wire encoders
+native/Sources/YomitanNative/            the Swift host (incl. the `ping` latency probe)
+build-safari.sh                          bundles the engine, regenerates + patches the Xcode project
+dev/bin/compile-dictionary.js            the shipped pipeline: .zip -> .sqlite3
+dev/bin/build-native-core.js             the JSC bundle
+dev/measure-storage.js                   codec/size measurement (npm run measure:storage)
+types/ext/sqlite-wasm.d.ts               narrow sqlite oo1 type surface
+types/ext/pako.d.ts                      narrow pako surface
+types/ext/payload-codec.d.ts             PayloadCodec type (+ optional prepare())
+types/ext/dictionary-database.d.ts       PayloadCodecName, DictionaryDatabaseRead/Write (#46),
+                                         and Layer 1's Packed/Payload types
+types/ext/native-bridge.d.ts             EngineApiSurface, NativeHost
+test/sqlite-backend-smoke.test.js        harness + opener/schema tests
+test/dictionary-database-sqlite-codec.test.js       codec self-description + finalizeImport
+test/dictionary-database-sqlite-inflection.test.js  induction on/off through the real importer
+test/dictionary-database-sqlite-query-plan.test.js  guards term lookups against full scans
+test/inflection-rules.test.js            induceInflectionRule / applyInflectionRule
+test/deflate-payload-codec.test.js       deflate codec round-trips
+test/translator-sqlite.test.js           49 fixtures × {identity, deflate} end-to-end
+test/native-host-shims.test.js           host shims, protocol encoders, the Swift schema literal
+```
 
 Commands: see [README.md](README.md).

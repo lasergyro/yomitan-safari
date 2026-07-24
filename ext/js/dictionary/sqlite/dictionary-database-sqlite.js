@@ -1445,7 +1445,7 @@ export class DictionaryDatabaseSqlite {
                     [term, term],
                 );
             case 'suffix': {
-                // No reverse column yet (that is a later schema addition, see plan/progress.md
+                // No reverse column yet (that is a later schema addition, see plan/design.md
                 // "watch-outs"); filter suffix matches in JS over the enabled dictionaries. Left to
                 // the planner deliberately — no index can serve this, so the scan is the real plan.
                 const rows = this._selectObjects(`SELECT ${columns} FROM terms WHERE ${idFilter}`);

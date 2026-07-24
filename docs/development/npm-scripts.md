@@ -103,8 +103,8 @@ Scripts can be executed by running `npm run <name>`.
   The resulting file is located at ext/legal-npm.html.
 
 - `license-report:markdown`
-  Generates a Markdown table containing license information about the third-party dependencies the extension uses.
-  This table is located in the [README.md](../../README.md#third-party-libraries) file
+  Prints a Markdown table containing license information about the third-party dependencies the extension uses.
+  The HTML form of the same information is committed at [ext/legal-npm.html](../../ext/legal-npm.html) (see `license-report:html`).
 
 - `prepare`
   Sets up [husky](https://typicode.github.io/husky/) for some git pre-commit tasks.

@@ -1,6 +1,6 @@
 # Design: an IndexedDB snapshot so the database survives a Safari restart
 
-**Status: designed, never built — ABANDONED.** [native-rewrite.md](native-rewrite.md) was built
+**Status: designed, never built — ABANDONED.** [native-rewrite.md](../native-rewrite.md) was built
 instead: the engine moved into the native app, which removes the OPFS storage layer this document
 patches rather than working around it. It was held as the fallback until the stage-N0 measurements
 came back — cold start 8–10 ms, the size question answered by chunking, the App Group question not
@@ -33,7 +33,7 @@ dictionary count**, while both rejected options charge either every query or eve
 
 It also touches remarkably little: no new WASM, no new dependency, no change to the schema, the
 codec, the importer, inflection synthesis, the query paths, or the owner/proxy worker split from
-[backend-worker.md](history/backend-worker.md).
+[backend-worker.md](backend-worker.md).
 
 ### Why not `:memory:`
 
@@ -69,7 +69,7 @@ cannot.** That is the one place this design has an unavoidable allocation spike.
 Snapshot points are exactly the operations that mutate the file **and** have a well-defined
 completion:
 
-1. **`finalizeImport()`** — [dictionary-database-sqlite.js:419](../ext/js/dictionary/sqlite/dictionary-database-sqlite.js#L419).
+1. **`finalizeImport()`** — [dictionary-database-sqlite.js:419](../../ext/js/dictionary/sqlite/dictionary-database-sqlite.js#L419).
    Already the consistent point: it builds the inflection tables, drops derivable rows, `ANALYZE`s
    and `VACUUM`s. Snapshot after the `VACUUM`, so the stored bytes are the compact ones.
 2. **`deleteDictionary()`**
@@ -119,7 +119,7 @@ the 8192-byte `page_size`.
 
 Schema migration needs no special handling and must not get any: `createDictionarySchema` already
 migrates on open by `PRAGMA user_version`
-([dictionary-sqlite-schema.js:156](../ext/js/dictionary/sqlite/dictionary-sqlite-schema.js#L156)), so
+([dictionary-sqlite-schema.js:156](../../ext/js/dictionary/sqlite/dictionary-sqlite-schema.js#L156)), so
 a snapshot written by an older build is restored, then migrated, by the existing path. The envelope
 carries `schemaVersion` for diagnostics and for refusing a snapshot from a **newer** build than the
 running code, which migration cannot handle.
@@ -137,7 +137,7 @@ guarded so it is a no-op when there is no store (tests, `:memory:`).
 
 ## Interaction with the existing worker topology
 
-Nothing about [backend-worker.md](history/backend-worker.md) changes, but two interactions must hold:
+Nothing about [backend-worker.md](backend-worker.md) changes, but two interactions must hold:
 
 - **Imports run in their own worker**, which holds the pool while the background's owner is
   terminated (`suspendDatabase`). That worker builds its backend through the same
@@ -225,7 +225,7 @@ The existing three-layer split holds, and the middle layer is where this actuall
 Every one of these must leave the user with a working (if empty) extension rather than a `prepare()`
 that throws, because `backend.js` swallows a failed prepare into a `log.error` and every subsequent
 query then reports "Database not open" — the exact silent failure documented in
-[backend-worker.md](history/backend-worker.md).
+[backend-worker.md](backend-worker.md).
 
 | condition                                 | behavior                                                                |
 | ----------------------------------------- | ----------------------------------------------------------------------- |
@@ -256,12 +256,12 @@ a partially written file is not left mapped under the database name.
   storage, so OPFS is still there and still orphaned per launch. It only relocates the _durable_
   copy, which IndexedDB already does. (The "~50 MB through the bridge would be brutal" half of the
   original argument was **wrong** and is retracted — the bridge measures ~1 ms fixed and ~60 MB/s, so
-  that transfer is under a second: [native-engine-probe.md](native-engine-probe.md). The reason
+  that transfer is under a second: [native-engine-probe.md](../native-engine-probe.md). The reason
   native storage loses is that it fixes nothing, not that it is slow.)
 - **Running SQLite natively in the Swift app** — a genuinely different architecture that makes the
   origin rotation, OPFS, the leak, the per-launch copy and the wasm heap all disappear at once, and
   the bridge is now measured fast enough to carry it
-  ([native-engine-probe.md](native-engine-probe.md)). Not rejected on the merits — it is simply a
+  ([native-engine-probe.md](../native-engine-probe.md)). Not rejected on the merits — it is simply a
   much larger project than this one, it makes the SQLite backend Safari-only by construction, and it
   is most attractive in the variant where the database is **pre-generated at build time** and the
   in-browser import path goes away entirely. Out of scope here; this design does not foreclose it.
