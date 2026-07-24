@@ -67,6 +67,66 @@ export function decodeDictionarySet(value) {
 }
 
 /**
+ * Serializes the options a term lookup takes.
+ *
+ * Three of its fields cannot survive `JSON.stringify` and each fails differently, which is why this
+ * is a named function rather than an inline spread:
+ *
+ * - `enabledDictionaryMap` is a `Map`. It stringifies to `{}` — **silently** — and the lookup would
+ *   then find nothing at all rather than fail.
+ * - `excludeDictionaryDefinitions` is a `Set|null`, with the same problem.
+ * - `textReplacements` holds live `RegExp` objects, which stringify to `{}` too. Source and flags
+ *   are carried instead and the regex is rebuilt on the far side.
+ * @param {import('translation').FindTermsOptions} options
+ * @returns {import('native-bridge').EncodedFindTermsOptions}
+ */
+export function encodeFindTermsOptions(options) {
+    const {enabledDictionaryMap, excludeDictionaryDefinitions, textReplacements, ...rest} = options;
+    return {
+        ...rest,
+        enabledDictionaryMap: [...enabledDictionaryMap],
+        excludeDictionaryDefinitions: excludeDictionaryDefinitions === null ? null : [...excludeDictionaryDefinitions],
+        textReplacements: textReplacements.map((group) => (
+            group === null ? null : group.map(({pattern, replacement}) => ({pattern: pattern.source, flags: pattern.flags, replacement}))
+        )),
+    };
+}
+
+/**
+ * @param {import('native-bridge').EncodedFindTermsOptions} options
+ * @returns {import('translation').FindTermsOptions}
+ */
+export function decodeFindTermsOptions(options) {
+    const {enabledDictionaryMap, excludeDictionaryDefinitions, textReplacements, ...rest} = options;
+    return {
+        ...rest,
+        enabledDictionaryMap: new Map(enabledDictionaryMap),
+        excludeDictionaryDefinitions: excludeDictionaryDefinitions === null ? null : new Set(excludeDictionaryDefinitions),
+        textReplacements: textReplacements.map((group) => (
+            group === null ? null : group.map(({pattern, flags, replacement}) => ({pattern: new RegExp(pattern, flags), replacement}))
+        )),
+    };
+}
+
+/**
+ * @param {import('translation').FindKanjiOptions} options
+ * @returns {import('native-bridge').EncodedFindKanjiOptions}
+ */
+export function encodeFindKanjiOptions(options) {
+    const {enabledDictionaryMap, ...rest} = options;
+    return {...rest, enabledDictionaryMap: [...enabledDictionaryMap]};
+}
+
+/**
+ * @param {import('native-bridge').EncodedFindKanjiOptions} options
+ * @returns {import('translation').FindKanjiOptions}
+ */
+export function decodeFindKanjiOptions(options) {
+    const {enabledDictionaryMap, ...rest} = options;
+    return {...rest, enabledDictionaryMap: new Map(enabledDictionaryMap)};
+}
+
+/**
  * Base64 for the engine side, where there is no `btoa` (JavaScriptCore has no `window`) and the
  * input is a `Uint8Array` rather than a binary string. Written against a lookup table because the
  * media path can carry a few hundred KB and per-byte string concatenation is measurably worse.

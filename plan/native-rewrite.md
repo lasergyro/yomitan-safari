@@ -1,10 +1,11 @@
 # Design: move the engine into the native app; the extension becomes display and UI
 
-**Status: stages N0–N2 are built.** The engine runs in the Safari app extension, in JavaScriptCore,
+**Status: stages N0–N3 and most of N5 are built.** The engine — storage, queries, the codec,
+inflection synthesis **and the translator** — runs in the Safari app extension, in JavaScriptCore,
 over the system `libsqlite3`, reading a database in the app container. The app builds and signs, and
-`npm run test:jsc` proves the native host answers identically to node on the same compiled database.
-Stage N3 (translator native), N4 (services), N6 (iOS) remain — see [Staging](#staging) for exactly
-what is done.
+`npm run test:jsc` proves the native host answers identically to node on the same compiled database,
+including full deinflected lookups. Stage N4 (options, Anki, audio) and N6 (iOS) remain — see
+[Staging](#staging) for exactly what is done.
 
 Supersedes [safari-idb-snapshot.md](safari-idb-snapshot.md), which was never built and is now
 abandoned rather than held as a fallback: the OPFS storage layer it patched no longer exists in the
@@ -281,27 +282,40 @@ shim (`NativeEngineClient`), and the `{action, params}` → `{result} | {error}`
 is the unmodified `DictionaryDatabaseSqlite` hosted in JavaScriptCore over the Swift SQLite binding.
 The OPFS/SAH-Pool path was not merely stopped — it was deleted (#44).
 
-**Stage N3 — translator native.** _Remaining._ Deinflection and result assembly move into the JSC
-host, so `termsFind` is one call. The engine's action table is the place to add it; nothing in the
-transport needs to change.
+**Stage N3 — translator native. DONE.** `termsFind`, `kanjiFind` and `getTermFrequencies` are engine
+actions; `TranslatorNative` in the extension forwards to them. A lookup is now **one** round trip
+carrying only the entries that survived, where before it was half a dozen carrying every candidate
+that was considered.
 
-**Stage N4 — services.** _Remaining._ Options, Anki, audio, media. Also where the settings UI is
-pointed at `installDatabase()` instead of the archive importer.
+The transport needed one addition: `FindTermsOptions` holds a `Map`, a `Set|null` and live `RegExp`
+objects, all three of which `JSON.stringify` turns into `{}` **silently** — a lookup would return
+nothing rather than fail. `encodeFindTermsOptions` in `native-protocol.js` handles them, and the
+equivalence gate passes a real `textReplacements` pattern so the rebuild path is exercised.
 
-**Stage N5 — delete.** _Mostly done, ahead of schedule._ The OPFS backend, the owner worker, the
-suspend/resume API, the migration UX and `USE_SQLITE_BACKEND` are gone. What is left is the
-IndexedDB backend, which is upstream's and still serves the non-Safari targets, and the in-browser
-importer, which those targets still need.
+Cost: the bundle grew from 379 KiB to 1.3 MB (616 KiB minified) because the language modules came
+with it, and cold start went from 8–10 ms to **~42 ms**. Paid once per app-extension process, which
+stays warm between calls on macOS. The bundle is minified by default so the artifact the gate tests
+is the one that ships.
+
+**Stage N4 — services.** _Remaining._ Options, Anki and audio still run in the extension.
+
+**Stage N5 — delete. DONE.** The OPFS backend, the owner worker, the suspend/resume API, the
+migration UX, `USE_SQLITE_BACKEND`, **the IndexedDB backend**, the Chrome offscreen document and the
+in-browser importer are all gone. One backend remains.
 
 **Stage N6 — iOS**, if wanted: drop `--macos-only`, and confront JSC-without-JIT and appex memory on
 device.
 
-### Turning it on
+### There is no flag
 
-`USE_NATIVE_BACKEND` in `ext/js/dictionary/dictionary-backend-config.js` is **`false`**. It stays
-false until a dictionary can be installed from the settings UI (stage N4): with it on and no
-database in the container, the extension comes up correctly but with nothing to look up, and the
-only way to fix that today is to call `installDatabase()` by hand. Flip it together with that UI.
+`USE_NATIVE_BACKEND` is gone along with the alternative it selected. `Backend` constructs
+`DictionaryDatabaseNative` and `TranslatorNative` directly, and the settings UI installs a compiled
+`.sqlite3` (`npm run compile:dictionary`) by streaming it into the app container.
+
+**Two affordances in the settings UI now fail on purpose**: "Check for Updates" and the recommended
+dictionaries list both offer Yomitan `.zip` archives, which this build cannot consume. They report
+the install error rather than having been removed — removing them means unpicking the update machinery
+threaded through `dictionary-controller.js`, which is its own change.
 
 ---
 

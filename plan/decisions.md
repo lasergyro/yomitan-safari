@@ -483,3 +483,38 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     leave a truncated file where a working database was, and the user would simply find their
     dictionaries gone. — _built; the settings UI still points at the archive importer, so installs
     go through the client method for now._
+
+46. **One backend, and the interface is a type rather than a class.** — With the engine in the app,
+    the IndexedDB `DictionaryDatabase` and the Chrome offscreen document that proxied to it became a
+    second, non-functional way to do the same thing on a Safari-only fork, so both were deleted along
+    with the factory and the selection flag. `DictionaryDatabase` had been a _concrete class_ that
+    every other backend was cast to; it is now a real interface, split into a read half (translator,
+    backend) and a write half (importer, which now exists only in the build-time compiler). `prepare`
+    and `close` are deliberately outside it — opening is the one thing the implementations genuinely
+    disagree about, and only whoever constructed the object calls them. — _built._
+
+47. **The media path got simpler, not merely ported.** — The media-drawing worker used to hold a
+    `MessagePort` to the dictionary worker, which owned the bytes, decoded each image and posted
+    pixel buffers back. That round trip existed only because the data lived in another thread. It now
+    fetches media over the extension API and decodes in place — which also deletes the
+    `ImageDecoder`-vs-`createImageBitmap` split and the draw-to-a-temporary-canvas hack, both of
+    which were working around what Firefox could transfer between processes. This was the corner
+    [native-rewrite.md](native-rewrite.md) called "the least-designed"; it turned out to be the one
+    the move improved most. — _built._
+
+48. **The translator moved too, and the options object is what made it non-trivial.** — Deinflection
+    and result assembly now run in the engine, so a lookup is one round trip carrying only surviving
+    entries rather than half a dozen carrying every candidate. The obstacle was not the translator —
+    it is the same code — but `FindTermsOptions`: it holds a `Map`, a `Set|null` and live `RegExp`
+    objects, and `JSON.stringify` turns all three into `{}` **without complaining**, so a lookup
+    would return nothing rather than fail. `encodeFindTermsOptions` handles them and the equivalence
+    gate passes a real `textReplacements` pattern so the rebuild path is covered. — _built; 21/21
+    identical between node and JavaScriptCore._
+
+49. **The engine bundle is minified, and the gate tests the minified artifact.** — Adding the
+    translator brought the language modules with it: 379 KiB → 1.3 MB, and cold start 8–10 ms →
+    ~48 ms. Minifying gives back ~6 ms and halves the file, which matters because cold start is paid
+    on every app-extension reclaim. Minifying only for release would mean the equivalence gate tested
+    something other than what ships — precisely the class of bug that gate exists for — so
+    `build-native-core.js` minifies by default and `--no-minify` is the debugging escape hatch. —
+    _built._

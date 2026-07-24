@@ -74,8 +74,54 @@ const REQUESTS = [
     {action: 'findTagMetaBulk', params: {items: [{query: 'E1', dictionary: fixtureTitle}]}},
     {action: 'findTagForTitle', params: {name: 'E1', dictionary: fixtureTitle}},
     {action: 'getMedia', params: {items: [{path: 'img.png', dictionary: fixtureTitle}]}},
+    // The translator, which is the whole of stage N3: deinflection, result assembly and every query
+    // it issues run inside the engine. This is also the single richest result shape on the bridge,
+    // so it is the best check that the JSON envelope survives real data.
+    {action: 'termsFind', params: {mode: 'group', text: '打つ', options: createFindTermsOptions()}},
+    {action: 'termsFind', params: {mode: 'split', text: '打った', options: createFindTermsOptions()}},
+    {action: 'termsFind', params: {mode: 'simple', text: 'ありません', options: createFindTermsOptions()}},
+    {action: 'kanjiFind', params: {text: '打', options: createFindKanjiOptions()}},
+    {action: 'getTermFrequencies', params: {termReadingList: [{term: '打つ', reading: null}], dictionaries: [fixtureTitle]}},
+    {action: 'clearDatabaseCaches', params: {}},
     {action: 'noSuchAction', params: {}},
 ];
+
+/**
+ * A realistic term-lookup options object, already transport-encoded.
+ *
+ * Written out rather than defaulted because the three fields that cannot survive `JSON.stringify` —
+ * the dictionary `Map`, the exclusion `Set` and the `RegExp`s in `textReplacements` — are exactly
+ * the ones a test would omit, and omitting them is silent: the lookup returns nothing rather than
+ * failing. `textReplacements` carries a real pattern so the rebuild-on-the-far-side path is
+ * exercised too.
+ * @returns {import('native-bridge').EncodedFindTermsOptions}
+ */
+function createFindTermsOptions() {
+    return {
+        matchType: 'exact',
+        deinflect: true,
+        primaryReading: '',
+        mainDictionary: fixtureTitle,
+        sortFrequencyDictionary: null,
+        sortFrequencyDictionaryOrder: 'ascending',
+        removeNonJapaneseCharacters: false,
+        textReplacements: [null, [{pattern: '\\s+', flags: 'g', replacement: ''}]],
+        enabledDictionaryMap: [[fixtureTitle, {index: 0, alias: fixtureTitle, allowSecondarySearches: false, partsOfSpeechFilter: true, useDeinflections: true}]],
+        excludeDictionaryDefinitions: null,
+        searchResolution: 'letter',
+        language: 'ja',
+    };
+}
+
+/**
+ * @returns {import('native-bridge').EncodedFindKanjiOptions}
+ */
+function createFindKanjiOptions() {
+    return {
+        enabledDictionaryMap: [[fixtureTitle, {index: 0, alias: fixtureTitle}]],
+        removeNonJapaneseCharacters: false,
+    };
+}
 
 /**
  * @param {string} message

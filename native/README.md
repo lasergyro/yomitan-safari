@@ -15,6 +15,10 @@ design.
 JavaScriptCore**, not ported to Swift. The Swift in this directory is a SQLite binding, a JSC host,
 a message router and a file installer. Everything above the SQL is the same code vitest runs.
 
+**What runs here:** storage, every query, the payload codec, inflection synthesis, and the
+translator — so a lookup is one `sendNativeMessage` round trip that returns finished dictionary
+entries. What stays in the extension is what needs the DOM: scanning, the popup, and the settings UI.
+
 ## Layout
 
 | Path                                                    | What it is                                                                                       |
@@ -25,7 +29,7 @@ a message router and a file installer. Everything above the SQL is the same code
 | `Sources/YomitanNative/SafariWebExtensionHandler.swift` | The message router. Thin by design — the engine may move to a long-lived main-app process later. |
 | `Sources/YomitanNative/DictionaryStore.swift`           | Container paths, and the staged/validated install of a compiled database.                        |
 | `Tools/jsc-harness/`                                    | A CLI that runs the bundle in a real `JSContext`. The equivalence gate.                          |
-| `Resources/yomitan-core.js`                             | **Generated** (`npm run build:native-core`), gitignored.                                         |
+| `Resources/yomitan-core.js`                             | **Generated** (`npm run build:native-core`), gitignored. 616 KiB minified.                       |
 
 ## The build
 
@@ -43,6 +47,11 @@ is regenerated on every build. Edit the sources here.
 
 `libsqlite3` and `JavaScriptCore` are both system frameworks and are autolinked by `import`, so
 there is no build-phase change to maintain.
+
+The bundle is **minified by default**, so that the artifact `npm run test:jsc` exercises is the one
+that ships — building it two different ways would defeat the point of the gate. It is also worth
+~6 ms of cold start, which is paid every time the app extension is reclaimed. `--no-minify` gives a
+readable bundle for debugging in the harness.
 
 ## Testing
 

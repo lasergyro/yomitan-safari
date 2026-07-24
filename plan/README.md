@@ -50,36 +50,39 @@ Three clusters. Start with the first.
 
 **Built:**
 
-- **The engine, in the app.** `DictionaryDatabaseSqlite` runs in JavaScriptCore inside the Safari app
-  extension, over a Swift binding to system `libsqlite3`, reading `dictionaries.sqlite3` in the app
-  container. The app builds and signs. Cold start — context creation, parsing the 379 KiB bundle,
-  opening the database — is **8–10 ms**.
+- **The engine, in the app.** `DictionaryDatabaseSqlite` **and the translator** run in JavaScriptCore
+  inside the Safari app extension, over a Swift binding to system `libsqlite3`, reading
+  `dictionaries.sqlite3` in the app container. The app builds and signs. Cold start — context
+  creation, parsing the 616 KiB minified bundle, opening the database — is **~42 ms**, paid once per
+  app-extension process.
 - **The bridge.** `{action, params}` → `{result} | {error}`, one JSON string in each direction over
   `sendNativeMessage`, measured at ~1 ms fixed and ~60 MB/s
   ([native-engine-probe.md](native-engine-probe.md)).
-- **The extension-side backend.** `DictionaryDatabaseNative` implements the same
-  `DictionaryDatabase` API, so the translator, the backend and the settings UI are untouched by the
-  move. Behind `USE_NATIVE_BACKEND`, which is **off** until dictionaries can be installed from the
-  settings UI.
+- **The extension-side clients.** `DictionaryDatabaseNative` and `TranslatorNative` keep the method
+  names their callers already used, so `Backend`, the display layer and the settings UI were
+  untouched by the move. There is no flag: it is the only backend.
+- **Installing.** The settings UI streams a compiled `.sqlite3` into the app container, staged and
+  validated before the live database is replaced.
 - **The dictionary pipeline.** `npm run compile:dictionary` turns a `.zip` into a finished
   `.sqlite3` using the real importer, so installation is a chunked, staged, validated file copy
   rather than a 152-second in-browser import.
 - **The gate.** `npm run test:jsc` answers the same requests through node (SQLite-WASM) and through
   the real Swift host (libsqlite3) against **the same compiled database**, and requires identical
-  answers. 15/15.
+  answers — including full deinflected lookups. 21/21.
 - **The codec is decided: deflate** ([decisions.md](decisions.md) #26), and **inflection synthesis is
   implemented** (schema v4/v5): 947,070 → 293,262 rows, verified against the source ZIP (0 lost, 0
   invented over 41,921 forms).
 
 **Deleted, because the native engine made them a second way to do the same thing:** the OPFS/SAH-Pool
 opener, the owner-worker proxy and `suspendDatabase`/`resumeDatabase`, the legacy-IndexedDB migration
-and its settings controller, the vendored `sqlite3.wasm`, `test/safari/`, and the
-`USE_SQLITE_BACKEND` flag. Two backends remain, each with one reason to exist: **native** for Safari,
-**IndexedDB** for every other browser.
+and its settings controller, the vendored `sqlite3.wasm`, `test/safari/`, the `USE_SQLITE_BACKEND`
+flag, **the IndexedDB backend**, the Chrome offscreen document, and the in-browser importer and its
+worker. One backend remains.
 
-**Remaining** ([native-rewrite.md](native-rewrite.md) → Staging): the translator moving into the JSC
-host (N3); options, Anki, audio, media, and pointing the settings UI at `installDatabase()` (N4);
-iOS (N6).
+**Remaining** ([native-rewrite.md](native-rewrite.md) → Staging): options, Anki and audio moving
+native (N4); iOS (N6). Two settings affordances — "Check for Updates" and the recommended
+dictionaries list — offer `.zip` archives this build cannot consume and now fail at install with a
+clear message rather than having been removed.
 
 ## The numbers, once
 

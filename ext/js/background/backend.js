@@ -33,13 +33,13 @@ import {arrayBufferToBase64} from '../data/array-buffer-util.js';
 import {OptionsUtil} from '../data/options-util.js';
 import {getAllPermissions, hasPermissions, hasRequiredPermissionsForOptions} from '../data/permissions-util.js';
 import {DictionaryDatabaseNative} from '../native/dictionary-database-native.js';
+import {TranslatorNative} from '../native/translator-native.js';
 import {Environment} from '../extension/environment.js';
 import {getTemporaryStorage} from '../extension/temporary-storage.js';
 import {CacheMap} from '../general/cache-map.js';
 import {ObjectPropertyAccessor} from '../general/object-property-accessor.js';
 import {distributeFuriganaInflected, isCodePointJapanese, convertKatakanaToHiragana as jpConvertKatakanaToHiragana} from '../language/ja/japanese.js';
 import {getLanguageSummaries, isTextLookupWorthy} from '../language/languages.js';
-import {Translator} from '../language/translator.js';
 import {AudioDownloader} from '../media/audio-downloader.js';
 import {getFileExtensionFromAudioMediaType, getFileExtensionFromImageMediaType} from '../media/media-util.js';
 import {createSchema, normalizeContext} from './profile-conditions-util.js';
@@ -70,8 +70,8 @@ export class Backend {
         // on Safari really is a page — can hold the clipboard reader itself.
         /** @type {DictionaryDatabaseNative} */
         this._dictionaryDatabase = new DictionaryDatabaseNative();
-        /** @type {Translator} */
-        this._translator = new Translator(this._dictionaryDatabase);
+        /** @type {TranslatorNative} */
+        this._translator = new TranslatorNative();
         /** @type {ClipboardReader} */
         this._clipboardReader = new ClipboardReader(
             (typeof document === 'object' && document !== null ? document : null),

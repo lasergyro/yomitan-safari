@@ -18,7 +18,8 @@
 import {DeflatePayloadCodec} from '../dictionary/deflate-payload-codec.js';
 import {DictionaryDatabaseSqlite} from '../dictionary/sqlite/dictionary-database-sqlite.js';
 import {DICTIONARY_SQLITE_SCHEMA_VERSION} from '../dictionary/sqlite/dictionary-sqlite-schema.js';
-import {decodeDictionarySet, encodeMediaResults} from './native-protocol.js';
+import {Translator} from '../language/translator.js';
+import {decodeDictionarySet, decodeFindKanjiOptions, decodeFindTermsOptions, encodeMediaResults} from './native-protocol.js';
 
 /**
  * The dictionary engine, as it runs inside the native app.
@@ -50,6 +51,17 @@ export class NativeCore {
         this._databasePath = typeof databasePath === 'string' ? databasePath : null;
         /** @type {DictionaryDatabaseSqlite} */
         this._database = new DictionaryDatabaseSqlite(new DeflatePayloadCodec(pako ?? null));
+        /**
+         * The translator, running here rather than in the extension (plan/native-rewrite.md, stage
+         * N3). Deinflection, result assembly and every query it issues now happen on this side of
+         * the bridge, so a lookup is one round trip carrying only the entries that survived, instead
+         * of half a dozen carrying every candidate that was considered.
+         *
+         * This is also the reason route C was chosen: the deinflection rules are live closures and
+         * compiled regexes across 23 languages, and they run here unmodified.
+         * @type {Translator}
+         */
+        this._translator = new Translator(this._database);
         /**
          * In-flight (or completed) preparation. The app extension can be terminated between calls,
          * so a client cannot be relied on to have called `prepare` first — every action awaits this,
@@ -88,6 +100,7 @@ export class NativeCore {
                 const path = this._databasePath ?? this._host.databasePath();
                 const sqlite3 = createNativeSqliteModule(this._host);
                 await this._database.prepare({sqlite3, vfs: 'native', path});
+                this._translator.prepare();
                 const info = await this._database.getDictionaryInfo();
                 return {schemaVersion: NATIVE_ENGINE_SCHEMA_VERSION, dictionaryCount: info.length};
             })();
@@ -123,6 +136,13 @@ export class NativeCore {
             findTagMetaBulk: ({items}) => db.findTagMetaBulk(items),
             findTagForTitle: ({name, dictionary}) => db.findTagForTitle(name, dictionary),
             getMedia: async ({items}) => encodeMediaResults(await db.getMedia(items)),
+            // The `maxResults` truncation stays on the extension side: it is a display preference,
+            // and applying it here would mean the engine's answer depended on a setting it has no
+            // other reason to know about.
+            termsFind: ({mode, text, options}) => this._translator.findTerms(mode, text, decodeFindTermsOptions(options)),
+            kanjiFind: ({text, options}) => this._translator.findKanji(text, decodeFindKanjiOptions(options)),
+            getTermFrequencies: ({termReadingList, dictionaries}) => this._translator.getTermFrequencies(termReadingList, dictionaries),
+            clearDatabaseCaches: () => { this._translator.clearDatabaseCaches(); },
         };
     }
 }
