@@ -404,3 +404,28 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     [safari-idb-snapshot.md](safari-idb-snapshot.md). — _designed, not built. Two numbers gate it:
     whether WebKit ever reclaims the per-launch orphaned OPFS copies, and what the restore actually
     costs on the real 49.4 MB file._
+
+39. **The engine moves into the native app; the extension keeps display and UI.** — Chosen over
+    working around the origin rotation in the browser. It makes the rotation, OPFS, the orphan leak,
+    the per-launch copy, the wasm heap and the single-connection worker dance all moot at once
+    instead of trading one for another, and it is the only direction that leads to a standalone
+    macOS app. Made viable by measurement, not assumption: the `sendNativeMessage` bridge costs ~1 ms
+    fixed and ~60 MB/s, so a hover-shaped call is 2 ms
+    ([native-engine-probe.md](native-engine-probe.md)). Dictionaries are **compiled to SQLite at
+    build time** by the existing node importer rather than imported in the browser, which deletes the
+    import worker, the suspend/resume handoff, the trained-dictionary handshake and the legacy
+    migration UX from the Safari target. Design in [native-rewrite.md](native-rewrite.md). —
+    _designed, not built; gated on the stage-N0 measurements._
+
+40. **The JS core is re-hosted in JavaScriptCore, not ported to Swift.** — Yomitan's deinflection
+    rules are live JS closures and regexes (`deinflect: (text) => …`), 1.1 MB across 23 languages in
+    16 transform files, upstream-maintained and actively changing; German, English and Spanish alone
+    hand-write 32 bespoke closures. Porting that to Swift would permanently fork the most actively
+    developed part of upstream, in the area with the subtlest correctness properties in this project
+    (inflection synthesis is verified at 0 lost / 0 invented over 41,921 forms), and would throw away
+    the vitest coverage that proves it. `JavaScriptCore.framework` is a system framework on both
+    macOS and iOS, so the core runs unmodified inside the app over a native SQLite binding — the
+    logic lives in the app process as required, and upstream keeps merging. The project is therefore
+    a rewrite of the engine's **host and storage binding**, not of the engine. A Swift port of
+    individual hot pieces stays available afterwards, incrementally. — _decided; the bet is that the
+    JSC shim surface stays small, which stage N0 tests._

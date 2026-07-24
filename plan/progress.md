@@ -277,9 +277,17 @@ seam — **23/23** — and the flag is now on and verified in the installed exte
 
 **A second, larger blocker then surfaced: the imported dictionary does not survive a Safari
 restart.** Safari regenerates the extension's origin UUID on every launch and OPFS is partitioned by
-origin — [safari-opfs-blocker.md](safari-opfs-blocker.md). The fix is designed but not built:
-[safari-idb-snapshot.md](safari-idb-snapshot.md). Items 2, 3, 6 are done; the codec and measurement
-are decided.
+origin — [safari-opfs-blocker.md](safari-opfs-blocker.md).
+
+**That has redirected the project.** Rather than work around it in the browser, the engine moves into
+the native app and the extension becomes display and UI: [native-rewrite.md](native-rewrite.md),
+made viable by the bridge measuring ~1 ms / ~60 MB/s
+([native-engine-probe.md](native-engine-probe.md)). Stage 5 as written below is therefore largely
+**superseded** — the in-browser import path, the suspend/resume dance and the dual-backend flag are
+all things the native direction deletes rather than finishes. The smaller in-browser fix
+([safari-idb-snapshot.md](safari-idb-snapshot.md)) is kept as the fallback. Items 2, 3, 6 are done;
+the codec and measurement are decided, and the schema, codec and inflection work all carry over
+unchanged — they are re-hosted, not rewritten.
 
 1. **Extension-origin verification — RAN, and it found a blocker.** `npm run test:safari` covers the
    engine (OPFS, the vendored WASM, the whole backend) but runs on `127.0.0.1`, not

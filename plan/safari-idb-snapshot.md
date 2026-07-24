@@ -1,8 +1,14 @@
 # Design: an IndexedDB snapshot so the database survives a Safari restart
 
-**Status: designed, not built.** This is the fix for the blocker in
-[safari-opfs-blocker.md](safari-opfs-blocker.md) — read that first; it establishes the constraint
-this design works around.
+**Status: designed, not built — and now ON HOLD.** The chosen direction is
+[native-rewrite.md](native-rewrite.md), which moves the engine into the native app and replaces the
+storage layer wholesale rather than working around it. This document is kept because it remains the
+correct **fallback**: it is far smaller, it touches only the storage layer, and it is the shippable
+stopgap if the native work stalls or its stage-N0 measurements raise a red flag. Nothing below is
+wrong; it is simply no longer the plan.
+
+This is the fix for the blocker in [safari-opfs-blocker.md](safari-opfs-blocker.md) — read that
+first; it establishes the constraint this design works around.
 
 **The shape in one sentence:** keep the SAH-Pool exactly as it is and keep every query running
 against OPFS at full speed, but hold the authoritative copy of the database file in **IndexedDB**,

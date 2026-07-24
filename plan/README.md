@@ -14,14 +14,16 @@ Two clusters. Read across them, not down the old timeline.
 
 **What it is (the plan):**
 
-| File                                             | What it holds                                                                                 |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| [design.md](design.md)                           | Current architecture: schema, codec, inflection synthesis, queries                            |
-| [pseudocode.md](pseudocode.md)                   | The whole scheme end to end, as pseudocode                                                    |
-| [backend-worker.md](backend-worker.md)           | **Stage 5 blocker + fix**: the backend must run in a worker, not the Safari background page   |
-| [safari-opfs-blocker.md](safari-opfs-blocker.md) | **Current blocker**: Safari rotates the extension origin every launch, so OPFS cannot persist |
-| [safari-idb-snapshot.md](safari-idb-snapshot.md) | The fix for it, designed but not built: an IndexedDB snapshot owns the database file          |
-| [progress.md](progress.md)                       | What's built, what's left (the Stage 5 gate), watch-outs, file map                            |
+| File                                             | What it holds                                                                                        |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| [design.md](design.md)                           | Current architecture: schema, codec, inflection synthesis, queries                                   |
+| [pseudocode.md](pseudocode.md)                   | The whole scheme end to end, as pseudocode                                                           |
+| [backend-worker.md](backend-worker.md)           | **Stage 5 blocker + fix**: the backend must run in a worker, not the Safari background page          |
+| [safari-opfs-blocker.md](safari-opfs-blocker.md) | **The blocker**: Safari rotates the extension origin every launch, so OPFS cannot persist            |
+| [native-rewrite.md](native-rewrite.md)           | **The chosen direction**: the engine moves into the native app; the extension becomes display and UI |
+| [native-engine-probe.md](native-engine-probe.md) | The measurement that made it viable: the native bridge costs ~1 ms and ~60 MB/s                      |
+| [safari-idb-snapshot.md](safari-idb-snapshot.md) | On hold — the smaller in-browser fix, kept as the fallback                                           |
+| [progress.md](progress.md)                       | What's built, what's left (the Stage 5 gate), watch-outs, file map                                   |
 
 **Why it is that way (the record):**
 
@@ -51,12 +53,20 @@ Two clusters. Read across them, not down the old timeline.
   restart — while IndexedDB and `localStorage` survive. Measured and settled in
   [safari-opfs-blocker.md](safari-opfs-blocker.md). The engine, schema, codec and importer are all
   fine; only _where the bytes live_ is wrong.
-- **The fix is designed, not built:** an IndexedDB snapshot owns the database file and is restored
-  into a cold OPFS pool at open — [safari-idb-snapshot.md](safari-idb-snapshot.md). Two measurements
-  gate it (whether WebKit reclaims the per-launch orphaned OPFS copies, and the real restore cost).
-- **What still gates the refactor:** that fix, then a restart-survival check at the extension origin,
-  then removing the IndexedDB path and the flag. Full checklist in [progress.md](progress.md) →
-  Stage 5.
+- **The direction has changed in response: the engine moves into the native app**
+  ([native-rewrite.md](native-rewrite.md)). The extension keeps scanning, the popup and the settings
+  UI; storage, queries, the codec, inflection synthesis and the translator move behind a
+  `sendNativeMessage` protocol, with dictionaries **compiled to SQLite at build time** instead of
+  imported in the browser. This makes the origin rotation, OPFS, the orphan leak and the
+  single-connection worker dance all moot at once.
+- **What made it viable:** the native bridge measures ~1 ms fixed and ~60 MB/s
+  ([native-engine-probe.md](native-engine-probe.md)) — a hover-shaped call is 2 ms.
+- **The core is re-hosted, not rewritten.** Yomitan's language logic is live JS closures across 23
+  languages, so it runs unmodified in **JavaScriptCore** inside the app, over native SQLite. The
+  vitest suites keep working because it is the same code.
+- **What gates it:** the stage-N0 measurements (realistic-payload serialization, the message size
+  cap, JSC cold start in the appex). Staging and risks in [native-rewrite.md](native-rewrite.md);
+  the in-browser fallback is [safari-idb-snapshot.md](safari-idb-snapshot.md).
 
 ## The numbers, once
 
