@@ -4,6 +4,14 @@
 schema, the codec, the inflection scheme, the query strategy. It describes the code as it stands, not
 how it was arrived at.
 
+> **Scope note.** The **schema, codec, inflection synthesis and query strategy below are current and
+> carry over unchanged** — they are the durable result of this refactor. What is changing underneath
+> them is _where the database lives and what hosts the engine_: OPFS in the extension is being
+> replaced by native SQLite in the app ([native-rewrite.md](native-rewrite.md)), because Safari
+> rotates the extension origin on every launch and OPFS cannot survive it
+> ([safari-opfs-blocker.md](safari-opfs-blocker.md)). Sections marked **▲ superseded** describe the
+> in-browser hosting that is on its way out; read them as the current code, not the plan.
+
 - The step-by-step of the two hot paths (import, lookup) is [pseudocode.md](pseudocode.md).
 - _Why_ each choice was made, the dead ends, and the retracted measurements are the decision log
   ([decisions.md](decisions.md)) and the evidence in [history/](history/zstd.md) — including the
@@ -17,8 +25,8 @@ display) are unchanged — this is a storage swap behind the facade, selected by
 
 ## Overview
 
-The Safari fork stores its dictionaries in an IndexedDB database named `dict`. This backend replaces
-that store with **SQLite-WASM on OPFS**, keeping the same public API. Three things do the work:
+The Safari fork stored its dictionaries in an IndexedDB database named `dict`. This backend replaces
+that store with **SQLite**, keeping the same public API. Three things do the work:
 
 1. **A columnar SQLite schema** — integer `dictionary_id` instead of a repeated title string, no
    per-row JSON property names, one compressed BLOB per row for the heavy fields.
@@ -28,32 +36,35 @@ that store with **SQLite-WASM on OPFS**, keeping the same public API. Three thin
    import and regenerated on lookup from rules induced from the dictionary itself.
 
 Measured on the recommended German dictionary `kty-de-en` through the real importer: **~700 MB of
-IndexedDB → 49.4 MB.** The flag is still off; nothing user-visible has changed yet
-([progress.md](progress.md) → Stage 5).
+IndexedDB → 49.4 MB.**
 
 ---
 
-## Storage model
+## Storage model ▲ superseded
+
+_Current code, not the plan — the engine is moving into the native app
+([native-rewrite.md](native-rewrite.md)), which replaces this whole section. The **injected-module
+seam** described here is what makes that swap tractable, so it is the part worth carrying forward._
 
 One SQLite database file on OPFS, opened with the **SAH-Pool VFS** (`installOpfsSAHPoolVfs` →
 `OpfsSAHPoolDb`). SAH-Pool is the VFS that works on Safari without COOP/COEP (no `SharedArrayBuffer`
-/ cross-origin isolation, which an extension cannot arrange). It is single-connection, which is
-exactly right: the whole backend already lives in one place.
-
-All DB access is funnelled through the existing **DB worker**
-(`dictionary-database-worker-main.js`), spawned from Yomitan's offscreen document because the MV3
-background is a service worker. Only the worker holds the connection.
+/ cross-origin isolation, which an extension cannot arrange). It is single-connection and
+**Worker-only** — sync access handles do not exist on the main thread — so a dedicated worker owns
+the connection and the background page proxies to it (retired design:
+[history/backend-worker.md](history/backend-worker.md)).
 
 `open-sqlite.js` (`openDictionaryDatabaseHandle`) is VFS-agnostic: `vfs:'opfs'` for the extension,
 `vfs:'memory'` for tests. The `sqlite3` module is **injected**, never imported inside backend code —
 the browser build (`ext/lib/sqlite3.js`) and the node build (`@sqlite.org/sqlite-wasm`) resolve
 differently, and the same opener serves both. The vendored module is loaded once and memoized: a
 second `sqlite3InitModule()` builds an independent runtime that cannot acquire the pool's exclusive
-OPFS handles.
+OPFS handles. **That injection point is the seam the native SQLite binding substitutes at**, which is
+why the native work is a re-host rather than a rewrite.
 
 `DictionaryDatabaseSqlite.prepare()` is a drop-in for the IndexedDB `prepare()`: called with no
 arguments it self-loads the vendored build, opens the OPFS VFS, and calls
-`navigator.storage.persist()`. Tests inject `sqlite3` + `vfs:'memory'`.
+`navigator.storage.persist()` — which **never grants on Safari** and is inert there
+([progress.md](progress.md) → Watch-outs). Tests inject `sqlite3` + `vfs:'memory'`.
 
 ---
 
@@ -212,27 +223,34 @@ Match semantics: `exact` → `expression = ?`; `prefix` → inclusive range `[te
 
 ---
 
-## Migration
+## Migration ▲ superseded
 
-The new backend uses a **new OPFS file** and does not read the old IndexedDB `dict`. On first run it
-detects a non-empty legacy `dict`, has the user re-import, then
-`indexedDB.deleteDatabase('dict')` to reclaim the old storage, and calls
-`navigator.storage.persist()`. Helpers exist (`dictionary-storage-migration.js`:
-`legacyIndexedDbDictionaryExists`, `deleteLegacyIndexedDbDictionary`, `requestPersistentStorage`);
-the settings-page UX that drives them is not built yet ([progress.md](progress.md) → Stage 5).
+_The native direction removes in-browser import entirely — dictionaries are compiled to SQLite at
+build time and installed as a file — so this legacy-IndexedDB migration path is scheduled for
+deletion, not completion ([native-rewrite.md](native-rewrite.md) → stage N5)._
+
+The backend uses a **new OPFS file** and does not read the old IndexedDB `dict`. It detects a
+non-empty legacy `dict`, has the user re-import, then `indexedDB.deleteDatabase('dict')` to reclaim
+the old storage. Helpers in `dictionary-storage-migration.js`
+(`legacyIndexedDbDictionaryExists`, `deleteLegacyIndexedDbDictionary`,
+`requestPersistentStorage`); the settings-page UX that drives them is
+`dictionary-storage-migration-controller.js`.
 
 This is a fork; upstream on-disk compatibility is a non-goal, and re-import (rather than a dual-format
 reader) is a deliberate choice.
 
 ---
 
-## Integration
+## Integration ▲ superseded
+
+_The dual-backend split and its flag are also scheduled for deletion — the native direction reaches
+Stage 5 item 7 by a different road ([native-rewrite.md](native-rewrite.md) → stage N5)._
 
 - **Selection lives in one factory** (`dictionary-database-factory.js`, `createDictionaryDatabase()`),
   used by all three sites that construct the real database (`background/backend.js`,
   `background/offscreen.js`, the DB worker handler). With `USE_SQLITE_BACKEND` off it returns exactly
-  `new DictionaryDatabase()` — no SQLite/WASM/pako is touched at runtime. Flipping the flag is a
-  one-line change.
+  `new DictionaryDatabase()` — no SQLite/WASM/pako is touched at runtime. The flag is currently
+  **on**.
 - **The SQLite backend is cast to `DictionaryDatabase`** at the factory/test seams; the two backends
   share the public surface but are separate classes (a shared interface is a follow-up).
 - **Result builders** (`_createTerm`, `_createKanji`, …) mirror the IndexedDB backend's, sourcing
@@ -248,7 +266,9 @@ reader) is a deliberate choice.
   the canonical translator results, across `{identity, deflate}`.
 - **Real Safari** (`npm run test:safari`) runs the backend against the real vendored WASM in the
   browser users actually run, driven by `open -g -a Safari` (no focus steal). It has caught two bugs
-  node could not: the singleton requirement, and handing a WASM-heap view to `TextDecoder`.
+  node could not: the singleton requirement, and handing a WASM-heap view to `TextDecoder`. _It is
+  tied to the in-browser WASM backend, so the native direction retires it in favour of an
+  extension-origin protocol test ([native-rewrite.md](native-rewrite.md) → Testing)._
 - **Query-plan regression** (`dictionary-database-sqlite-query-plan.test.js`) runs
   `EXPLAIN QUERY PLAN` on the SQL the backend issues and asserts `SCAN terms` never appears — a class
   of bug correctness tests cannot catch, since results are identical either way.

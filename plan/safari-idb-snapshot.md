@@ -33,7 +33,7 @@ dictionary count**, while both rejected options charge either every query or eve
 
 It also touches remarkably little: no new WASM, no new dependency, no change to the schema, the
 codec, the importer, inflection synthesis, the query paths, or the owner/proxy worker split from
-[backend-worker.md](backend-worker.md).
+[backend-worker.md](history/backend-worker.md).
 
 ### Why not `:memory:`
 
@@ -137,7 +137,7 @@ guarded so it is a no-op when there is no store (tests, `:memory:`).
 
 ## Interaction with the existing worker topology
 
-Nothing about [backend-worker.md](backend-worker.md) changes, but two interactions must hold:
+Nothing about [backend-worker.md](history/backend-worker.md) changes, but two interactions must hold:
 
 - **Imports run in their own worker**, which holds the pool while the background's owner is
   terminated (`suspendDatabase`). That worker builds its backend through the same
@@ -225,7 +225,7 @@ The existing three-layer split holds, and the middle layer is where this actuall
 Every one of these must leave the user with a working (if empty) extension rather than a `prepare()`
 that throws, because `backend.js` swallows a failed prepare into a `log.error` and every subsequent
 query then reports "Database not open" — the exact silent failure documented in
-[backend-worker.md](backend-worker.md).
+[backend-worker.md](history/backend-worker.md).
 
 | condition                                 | behavior                                                                |
 | ----------------------------------------- | ----------------------------------------------------------------------- |

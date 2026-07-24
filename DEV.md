@@ -1,5 +1,11 @@
 # DEV notes
 
+> **Heads-up on direction.** The dictionary engine is moving out of the extension and into the
+> native app — see [plan/native-rewrite.md](plan/native-rewrite.md), and
+> [plan/safari-opfs-blocker.md](plan/safari-opfs-blocker.md) for why. Everything below is accurate
+> for the code as it stands, but the OPFS-specific parts (`test:safari`, the secure-context notes)
+> are tied to the in-browser backend and retire with it.
+
 ## Measuring dictionary storage for real
 
 ```sh
@@ -24,6 +30,11 @@ SELECT name, sum(pgsize) FROM dbstat GROUP BY name ORDER BY 2 DESC;
 [plan/history/sizing.md](plan/history/sizing.md) has the full bottom-up budget — including that 26.5 MB
 of the index is degenerate and droppable, and that 90% of `kty-de-en`'s rows are inflected-form stubs
 costing 60.5 MB of the 71.5 MB payload.
+
+`--db` runs the **real importer headless in node to produce a real `.sqlite3`**, which makes it the
+seed of the build-time dictionary compiler the native direction needs — it wants promoting from a
+measurement script to a supported build artifact
+([plan/native-rewrite.md](plan/native-rewrite.md) → The dictionary pipeline).
 
 ## Running tests in real Safari without stealing focus
 

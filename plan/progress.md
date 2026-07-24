@@ -3,6 +3,19 @@
 Living status of the storage-backend refactor: what is built, what remains, and the watch-outs that
 bit us. Update this every work session. Stages are ordered oldest → newest.
 
+> **Where this stands.** Stages 0–5 below built the SQLite backend **inside the extension**, on
+> OPFS. That is done, works, and is what the extension runs today — but it cannot survive a Safari
+> restart, because Safari rotates the extension origin on every launch
+> ([safari-opfs-blocker.md](safari-opfs-blocker.md)). The project has therefore been redirected: the
+> engine moves into the native app and the extension becomes display and UI
+> ([native-rewrite.md](native-rewrite.md), staged N0–N6).
+>
+> **What carries over unchanged:** the schema, the payload codec, inflection synthesis, the query
+> strategy, and the whole vitest suite — the core is re-hosted, not rewritten. **What is scheduled
+> for deletion:** the OPFS/SAH-Pool layer, the owner-worker proxy and suspend/resume, the in-browser
+> importer, the legacy-IndexedDB migration UX, and the `USE_SQLITE_BACKEND` flag. Read the Stage 5
+> checklist below as history, not as a to-do list.
+
 The current architecture is [design.md](design.md); the whole scheme in pseudocode is
 [pseudocode.md](pseudocode.md); the rationale for each choice is [decisions.md](decisions.md); the
 byte-budget evidence is [history/sizing.md](history/sizing.md); why zstd was rejected is
@@ -24,8 +37,10 @@ byte-budget evidence is [history/sizing.md](history/sizing.md); why zstd was rej
   - `898ae1f7` Stage 4: migration + persistence helpers, tuning, and backend selection wiring
   - `ff7f7e45` Add a real-Safari test runner, split out the zstd task, sort the plan docs
   - `56658cf5` plan: fix decision cross-references after the renumbering
+- The commit list above stops at the codec work; later commits (the owner-worker fix, the flag flip,
+  the OPFS blocker, the native redirect) are in `git log` and are not mirrored here.
 - Green: `tsc` (main + test), repo-wide `eslint`, full `vitest` (4296 tests / 46 skipped),
-  `npm run build -- --target safari`, and `npm run test:safari` (17/17 in real Safari).
+  `npm run build -- --target safari`, and `npm run test:safari` (23/23 in real Safari).
 - Note: `test:ts:test` and `eslint` were **red at `56658cf5`** (test tsc could not resolve
   `test/safari/worker.js`'s server-absolute `/ext/…` imports; 22 lint errors in `test/safari/`),
   despite that session's notes claiming green. Both are fixed as of the zstd work — the test tsconfig
@@ -265,14 +280,14 @@ stopping after any one leaves the tree in a good state. Decisions: #32, #28, #31
        hand-written version wrote `reading: ''`, which the importer never produces, and so the drop
        pass silently dropped nothing on real imports while the tests stayed green (#35).
 
-## Stage 5 — item 1 PASSES; the flag is now ON ([backend-worker.md](backend-worker.md))
+## Stage 5 — item 1 PASSES; the flag is now ON ([backend-worker.md](history/backend-worker.md))
 
 Extension-origin verification (item 1) found that the SQLite backend cannot open OPFS in the Safari
 background page (sync access handles are Worker-only). **Fixed**: a **dedicated** worker owns the
 single OPFS connection and page contexts proxy to it; imports keep their own worker and the
 background lets go for the duration via `suspendDatabase`/`resumeDatabase`. (A SharedWorker hub was
 built first and **retracted** — it constructs but never connects in Safari web-extension pages; see
-[backend-worker.md](backend-worker.md) → RETRACTED.) `npm run test:safari` covers both sides of the
+[backend-worker.md](history/backend-worker.md) → RETRACTED.) `npm run test:safari` covers both sides of the
 seam — **23/23** — and the flag is now on and verified in the installed extension.
 
 **A second, larger blocker then surfaced: the imported dictionary does not survive a Safari
@@ -298,7 +313,7 @@ unchanged — they are re-hosted, not rewritten.
    The import succeeds (its own worker; OPFS file lands at the exact 49.4 MB), but the background
    page's `DictionaryDatabaseSqlite.prepare()` fails — `createSyncAccessHandle` is `undefined` off a
    Worker — so every lookup is "Database not open". **Full root cause + the proposed fix (run the
-   backend in one dedicated DB worker, background proxies to it) is [backend-worker.md](backend-worker.md).**
+   backend in one dedicated DB worker, background proxies to it) is [backend-worker.md](history/backend-worker.md).**
    Until that lands, the flag cannot flip. Everything below (the automation channel, the manual
    gate) still holds and is how the fix will be verified.
    - **Automation feasibility — resolved: it is scriptable.** The `open -g -a Safari` + `do
@@ -383,6 +398,17 @@ the extension unusable.
 
 ## Watch-outs (still live)
 
+Marked **[browser-only]** where the item is a property of running the engine in the extension and so
+stops applying once the engine is native ([native-rewrite.md](native-rewrite.md)) — they still bind
+until N5 lands, and they are exactly the class of surprise to expect again from the native host.
+
+- **Safari's native-messaging bridge is cheap.** ~1 ms fixed per round trip, ~60 MB/s throughput,
+  symmetric and linear, measured against the installed extension
+  ([native-engine-probe.md](native-engine-probe.md)). Assume nothing worse without re-measuring; the
+  earlier assumption that it would be prohibitive was wrong by roughly an order of magnitude. Caveat:
+  that was a flat ASCII payload, not nested objects with BLOBs.
+- **Safari has no `connectNative`.** One-shot request/response only — no long-lived port, no server
+  push. Anything native-initiated has to be polled.
 - **Safari never grants `navigator.storage.persist()`** — and it is not a manifest problem.
   `unlimitedStorage` **is** declared and present in the installed Safari manifest, `persist` **is**
   a function, and it still resolves **`false`** — measured both on an extension page and on a plain
@@ -400,7 +426,7 @@ the extension unusable.
   invalidates the SQLite-on-OPFS storage choice for the Safari target; the SQLite engine itself is
   unaffected, only where its bytes live.
 
-- **sqlite3 must be a singleton.** `installOpfsSAHPoolVfs` caches its pool per VFS name _inside one
+- **[browser-only] sqlite3 must be a singleton.** `installOpfsSAHPoolVfs` caches its pool per VFS name _inside one
   sqlite3 instance_, and the pool holds exclusive OPFS sync access handles. A second
   `sqlite3InitModule()` call builds an independent runtime that cannot acquire them →
   `InvalidStateError` on any close/reopen (e.g. `purge()`). `loadVendoredSqlite3()` memoizes it.
@@ -409,11 +435,11 @@ the extension unusable.
   mid-test, breaking the WASM heap views (`jstrcpy() target must be an Int8Array or Uint8Array`).
   The SQLite tests therefore run in the plain node env; findTerms/findKanji don't need the DOM.
   Test-harness-only — the real backend runs in a Worker.
-- **`.wasm` MIME in Safari**: extension `.wasm` is served without `application/wasm`, so
+- **[browser-only] `.wasm` MIME in Safari**: extension `.wasm` is served without `application/wasm`, so
   `instantiateStreaming` fails and sqlite falls back to ArrayBuffer instantiation. Works, slightly
   slower. The zstd module avoids this entirely by embedding its wasm (`-sSINGLE_FILE`); any _further_
   WASM would need the fallback again.
-- **Don't hand a WASM-heap view to a web API.** Safari's `TextDecoder` throws a `TypeError` on a
+- **[browser-only] Don't hand a WASM-heap view to a web API.** Safari's `TextDecoder` throws a `TypeError` on a
   `subarray` view backed by the growable WASM memory, where node accepts it happily; copy out with
   `slice` first. Caught by `npm run test:safari` — the second real bug that runner has found that
   node could not see. The same caution applies to any view handed across an API boundary, and views
@@ -432,9 +458,14 @@ the extension unusable.
 
 ## File map (new/changed by this refactor)
 
+`†` marks what the native direction deletes rather than finishes
+([native-rewrite.md](native-rewrite.md) → stage N5).
+
 ```
-plan/                                    01-design, 02-decisions, 03-progress, README, zstd/
-ext/js/dictionary/dictionary-backend-config.js   USE_SQLITE_BACKEND flag
+plan/                                    README, design, pseudocode, decisions, progress,
+                                         safari-opfs-blocker, native-rewrite, native-engine-probe,
+                                         safari-idb-snapshot (on hold), history/
+ext/js/dictionary/dictionary-backend-config.js † USE_SQLITE_BACKEND flag
 ext/js/dictionary/dictionary-database-factory.js createDictionaryDatabase() backend selection
 ext/js/dictionary/payload-codec.js               IdentityPayloadCodec
 ext/js/dictionary/deflate-payload-codec.js       DeflatePayloadCodec (pako, injected)
@@ -442,13 +473,19 @@ dev/measure-storage.js                           real-dictionary measurement (np
 ext/js/dictionary/sqlite/open-sqlite.js          openDictionaryDatabaseHandle()
 ext/js/dictionary/sqlite/dictionary-sqlite-schema.js   DDL + createDictionarySchema()
 ext/js/dictionary/sqlite/dictionary-database-sqlite.js DictionaryDatabaseSqlite (the backend)
-ext/js/dictionary/sqlite/dictionary-storage-migration.js  legacy-IDB detect/delete, persist
-ext/js/pages/settings/dictionary-storage-migration-controller.js  settings-page migration UX (item 2)
+ext/js/dictionary/sqlite/dictionary-storage-migration.js † legacy-IDB detect/delete, persist
+ext/js/pages/settings/dictionary-storage-migration-controller.js † settings-page migration UX (item 2)
+ext/js/dictionary/sqlite/database-owner-client.js † RPC client; background -> owner worker
+ext/js/dictionary/dictionary-database-worker-handler.js † owner-side dispatch for that RPC
+ext/js/dictionary/dictionary-worker.js   † suspend/resume around imports
+ext/js/background/backend.js             † _onApiSuspendDatabase / _onApiResumeDatabase
+types/ext/dictionary-database-sqlite.d.ts † OwnerParams / WorkerRequest / WorkerResponse
+build-safari.sh                          Swift handler template (+ the `ping` latency probe)
 types/ext/sqlite-wasm.d.ts               narrow sqlite oo1 type surface
 types/ext/pako.d.ts                      narrow pako surface
 types/ext/payload-codec.d.ts             PayloadCodec type (+ optional prepare())
 types/ext/dictionary-database.d.ts       + PayloadCodecName (and Layer 1's Packed/Payload types)
-test/safari/                             real-Safari runner (run.js, harness.html, worker.js)
+test/safari/                             † real-Safari runner (run.js, harness.html, worker.js)
 test/sqlite-backend-smoke.test.js        harness + opener/schema tests
 test/dictionary-database-sqlite.test.js  term parity vs IndexedDB backend
 test/dictionary-database-sqlite-codec.test.js  codec self-description + finalizeImport

@@ -1,4 +1,15 @@
-# Design: run the SQLite backend in a worker (Stage 5 blocker)
+# Design: run the SQLite backend in a worker (Stage 5 blocker) — RETIRED
+
+> **Retired to history.** This is built and working, and it is what the extension runs today, but the
+> whole mechanism exists to solve a problem the native direction deletes: it only matters while the
+> OPFS connection lives inside the browser. Once the engine moves into the native app
+> ([../native-rewrite.md](../native-rewrite.md) → stage N5), the owner worker, the background proxy
+> and the `suspendDatabase`/`resumeDatabase` handoff all go with it.
+>
+> Kept for two reasons: it documents code that is still live until N5 lands, and it holds Safari
+> findings that outlive it — **SharedWorker constructs but never connects in Safari web-extension
+> pages**, **a message posted to a worker with no listener yet is silently lost**, and
+> **`createSyncAccessHandle` is undefined outside a Worker**.
 
 **Status: BUILT and VERIFIED AT THE EXTENSION ORIGIN.** A dedicated worker owns the connection, the
 background proxies to it, and imports suspend it. 23/23 in real Safari at `127.0.0.1`, and in the
@@ -50,12 +61,12 @@ Error: Database not open
 
 1. The Safari build's background is a **persistent page** (`background.html`), not a service worker.
 2. Safari has **no `chrome.offscreen`**, so `backend.js` takes its non-offscreen branch
-   ([backend.js:69–73](../ext/js/background/backend.js)) and constructs `DictionaryDatabaseSqlite`
+   ([backend.js:69–73](../../ext/js/background/backend.js)) and constructs `DictionaryDatabaseSqlite`
    **in the background page's main thread**.
 3. `DictionaryDatabaseSqlite.prepare()` opens the OPFS SAH-Pool **in that same context**, but OPFS
    sync access handles are **Worker-only**. Verified live from a Window context in the real
    extension: `FileSystemFileHandle.prototype.createSyncAccessHandle` is **`undefined`** on the main
-   thread (present inside a Worker). So `prepare()` throws, [backend.js:341–345](../ext/js/background/backend.js)
+   thread (present inside a Worker). So `prepare()` throws, [backend.js:341–345](../../ext/js/background/backend.js)
    swallows it into a `log.error`, `_db` stays null, and every query is "Database not open".
 
 The **import** works only because it runs in its own dedicated worker
