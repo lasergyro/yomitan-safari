@@ -248,9 +248,17 @@ a partially written file is not left mapped under the database name.
   claimed it was, which is wrong. The leak comes from the OPFS **working** copy plus the rotating
   origin, and native storage does not remove the working copy: SQLite still needs synchronous
   storage, so OPFS is still there and still orphaned per launch. It only relocates the _durable_
-  copy, which IndexedDB does more cheaply and without chunking ~50 MB through a plist-serialized IPC
-  bridge. It would only pay off in a different design entirely — SQLite compiled into the Swift app
-  and queried over the bridge — which abandons the shared JS backend.
+  copy, which IndexedDB already does. (The "~50 MB through the bridge would be brutal" half of the
+  original argument was **wrong** and is retracted — the bridge measures ~1 ms fixed and ~60 MB/s, so
+  that transfer is under a second: [native-engine-probe.md](native-engine-probe.md). The reason
+  native storage loses is that it fixes nothing, not that it is slow.)
+- **Running SQLite natively in the Swift app** — a genuinely different architecture that makes the
+  origin rotation, OPFS, the leak, the per-launch copy and the wasm heap all disappear at once, and
+  the bridge is now measured fast enough to carry it
+  ([native-engine-probe.md](native-engine-probe.md)). Not rejected on the merits — it is simply a
+  much larger project than this one, it makes the SQLite backend Safari-only by construction, and it
+  is most attractive in the variant where the database is **pre-generated at build time** and the
+  in-browser import path goes away entirely. Out of scope here; this design does not foreclose it.
 - **Waiting for a WebKit fix.** The origin rotation is deliberate; the arguably-buggy part is that
   OPFS is not covered by the same stable partition IndexedDB gets. Worth filing, not worth blocking
   on.

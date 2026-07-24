@@ -261,9 +261,26 @@ handler_source = textwrap.dedent(
             switch action {
                 case "ankiRequest":
                     proxyAnkiRequest(message: message, context: context)
+                case "ping":
+                    handlePing(message: message, context: context)
                 default:
                     complete(context: context, response: ["error": "Unsupported action: " + action])
             }
+        }
+
+        // Latency probe for the native-engine option (plan/native-engine-probe.md). Echoes a
+        // payload of a caller-requested size so the round trip can be timed at realistic
+        // query-result sizes, and returns a native wall-clock stamp so the request and response
+        // legs can be told apart.
+        private func handlePing(message: [String: Any], context: NSExtensionContext) {
+            let receivedBytes = (message["payload"] as? String)?.count ?? 0
+            let echoBytes = (message["echoBytes"] as? Int) ?? 0
+            complete(context: context, response: [
+                "ok": true,
+                "receivedBytes": receivedBytes,
+                "nativeTimestampMs": Date().timeIntervalSince1970 * 1000.0,
+                "payload": echoBytes > 0 ? String(repeating: "x", count: echoBytes) : "",
+            ])
         }
 
         private func proxyAnkiRequest(message: [String: Any], context: NSExtensionContext) {
