@@ -168,6 +168,17 @@ what the observed ~500 MB was. If eviction never runs, disk grows by ~49.4 MB pe
 bound, and that would be a ship blocker on its own. Measuring it is step 1 of the build order for
 exactly that reason.
 
+The leak is a property of **using OPFS as the working store at all**, not of this snapshot scheme, so
+the escape routes all give OPFS up rather than relocating the durable copy (native container storage
+in particular does **not** help — see [Rejected alternatives](#rejected-alternatives-recorded)). If
+step 1 shows the copies are never reclaimed, the ladder is:
+
+1. **`:memory:` + the same IDB snapshot.** No OPFS, so no leak, at the grow-only wasm RAM cost above.
+   That cost stops being disqualifying once unbounded disk growth is on the other side of the scale,
+   and the snapshot store built here is reused unchanged — only the working store differs.
+2. **Keep the IndexedDB backend on Safari**, shipping SQLite only where OPFS is durable. Cheapest to
+   reach, but it freezes the flag and both code paths in place and forfeits Stage 5 item 7.
+
 ## Build order
 
 Deliberately front-loaded with the two measurements that could invalidate the design, before any
@@ -229,9 +240,17 @@ a partially written file is not left mapped under the database name.
   rare full rewrite for permanent complexity and a hand-rolled consistency argument. Revisit only if
   the measured full-write cost proves painful.
 - **`kvvfs`** — targets `localStorage`/`sessionStorage`, ~5 MB ceiling. Not viable at any size.
-- **Native container storage over `nativeMessaging`** — the container path is genuinely stable, but
-  it needs a Swift-side file server plus a per-read IPC hop, and only works on the macOS app target.
-  Kept in reserve as the answer if the orphan leak turns out to be unreclaimed _and_ intolerable.
+- **Native container storage over `nativeMessaging`** — the app's container
+  (`~/Library/Containers/dev.yomitan.safari.extension/…`) is keyed by bundle identifier and is
+  genuinely stable, and the bridge already exists (`SafariWebExtensionHandler.swift` serves
+  `ankiRequest` today; the safari variant already promotes `nativeMessaging` into `permissions`).
+  **Rejected, and specifically _not_ a fallback for the orphan leak** — an earlier draft of this doc
+  claimed it was, which is wrong. The leak comes from the OPFS **working** copy plus the rotating
+  origin, and native storage does not remove the working copy: SQLite still needs synchronous
+  storage, so OPFS is still there and still orphaned per launch. It only relocates the _durable_
+  copy, which IndexedDB does more cheaply and without chunking ~50 MB through a plist-serialized IPC
+  bridge. It would only pay off in a different design entirely — SQLite compiled into the Swift app
+  and queried over the bridge — which abandons the shared JS backend.
 - **Waiting for a WebKit fix.** The origin rotation is deliberate; the arguably-buggy part is that
   OPFS is not covered by the same stable partition IndexedDB gets. Worth filing, not worth blocking
   on.

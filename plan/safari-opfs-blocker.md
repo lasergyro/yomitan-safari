@@ -83,18 +83,10 @@ the scheme. The way in is the background page's own console:
 
 ## Options for the storage layer
 
-Not yet decided. Sketched in rough order of cost:
-
-1. **Keep the legacy IndexedDB store on Safari** and ship the SQLite backend only where OPFS is
-   durable (Chrome/Firefox). Cheapest, but it means the flag and both code paths stay forever,
-   contradicting Stage 5 item 7.
-2. **Put the SQLite file in IndexedDB.** Either a community IndexedDB VFS (wa-sqlite's
-   `IDBBatchAtomicVFS`) or the simpler shape: run the database `:memory:` and persist the serialized
-   file as one blob in IndexedDB, rewritten at `finalizeImport()` and read back at startup. The
-   in-memory variant makes lookups very fast and the code small, at the cost of holding the whole
-   DB in RAM (~50 MB for one large dictionary; the ceiling with several is the open question).
-   Note `kvvfs` is _not_ an option — it targets `localStorage`/`sessionStorage` and its ~5 MB
-   ceiling.
-3. **Store the file in the native app's container** and reach it over `nativeMessaging`. The
-   container path is genuinely stable, but this adds a Swift-side file server and a per-read IPC
-   hop, and only works on the macOS app target.
+**Decided: an IndexedDB snapshot owns the file, with OPFS kept as the working copy.** Designed in
+[safari-idb-snapshot.md](safari-idb-snapshot.md), which also records why the alternatives lost — a
+block VFS over IndexedDB charges an Asyncify tax on every query forever, `:memory:` charges grow-only
+wasm memory proportional to total dictionary size, and native-container storage over
+`nativeMessaging` relocates the durable copy without removing the OPFS working copy, so it solves
+nothing IndexedDB does not already solve more cheaply. See that doc's fallback ladder for what
+happens if the per-launch orphaned OPFS copies turn out never to be reclaimed.
