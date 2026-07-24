@@ -19,6 +19,13 @@ a message router and a file installer. Everything above the SQL is the same code
 translator — so a lookup is one `sendNativeMessage` round trip that returns finished dictionary
 entries. What stays in the extension is what needs the DOM: scanning, the popup, and the settings UI.
 
+**This is one host, not the only possible one.** The engine is JavaScript and the same bundle runs
+unmodified anywhere; a host supplies four platform functions, a message router and a file installer.
+A Linux host for Firefox is a node script — `node:sqlite` plus stdio framing — and most of it already
+exists as `answerInNode` in [`../dev/bin/test-native-core.js`](../dev/bin/test-native-core.js). The
+contract is [../plan/native-protocol.md](../plan/native-protocol.md); do not add anything to this
+directory that the protocol does not describe.
+
 ## Layout
 
 | Path                                                    | What it is                                                                                       |

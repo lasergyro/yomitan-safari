@@ -16,27 +16,33 @@
  */
 
 import {parseJson} from '../core/json.js';
+import {getNativeHostCandidates} from './native-host-ids.js';
 import {deserializeError} from './native-protocol.js';
 
 /**
- * The extension side of the bridge: one call out to the app extension and back.
+ * The extension side of the bridge: one call out to the native host and back.
  *
- * Safari has no `connectNative`, so there is no port, no push and no streaming — every interaction
- * is a one-shot `sendNativeMessage`. The measured cost is ~1 ms fixed plus ~60 MB/s of payload
+ * Every interaction is a one-shot `sendNativeMessage`, because Safari has no `connectNative` — no
+ * port, no push, no streaming. The measured cost is ~1 ms fixed plus ~60 MB/s of payload
  * (plan/native-engine-probe.md), which is what makes putting a hover-path query behind it viable.
  *
  * The request and the reply each carry a single JSON string rather than a nested property list; see
  * native-protocol.js for why that choice is load-bearing rather than incidental.
+ *
+ * **Nothing here is specific to Safari except which host it addresses**, and that is
+ * `native-host-ids.js`'s problem rather than this file's. A browser with `connectNative` (Firefox,
+ * Chrome) could hold a port and stream progress instead: `_send` is the only method that would
+ * change, and the wire format would not. The contract is written down in plan/native-protocol.md so
+ * that a second host implementation has something to build against other than this file.
  */
 export class NativeEngineClient {
     /**
-     * @param {?string[]} [applications] Native host ids to try in order. Defaults to the same
-     *   derivation `anki-connect.js` uses, which is the only way to learn the app's bundle id at
-     *   runtime: Safari reports it as `chrome.runtime.id`, with the signing team appended.
+     * @param {?string[]} [applications] Native host ids to try in order. Defaults to the candidates
+     *   appropriate to the browser; see `native-host-ids.js`.
      */
     constructor(applications = null) {
         /** @type {string[]} */
-        this._applications = applications ?? getDefaultNativeMessagingApplications();
+        this._applications = applications ?? getNativeHostCandidates();
         /**
          * The host that answered last. Trying three ids on every hover would triple the failure
          * latency of a misconfigured install and add a wasted round trip to every call on a correct
@@ -63,9 +69,9 @@ export class NativeEngineClient {
         if (!isObject(response)) {
             throw new Error(`The native host returned no response for "${action}"`);
         }
-        // The Swift router replies with the engine's JSON verbatim under `response`. A failure
-        // *before* the engine is reached (no such action, engine failed to start) uses the plain
-        // `error` string the pre-existing handler actions already use, so both shapes are handled.
+        // The router replies with the engine's JSON verbatim under `response`. A failure *before*
+        // the engine is reached (no such action, engine failed to start) uses the plain `error`
+        // string the host-level actions use, so both shapes are handled.
         if (typeof response.error === 'string') {
             throw new Error(`Native host error for "${action}": ${response.error}`);
         }
@@ -81,12 +87,12 @@ export class NativeEngineClient {
     }
 
     /**
-     * Sends one message the **Swift router** handles directly, without the engine being involved.
+     * Sends one message the **host's own router** handles, without the engine being involved.
      *
-     * These are the actions that are about files and processes rather than about dictionary data:
-     * streaming a compiled database into the container, and asking whether the app is there at all.
-     * They deliberately do not go through `invoke`, because they have no JSON envelope and no
-     * JavaScriptCore on the other end.
+     * These are the actions about files and processes rather than about dictionary data: streaming
+     * a compiled database into the container, and asking whether the host is there at all. They
+     * deliberately do not go through `invoke`, because they carry no JSON envelope and never reach
+     * the JavaScript engine.
      * @param {string} action
      * @param {{[key: string]: unknown}} [params]
      * @returns {Promise<{[key: string]: unknown}>}
@@ -109,7 +115,7 @@ export class NativeEngineClient {
     async _send(message) {
         const candidates = this._resolvedApplication !== null ? [this._resolvedApplication] : this._applications;
         if (candidates.length === 0) {
-            throw new Error('No native messaging application is configured; the native engine needs the Safari app extension');
+            throw new Error('No native messaging host is configured; the dictionary engine runs in a native host, which has to be installed');
         }
         /** @type {string[]} */
         const failures = [];
@@ -135,26 +141,6 @@ export class NativeEngineClient {
  */
 function isObject(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * Safari reports the extension's own bundle id as `chrome.runtime.id`, with ` (TEAMID)` appended,
- * and the appex id is the app id plus `.extension`. Both are tried because which one answers
- * depends on how the app was packaged.
- * @returns {string[]}
- */
-function getDefaultNativeMessagingApplications() {
-    /** @type {string[]} */
-    const applications = [];
-    const runtimeId = typeof chrome !== 'undefined' ? chrome.runtime?.id : void 0;
-    if (typeof runtimeId === 'string' && runtimeId.length > 0) {
-        const extensionId = runtimeId.replace(/\s+\([^)]+\)$/, '');
-        applications.push(extensionId);
-        if (extensionId.endsWith('.extension')) {
-            applications.push(extensionId.substring(0, extensionId.length - '.extension'.length));
-        }
-    }
-    return [...new Set(applications)];
 }
 
 /**

@@ -25,6 +25,7 @@ Three clusters. Start with the first.
 | [safari-opfs-blocker.md](safari-opfs-blocker.md) | **The blocker**: Safari rotates the extension origin every launch, so OPFS cannot persist |
 | [native-rewrite.md](native-rewrite.md)           | **The plan and its status**: the engine in the native app, staged N0-N6                   |
 | [../native/README.md](../native/README.md)       | **What was built**: layout, the build, the test gate, installing a dictionary             |
+| [native-protocol.md](native-protocol.md)         | **The wire contract**: what a second host (Linux, Firefox) implements                     |
 | [native-engine-probe.md](native-engine-probe.md) | The measurement that made it viable: the native bridge costs ~1 ms and ~60 MB/s           |
 
 **What exists today (carries over):**

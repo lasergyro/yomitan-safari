@@ -518,3 +518,29 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     something other than what ships — precisely the class of bug that gate exists for — so
     `build-native-core.js` minifies by default and `--no-minify` is the debugging escape hatch. —
     _built._
+
+## Keeping a second host possible
+
+50. **Archives are consumed on the build side; the bridge never carries one.** — `.zip` →
+    `.sqlite3` happens in `npm run compile:dictionary`, and a host installs a finished file. This is
+    now a standing rule rather than an artefact of the Safari work: no protocol action takes an
+    archive, and the in-browser importer is not coming back. It is what keeps the importer, the
+    trained-codec handshake and the ~152 s of deflate off every user's machine, and it keeps a
+    second host small — a Linux host needs SQLite and a file writer, not a zip reader, a schema
+    validator and a compressor. The cost is that a dictionary cannot be installed from a URL that
+    serves an archive, which is why "Check for Updates" and the recommended-dictionaries list
+    currently fail: the fix is to publish compiled databases, not to teach the bridge about zips. —
+    _decided; the compiler is built, publishing is not._
+
+51. **The protocol is written down, and host addressing is no longer Safari-shaped.** — With Linux
+    and Firefox plausible, the contract was implicit in the Swift host plus a type file, which is a
+    poor thing to ask a second implementer to reverse-engineer:
+    [native-protocol.md](native-protocol.md) states it, with `npm run test:jsc` as the executable
+    version. Addressing moved to `native-host-ids.js` because it is the one genuinely
+    browser-specific thing left — Safari names the host by **bundle identifier** (no registry; the
+    id comes from `chrome.runtime.id` with the signing team appended), while Firefox and Chrome name
+    it by a **registered manifest name** that has nothing to do with `chrome.runtime.id`. Candidates
+    are tried in order and the winner remembered, so a wrong guess costs one call per session; the
+    bundle-id derivation is skipped entirely when the runtime id does not look like one, which is
+    how a Firefox extension id avoids spending a round trip on a candidate that cannot exist. —
+    _built._
