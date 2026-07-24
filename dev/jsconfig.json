@@ -45,6 +45,9 @@
             "dictionary-database": [
                 "../types/ext/dictionary-database"
             ],
+            "native-bridge": [
+                "../types/ext/native-bridge"
+            ],
             "dictionary-importer": [
                 "../types/ext/dictionary-importer"
             ],

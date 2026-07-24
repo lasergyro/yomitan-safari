@@ -1,10 +1,10 @@
 # DEV notes
 
-> **Heads-up on direction.** The dictionary engine is moving out of the extension and into the
-> native app — see [plan/native-rewrite.md](plan/native-rewrite.md), and
-> [plan/safari-opfs-blocker.md](plan/safari-opfs-blocker.md) for why. Everything below is accurate
-> for the code as it stands, but the OPFS-specific parts (`test:safari`, the secure-context notes)
-> are tied to the in-browser backend and retire with it.
+> **Heads-up on direction.** The dictionary engine no longer runs in the extension — it runs in the
+> Safari app extension, in JavaScriptCore, over system `libsqlite3`. See
+> [native/README.md](native/README.md), [plan/native-rewrite.md](plan/native-rewrite.md), and
+> [plan/safari-opfs-blocker.md](plan/safari-opfs-blocker.md) for why. The OPFS notes below are kept
+> for the secure-context facts, which still matter for anything else that wants OPFS.
 
 ## Measuring dictionary storage for real
 
@@ -31,66 +31,64 @@ SELECT name, sum(pgsize) FROM dbstat GROUP BY name ORDER BY 2 DESC;
 of the index is degenerate and droppable, and that 90% of `kty-de-en`'s rows are inflected-form stubs
 costing 60.5 MB of the 71.5 MB payload.
 
-`--db` runs the **real importer headless in node to produce a real `.sqlite3`**, which makes it the
-seed of the build-time dictionary compiler the native direction needs — it wants promoting from a
-measurement script to a supported build artifact
-([plan/native-rewrite.md](plan/native-rewrite.md) → The dictionary pipeline).
+`--db` runs the real importer headless in node, which is where
+[dev/bin/compile-dictionary.js](dev/bin/compile-dictionary.js) came from. That script is now the
+supported build artifact (`npm run compile:dictionary`); this one stays a measurement tool, and it
+reports sizes from `page_count * page_size` rather than writing a file.
 
-## Running tests in real Safari without stealing focus
+## The native engine
 
-```sh
-npm run test:safari     # SQLite/OPFS dictionary backend, in real Safari, backgrounded
-```
-
-`open -g -a Safari <url>` loads a page in the **real** browser but, thanks to `-g`, never brings
-it to the foreground — so an automated run doesn't interrupt you. Pair it with a loopback HTTP
-server that serves the harness and collects results via `fetch('/results')`, and you have a
-headless-ish Safari runner:
+The dictionary engine runs in the Safari **app extension**, not in the browser — see
+[native/README.md](native/README.md) for the layout and [plan/native-rewrite.md](plan/native-rewrite.md)
+for why. Day-to-day:
 
 ```sh
-open -g -a Safari "http://127.0.0.1:8730/"   # real Safari, no focus change
+./rebuild-safari.sh                 # extension + app, signed and reinstalled into Safari
+npm run test:jsc                    # node vs. JavaScriptCore on the same compiled database
+npm run compile:dictionary -- kty-de-en.zip --out dictionaries.sqlite3
 ```
 
-`127.0.0.1` is a **secure context**, so OPFS works with no COOP/COEP and no HTTPS (see the
-Tailscale section below for why that matters off-localhost).
+Two things that will otherwise cost an afternoon:
 
-Why not the obvious alternatives:
+- **Never edit anything under `builds/yomitan-safari-app/`.** `safari-web-extension-converter` is run
+  with `--force` on every build and regenerates the whole project. The Swift sources live in
+  `native/Sources/YomitanNative/` and are copied in, with the extra files registered in
+  `project.pbxproj`, by `build-safari.sh`.
+- **`npm run test:jsc` is not covered by `npm test`.** It needs `swiftc`, so it is a separate
+  command — but it is the only thing that catches a bundle that will not evaluate in JavaScriptCore,
+  a missing platform shim, or a SQLite binding that marshals a value differently from the WASM build.
+  Run it after touching anything under `ext/js/native/`, `ext/js/dictionary/sqlite/`, or
+  `native/Sources/`.
 
-- **`safaridriver`** (WebDriver, built into macOS) has **no headless mode** — every session opens
-  a focus-stealing automation window. It also needs `safaridriver --enable` plus _Develop → Allow
-  Remote Automation_.
-- **Playwright's `webkit`** is genuinely headless, but it is a WebKit build from trunk, not the
-  Safari your users run. Fine for engine smoke tests; not evidence about Safari itself.
+There used to be a `npm run test:safari` here, which ran the OPFS backend in real Safari over a
+loopback server. It went with the OPFS backend. What replaces it is `test:jsc` for the engine, plus
+driving the installed extension over the background-page console for a true end-to-end check — the
+recipe is in [plan/safari-opfs-blocker.md](plan/safari-opfs-blocker.md#reproducing-it).
 
-Caveats: background tabs get their timers throttled (harmless for WASM/promise-driven work, but
-don't build timing assertions on it), and each run leaves a tab open. See
-[test/safari/README.md](test/safari/README.md).
+### Driving the installed extension
 
-### Driving the _installed extension_ the same way (item 1 of Stage 5)
-
-`test:safari` runs on `127.0.0.1`, which the extension is not injected into — it exercises the
-backend engine, not the `safari-web-extension://…` origin. But the two primitives above compose into
-a real extension-origin check, and the channel is **verified working**:
-
-- `open -g -a Safari <fixture-url>` opens a page with foreign text in real Safari, no focus steal.
-- `do JavaScript "<expr>" in <tab>` (AppleScript, target the tab by URL substring — see the
-  inspection section below) executes JS in that live tab and returns a string. Confirmed end to end:
-  reading `document.title` and page text back as JSON works; so a run can synthesize a scan and read
-  whether Yomitan's popup (`iframe.yomitan-popup`, injected after a scan) appeared with a definition.
-  That popup's `src` is `safari-web-extension://<UUID>/…`, which also _discovers the extension origin_
-  at runtime, so the extension's own `search.html` can then be driven for a clean lookup.
+`open -g -a Safari <url>` loads a page in the **real** browser but, thanks to `-g`, never brings it
+to the foreground — so an automated run doesn't interrupt you. Pair it with AppleScript's
+`do JavaScript "<expr>" in <tab>` (target the tab by URL substring — see the inspection section
+below) and you can synthesize a scan and read back whether Yomitan's popup
+(`iframe.yomitan-popup`, injected after a scan) appeared with a definition. That popup's `src` is
+`safari-web-extension://<UUID>/…`, which also _discovers the extension origin at runtime_, so the
+extension's own `search.html` can then be driven for a clean lookup.
 
 The residual manual gate is not the automation — it is **Apple's security model**: the extension has
 to be _enabled and granted host permission_ in Safari Settings → Extensions once (a deliberate
-manual step; do not synthesize those clicks), and a dictionary imported once. Both persist —
-`rebuild-safari.sh` deliberately updates the bundle in place so Safari keeps the extension registered
-and does not purge its stored data. After that one-time setup, the scan/lookup verification is fully
-scriptable through the channel above.
+manual step; do not synthesize those clicks). Both persist — `rebuild-safari.sh` deliberately updates
+the bundle in place so Safari keeps the extension registered and does not purge its stored data.
 
 One-time enablement, if `do JavaScript` returns nothing: **Develop → Developer Settings… → Allow
 JavaScript from Apple Events** must be on (Safari's prefs are sandboxed, so `defaults write
 com.apple.Safari` fails — toggle it in the UI or via System Events, see below). The terminal also
 needs macOS Automation permission for Safari.
+
+Why not the obvious alternatives for browser automation: **`safaridriver`** (WebDriver, built into
+macOS) has **no headless mode** — every session opens a focus-stealing automation window; and
+**Playwright's `webkit`** is genuinely headless but is a WebKit build from trunk, not the Safari your
+users run. Fine for engine smoke tests; not evidence about Safari itself.
 
 ## Automated Safari inspection (macOS)
 

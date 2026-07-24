@@ -1,8 +1,14 @@
 # Design: move the engine into the native app; the extension becomes display and UI
 
-**Status: designed, not built.** Supersedes [safari-idb-snapshot.md](safari-idb-snapshot.md) as the
-direction (that document stays as the fallback if this stalls — see [Relationship to the
-snapshot plan](#relationship-to-the-snapshot-plan)).
+**Status: stages N0–N2 are built.** The engine runs in the Safari app extension, in JavaScriptCore,
+over the system `libsqlite3`, reading a database in the app container. The app builds and signs, and
+`npm run test:jsc` proves the native host answers identically to node on the same compiled database.
+Stage N3 (translator native), N4 (services), N6 (iOS) remain — see [Staging](#staging) for exactly
+what is done.
+
+Supersedes [safari-idb-snapshot.md](safari-idb-snapshot.md), which was never built and is now
+abandoned rather than held as a fallback: the OPFS storage layer it patched no longer exists in the
+extension.
 
 **Goal, as stated:** as much logic as possible lives in the native app; the browser extension deals
 with display and UI.
@@ -254,41 +260,58 @@ The strategy has to survive the core moving hosts. Four layers:
 
 Each stage lands independently and leaves the extension working. **Do not big-bang this.**
 
-**Stage N0 — de-risk (before committing).** Three measurements, all cheap, any of which could change
-the design:
+**Stage N0 — de-risk. DONE, and the answers changed the design in one place.**
 
-- realistic-payload serialization cost (nested objects + BLOBs, not the flat ASCII string),
-- `sendNativeMessage` hard size cap,
-- JSC cold-start in the appex (context init + bundle parse + DB open), and appex memory headroom.
+- _Serialization shape._ Sidestepped rather than measured: **everything crosses as one JSON string**
+  in both directions, so the probe's flat-string numbers apply directly instead of the question being
+  re-opened for a property list of nested rows. See [decisions.md](decisions.md) #41.
+- _Size cap._ Still unmeasured, and now handled by construction: the only payload that could
+  plausibly approach it is a database install, which is chunked at 3 MB (#45). Worth measuring if a
+  result set ever grows unbounded.
+- _JSC cold start._ **8–10 ms** on macOS for context creation + parsing the 379 KiB bundle + opening
+  the database. Comfortably inside a hover budget even from cold, which is what makes "engine in the
+  appex" viable without a long-lived process. Reported by `NativeEngineHost.startupMilliseconds` and
+  printed by the harness's `--startup`.
 
-**Stage N1 — protocol skeleton.** Swift message router, error mapping, the JS-side client shim, and
-**one** action end to end (`getDictionaryInfo`) served from a native SQLite database installed from a
-pre-generated file. Everything else keeps working as it does today. Proves the seam.
+**Stage N1 — protocol skeleton. DONE.** Swift message router, error mapping, the JS-side client
+shim (`NativeEngineClient`), and the `{action, params}` → `{result} | {error}` envelope.
 
-**Stage N2 — queries native.** The dictionary query surface moves behind the shim. The JS core is
-hosted in JSC with the native SQLite binding; the OPFS/SAH-Pool path stops being used on Safari.
+**Stage N2 — queries native. DONE.** The whole dictionary query surface is behind the shim:
+`DictionaryDatabaseNative` implements the `DictionaryDatabase` API and forwards to the engine, which
+is the unmodified `DictionaryDatabaseSqlite` hosted in JavaScriptCore over the Swift SQLite binding.
+The OPFS/SAH-Pool path was not merely stopped — it was deleted (#44).
 
-**Stage N3 — translator native.** Deinflection and result assembly move into the JSC host, so
-`termsFind` is one call. The extension's display layer is now genuinely display-only.
+**Stage N3 — translator native.** _Remaining._ Deinflection and result assembly move into the JSC
+host, so `termsFind` is one call. The engine's action table is the place to add it; nothing in the
+transport needs to change.
 
-**Stage N4 — services.** Options, Anki, audio, media.
+**Stage N4 — services.** _Remaining._ Options, Anki, audio, media. Also where the settings UI is
+pointed at `installDatabase()` instead of the archive importer.
 
-**Stage N5 — delete.** Remove the OPFS backend, the IndexedDB backend, the flag, the import worker
-and the migration UX from the Safari target.
+**Stage N5 — delete.** _Mostly done, ahead of schedule._ The OPFS backend, the owner worker, the
+suspend/resume API, the migration UX and `USE_SQLITE_BACKEND` are gone. What is left is the
+IndexedDB backend, which is upstream's and still serves the non-Safari targets, and the in-browser
+importer, which those targets still need.
 
 **Stage N6 — iOS**, if wanted: drop `--macos-only`, and confront JSC-without-JIT and appex memory on
 device.
+
+### Turning it on
+
+`USE_NATIVE_BACKEND` in `ext/js/dictionary/dictionary-backend-config.js` is **`false`**. It stays
+false until a dictionary can be installed from the settings UI (stage N4): with it on and no
+database in the container, the extension comes up correctly but with nothing to look up, and the
+only way to fix that today is to call `installDatabase()` by hand. Flip it together with that UI.
 
 ---
 
 ## Relationship to the snapshot plan
 
-[safari-idb-snapshot.md](safari-idb-snapshot.md) is **on hold, not deleted.** It remains the correct
-answer if this direction stalls, and it is much smaller. Judgement call for whoever picks this up: if
-N0 raises a red flag — a punitive size cap, a slow cold start, no App Group on a free team — the
-snapshot is the shippable stopgap that keeps the current extension usable while the native work
-proceeds. They are not mutually exclusive; the snapshot touches only the storage layer, which the
-native work replaces wholesale.
+[safari-idb-snapshot.md](safari-idb-snapshot.md) is **abandoned.** It was the fallback if N0 raised a
+red flag — a punitive size cap, a slow cold start, no App Group on a free team. N0 raised none: cold
+start is 8–10 ms, the size question is answered by chunking, and the App Group question does not
+arise until the standalone app does. The layer it patched (OPFS storage inside the extension) has
+since been deleted, so it is kept as a record of the reasoning, not as a plan.
 
 ---
 

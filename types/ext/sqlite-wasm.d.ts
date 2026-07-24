@@ -18,7 +18,11 @@
 // Minimal hand-written surface for the parts of @sqlite.org/sqlite-wasm's oo1 API that the
 // dictionary backend uses. The package ships full types (dist/index.d.mts), but they are large
 // and browser-oriented; this narrow interface is enough and keeps the injected-module boundary
-// (browser build in the worker, node build in tests) simple.
+// simple.
+//
+// It is also the contract the Swift binding implements (native/Sources/YomitanNative/SqliteBridge.swift).
+// Keep the two in step: the engine is written against this shape and cannot tell which side of the
+// bridge is answering.
 
 export type SqlValue = string | number | bigint | Uint8Array | null;
 
@@ -49,25 +53,16 @@ export interface SqliteDatabaseHandle {
     close(): void;
 }
 
-export interface SqliteSAHPool {
-    OpfsSAHPoolDb: new (path: string) => SqliteDatabaseHandle;
-    unlink(path: string): boolean;
-    wipeFiles(): Promise<void>;
-    getFileCount(): number;
-    // Number of file slots the pool has pre-allocated (not the number in use; see getFileCount).
-    getCapacity(): number;
-    // Grows the pool to at least `minCapacity` slots if it is currently smaller, else no-op. Safe to
-    // call at every startup (unlike addCapacity): the change is persistent, so a pool created small by
-    // an older build is healed to the current minimum. Resolves to the resulting capacity.
-    reserveMinimumCapacity(minCapacity: number): Promise<number>;
-}
-
 export interface Sqlite3Module {
     version: {libVersion: string, sourceId: string};
     oo1: {DB: new (filename?: string) => SqliteDatabaseHandle};
-    installOpfsSAHPoolVfs(options: {name?: string, initialCapacity?: number}): Promise<SqliteSAHPool>;
 }
 
 export type Sqlite3InitModule = (config?: {[key: string]: unknown}) => Promise<Sqlite3Module>;
 
-export type SqliteVfs = 'opfs' | 'memory';
+/**
+ * `native` is the app-container path served by the Swift binding over the system libsqlite3
+ * (plan/native-rewrite.md); it takes the same handle interface as the WASM build node tests and the
+ * dictionary compiler use, which is what lets the engine be re-hosted rather than rewritten.
+ */
+export type SqliteVfs = 'memory' | 'native';

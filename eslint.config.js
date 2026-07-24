@@ -70,7 +70,9 @@ async function getDependencies(scriptPaths) {
  */
 export default [
     {
-        ignores: ['ext/lib/', 'dev/lib/handlebars/', '**/node_modules/', '**/builds/', 'test-results/', '.claude/'],
+        // `native/Resources/` holds the generated engine bundle (dev/bin/build-native-core.js);
+        // it is machine-written, gitignored, and outside every tsconfig project.
+        ignores: ['ext/lib/', 'dev/lib/handlebars/', '**/node_modules/', '**/builds/', 'native/Resources/', 'test-results/', '.claude/'],
     },
     ...compat.extends(
         'eslint:recommended',

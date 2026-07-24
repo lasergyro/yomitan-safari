@@ -4,17 +4,16 @@ Living status of the storage-backend refactor: what is built, what remains, and 
 bit us. Update this every work session. Stages are ordered oldest → newest.
 
 > **Where this stands.** Stages 0–5 below built the SQLite backend **inside the extension**, on
-> OPFS. That is done, works, and is what the extension runs today — but it cannot survive a Safari
-> restart, because Safari rotates the extension origin on every launch
-> ([safari-opfs-blocker.md](safari-opfs-blocker.md)). The project has therefore been redirected: the
-> engine moves into the native app and the extension becomes display and UI
-> ([native-rewrite.md](native-rewrite.md), staged N0–N6).
+> OPFS. It worked, but it could not survive a Safari restart, because Safari rotates the extension
+> origin on every launch ([safari-opfs-blocker.md](safari-opfs-blocker.md)). **The engine has since
+> moved into the native app** ([native-rewrite.md](native-rewrite.md), stages N0–N2 built).
 >
-> **What carries over unchanged:** the schema, the payload codec, inflection synthesis, the query
-> strategy, and the whole vitest suite — the core is re-hosted, not rewritten. **What is scheduled
-> for deletion:** the OPFS/SAH-Pool layer, the owner-worker proxy and suspend/resume, the in-browser
-> importer, the legacy-IndexedDB migration UX, and the `USE_SQLITE_BACKEND` flag. Read the Stage 5
-> checklist below as history, not as a to-do list.
+> **Read everything below as history.** The schema, the payload codec, inflection synthesis, the
+> query strategy and the whole vitest suite carried over unmodified — the engine is re-hosted, not
+> rewritten — but the hosting described here is gone. Deleted: the OPFS/SAH-Pool opener, the
+> owner-worker proxy and `suspendDatabase`/`resumeDatabase`, the legacy-IndexedDB migration and its
+> settings controller, the vendored `sqlite3.wasm`, `test/safari/`, and the `USE_SQLITE_BACKEND`
+> flag. Current state is in [README.md](README.md) and [../native/README.md](../native/README.md).
 
 The current architecture is [design.md](design.md); the whole scheme in pseudocode is
 [pseudocode.md](pseudocode.md); the rationale for each choice is [decisions.md](decisions.md); the
@@ -142,7 +141,7 @@ See **[zstd.md](history/zstd.md)** for the remaining (blocked) zstd work and the
   `127.0.0.1` (a secure context → OPFS works) and opens it with `open -g -a Safari`, which uses real
   Safari **without stealing focus**; an in-page module worker runs the backend against the real
   vendored WASM and posts results back. 12/12 green. See
-  [test/safari/README.md](../test/safari/README.md).
+  `test/safari/README.md` (deleted with the OPFS backend).
 - **Build verified**: `npm run build -- --target safari` ships `lib/sqlite3.js`, `lib/sqlite3.wasm`
   (865 KB), `lib/pako.js`; the safari manifest CSP has `'wasm-unsafe-eval'`.
 

@@ -18,39 +18,30 @@
 import {createDictionarySchema} from './dictionary-sqlite-schema.js';
 
 /**
- * Opens the dictionary database and ensures its schema exists. The `sqlite3` module is injected
- * by the caller rather than imported here, so the same logic serves both environments: the
- * extension DB worker builds `sqlite3` from the vendored `/lib/sqlite3.js` browser build and
- * passes `vfs: 'opfs'` (persistent, OPFS SAH-Pool VFS, no COOP/COEP required); node tests build
- * it from the `@sqlite.org/sqlite-wasm` package and pass `vfs: 'memory'` (`:memory:`). See
- * plan/design.md → Storage model.
- * The SAH-Pool VFS pre-allocates a fixed number of OPFS file slots (`initialCapacity`). The whole
- * store is a single database file, but a large import still needs slots for it, its rollback
- * journal, and any transient file `finalizeImport`'s `VACUUM` opens, so we reserve headroom above
- * the one-or-two-file default. `reserveMinimumCapacity` (not `addCapacity`) is used because it only
- * grows when below the target and its effect is persistent: a pool an older build created too small
- * is healed to the current minimum on the next open, without ratcheting up on every startup.
+ * Opens the dictionary database and ensures its schema exists.
+ *
+ * The `sqlite3` module is injected by the caller rather than imported here, and that seam is what
+ * lets one engine serve three hosts unchanged (plan/design.md → Integration):
+ *
+ * - `vfs: 'native'` — the Safari app extension. `sqlite3` is a Swift binding over the system
+ *   libsqlite3 and `path` is a real file in the app container. This is the shipping path; it exists
+ *   because Safari rotates the extension origin on every launch, so nothing origin-partitioned can
+ *   hold a dictionary (plan/safari-opfs-blocker.md).
+ * - `vfs: 'memory'` — node tests, against `:memory:`.
+ * - `vfs: 'memory'` with a `path` — the build-time dictionary compiler, which writes a real file
+ *   through the `@sqlite.org/sqlite-wasm` node build.
  * @param {import('sqlite-wasm').Sqlite3Module} sqlite3 The initialized sqlite3 module.
- * @param {{vfs: import('sqlite-wasm').SqliteVfs, path?: string, initialCapacity?: number}} options
+ * @param {{vfs: import('sqlite-wasm').SqliteVfs, path?: string}} options
  * @returns {Promise<import('sqlite-wasm').SqliteDatabaseHandle>}
  */
-export async function openDictionaryDatabaseHandle(sqlite3, {vfs, path = '/dict.sqlite3', initialCapacity = 16}) {
+export async function openDictionaryDatabaseHandle(sqlite3, {vfs, path}) {
     /** @type {import('sqlite-wasm').SqliteDatabaseHandle} */
-    let db;
-    if (vfs === 'opfs') {
-        const pool = await sqlite3.installOpfsSAHPoolVfs({name: 'yomitan-dict', initialCapacity});
-        // Heal a pool a previous build created with a smaller capacity (no-op when already ≥).
-        if (pool.getCapacity() < initialCapacity) {
-            await pool.reserveMinimumCapacity(initialCapacity);
-        }
-        db = new pool.OpfsSAHPoolDb(path);
-    } else {
-        db = new sqlite3.oo1.DB(':memory:');
-    }
+    const db = new sqlite3.oo1.DB(vfs === 'native' || typeof path === 'string' ? /** @type {string} */ (path) : ':memory:');
     // Larger pages suit the big BLOB-heavy rows; must be set before the schema (any write) is
     // created to take effect on a fresh database without a VACUUM.
     db.exec('PRAGMA page_size = 8192');
-    // Single-connection worker model, and the store is re-importable, so favor import speed.
+    // One connection, and the store is rebuilt from the compiler rather than repaired, so favor
+    // throughput over the durability guarantee that FULL would buy.
     db.exec('PRAGMA synchronous = NORMAL');
     db.exec('PRAGMA temp_store = MEMORY');
     createDictionarySchema(db);

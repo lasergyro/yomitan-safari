@@ -158,6 +158,12 @@ manifest_text = manifest_text.replace("$YOMITAN_VERSION", version)
 (output_dir / "manifest.json").write_text(manifest_text, encoding="utf-8")
 PY
 
+# The engine bundle JavaScriptCore evaluates inside the app extension (plan/native-rewrite.md).
+# Emitted into the web extension directory rather than into ext/, so the source tree stays clean
+# and `safari-web-extension-converter --copy-resources` picks it up as an ordinary bundle
+# resource -- which is what lets the Swift side find it with Bundle.url(forResource:withExtension:).
+node "$ROOT_DIR/dev/bin/build-native-core.js" --out "$WEB_EXTENSION_DIR/yomitan-core.js"
+
 xcrun safari-web-extension-converter \
     "$WEB_EXTENSION_DIR" \
     --project-location "$PROJECT_LOCATION" \
@@ -170,23 +176,25 @@ xcrun safari-web-extension-converter \
     --no-prompt \
     --force
 
-python3 - "$PROJECT_LOCATION" "$APP_NAME" "$BUNDLE_IDENTIFIER" <<'PY'
+python3 - "$PROJECT_LOCATION" "$APP_NAME" "$BUNDLE_IDENTIFIER" "$ROOT_DIR" <<'PY'
+import hashlib
 import plistlib
 import re
+import shutil
 import sys
-import textwrap
 from pathlib import Path
 
 project_location = Path(sys.argv[1])
 app_name = sys.argv[2]
 bundle_identifier = sys.argv[3]
+root_dir = Path(sys.argv[4])
+native_source_dir = root_dir / "native/Sources/YomitanNative"
 extension_bundle_identifier = f"{bundle_identifier}.extension"
 
 project_root = project_location / app_name
 pbxproj_path = project_root / f"{app_name}.xcodeproj" / "project.pbxproj"
 view_controller_path = project_root / app_name / "ViewController.swift"
 extension_root = project_root / f"{app_name} Extension"
-handler_path = extension_root / "SafariWebExtensionHandler.swift"
 app_info_plist_path = project_root / app_name / "Info.plist"
 extension_info_plist_path = extension_root / "Info.plist"
 anki_connect_js_path = extension_root / "Resources" / "js" / "comm" / "anki-connect.js"
@@ -219,130 +227,92 @@ view_controller = re.sub(
 )
 view_controller_path.write_text(view_controller, encoding="utf-8")
 
-handler_source = textwrap.dedent(
+# The native engine lives in the repository at native/Sources/YomitanNative and is copied into the
+# generated project here. It is emphatically NOT edited in place: safari-web-extension-converter is
+# run with --force on every build and rewrites the generated tree, so anything typed into
+# builds/yomitan-safari-app is lost on the next build.
+#
+# The converter only knows about the single SafariWebExtensionHandler.swift it generates, so the
+# other sources have to be registered in the project file by hand. That is what
+# `add_swift_sources_to_extension_target` below does; it is 40 lines of pbxproj surgery, but the
+# alternative is a checked-in Xcode project that the converter would fight with.
+native_sources = sorted(native_source_dir.glob("*.swift"))
+if not native_sources:
+    raise RuntimeError(f"No Swift sources found in {native_source_dir}")
+for source in native_sources:
+    shutil.copyfile(source, extension_root / source.name)
+
+
+def stable_object_id(name):
+    """A 24-hex-digit pbxproj object id derived from the file name.
+
+    Deterministic on purpose: a rebuild that changed nothing should produce a byte-identical project
+    file, so `git diff` on the generated tree stays meaningful and Xcode does not see every build as
+    a structural change.
     """
-    //
-    //  SafariWebExtensionHandler.swift
-    //  __APP_NAME__ Extension
-    //
+    return hashlib.md5(name.encode("utf-8")).hexdigest()[:24].upper()
 
-    import Foundation
-    import SafariServices
-    import os.log
 
-    class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
-        private let supportedHosts = Set(["localhost", "127.0.0.1", "::1"])
+def add_swift_sources_to_extension_target(pbxproj, names):
+    """Registers additional .swift files in the app-extension target.
 
-        func beginRequest(with context: NSExtensionContext) {
-            let request = context.inputItems.first as? NSExtensionItem
-
-            let message: Any?
-            if #available(iOS 15.0, macOS 11.0, *) {
-                message = request?.userInfo?[SFExtensionMessageKey]
-            } else {
-                message = request?.userInfo?["message"]
-            }
-
-            guard let body = message as? [String: Any] else {
-                os_log(.error, "Received invalid native message payload from Safari web extension")
-                complete(context: context, response: ["error": "Invalid native message payload"])
-                return
-            }
-
-            handle(message: body, context: context)
-        }
-
-        private func handle(message: [String: Any], context: NSExtensionContext) {
-            guard let action = message["action"] as? String else {
-                complete(context: context, response: ["error": "Missing action"])
-                return
-            }
-
-            switch action {
-                case "ankiRequest":
-                    proxyAnkiRequest(message: message, context: context)
-                case "ping":
-                    handlePing(message: message, context: context)
-                default:
-                    complete(context: context, response: ["error": "Unsupported action: " + action])
-            }
-        }
-
-        // Latency probe for the native-engine option (plan/native-engine-probe.md). Echoes a
-        // payload of a caller-requested size so the round trip can be timed at realistic
-        // query-result sizes, and returns a native wall-clock stamp so the request and response
-        // legs can be told apart.
-        private func handlePing(message: [String: Any], context: NSExtensionContext) {
-            let receivedBytes = (message["payload"] as? String)?.count ?? 0
-            let echoBytes = (message["echoBytes"] as? Int) ?? 0
-            complete(context: context, response: [
-                "ok": true,
-                "receivedBytes": receivedBytes,
-                "nativeTimestampMs": Date().timeIntervalSince1970 * 1000.0,
-                "payload": echoBytes > 0 ? String(repeating: "x", count: echoBytes) : "",
-            ])
-        }
-
-        private func proxyAnkiRequest(message: [String: Any], context: NSExtensionContext) {
-            guard let urlString = message["url"] as? String, let url = URL(string: urlString) else {
-                complete(context: context, response: ["error": "Invalid URL"])
-                return
-            }
-            guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
-                complete(context: context, response: ["error": "Unsupported URL scheme"])
-                return
-            }
-            guard let host = url.host?.lowercased(), supportedHosts.contains(host) else {
-                complete(context: context, response: ["error": "Only loopback AnkiConnect URLs are supported"])
-                return
-            }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = (message["method"] as? String) ?? "POST"
-            request.timeoutInterval = 10.0
-
-            if let headers = message["headers"] as? [String: Any] {
-                for (header, value) in headers {
-                    if let value = value as? String {
-                        request.setValue(value, forHTTPHeaderField: header)
-                    }
-                }
-            }
-
-            if let requestBody = message["body"] as? String {
-                request.httpBody = requestBody.data(using: .utf8)
-            }
-
-            let configuration = URLSessionConfiguration.ephemeral
-            let session = URLSession(configuration: configuration)
-            let task = session.dataTask(with: request) { data, response, error in
-                if let error = error {
-                    os_log(.error, "Anki proxy request failed: %{public}@", error.localizedDescription)
-                    self.complete(context: context, response: ["error": error.localizedDescription])
-                    return
-                }
-
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                let responseText = String(data: data ?? Data(), encoding: .utf8) ?? ""
-                self.complete(context: context, response: ["status": status, "responseText": responseText])
-            }
-            task.resume()
-        }
-
-        private func complete(context: NSExtensionContext, response: [String: Any]) {
-            let item = NSExtensionItem()
-            if #available(iOS 15.0, macOS 11.0, *) {
-                item.userInfo = [SFExtensionMessageKey: response]
-            } else {
-                item.userInfo = ["message": response]
-            }
-            context.completeRequest(returningItems: [item], completionHandler: nil)
-        }
-    }
+    Anchored on the generated SafariWebExtensionHandler.swift rather than on object ids, because the
+    converter mints fresh ids on every run.
     """
-).strip() + "\n"
-handler_source = handler_source.replace("__APP_NAME__", app_name)
-handler_path.write_text(handler_source, encoding="utf-8")
+    build_files = []
+    file_references = []
+    group_children = []
+    sources_entries = []
+    for name in names:
+        file_id = stable_object_id(name)
+        build_id = stable_object_id(f"{name}:build")
+        build_files.append(
+            f"\t\t{build_id} /* {name} in Sources */ = {{isa = PBXBuildFile; fileRef = {file_id} /* {name} */; }};\n"
+        )
+        file_references.append(
+            f"\t\t{file_id} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; "
+            f"path = {name}; sourceTree = \"<group>\"; }};\n"
+        )
+        group_children.append(f"\t\t\t\t{file_id} /* {name} */,\n")
+        sources_entries.append(f"\t\t\t\t{build_id} /* {name} in Sources */,\n")
+
+    def insert_after(text, pattern, addition, what):
+        match = re.search(pattern, text)
+        if match is None:
+            raise RuntimeError(f"Could not find the {what} anchor in project.pbxproj")
+        return text[: match.end()] + addition + text[match.end():]
+
+    pbxproj = insert_after(
+        pbxproj,
+        r"[0-9A-F]{24} /\* SafariWebExtensionHandler\.swift in Sources \*/ = \{isa = PBXBuildFile;[^\n]*\n",
+        "".join(build_files),
+        "PBXBuildFile",
+    )
+    pbxproj = insert_after(
+        pbxproj,
+        r"[0-9A-F]{24} /\* SafariWebExtensionHandler\.swift \*/ = \{isa = PBXFileReference;[^\n]*\n",
+        "".join(file_references),
+        "PBXFileReference",
+    )
+    pbxproj = insert_after(
+        pbxproj,
+        r"\t{4}[0-9A-F]{24} /\* SafariWebExtensionHandler\.swift \*/,\n",
+        "".join(group_children),
+        "extension group",
+    )
+    pbxproj = insert_after(
+        pbxproj,
+        r"\t{4}[0-9A-F]{24} /\* SafariWebExtensionHandler\.swift in Sources \*/,\n",
+        "".join(sources_entries),
+        "Sources build phase",
+    )
+    return pbxproj
+
+
+extra_sources = [source.name for source in native_sources if source.name != "SafariWebExtensionHandler.swift"]
+pbxproj = pbxproj_path.read_text(encoding="utf-8")
+pbxproj = add_swift_sources_to_extension_target(pbxproj, extra_sources)
+pbxproj_path.write_text(pbxproj, encoding="utf-8")
 
 anki_connect_js = anki_connect_js_path.read_text(encoding="utf-8")
 anki_connect_js = re.sub(

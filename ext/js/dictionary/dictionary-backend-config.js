@@ -16,11 +16,17 @@
  */
 
 /**
- * Feature flag for the storage-backend migration (see plan/design.md). When `true`, the dictionary
- * store uses the SQLite-WASM/OPFS backend; when `false`, the legacy IndexedDB backend. Kept as
- * a single module constant so the main-thread facade and the DB worker read the same value.
- * Stays `false` until the SQLite backend reaches parity, then this flag (and the IndexedDB
- * path) are removed.
+ * Feature flag for the native engine (plan/native-rewrite.md). When `true`, the extension holds no
+ * dictionary storage at all: every query crosses `sendNativeMessage` to the same SQLite engine
+ * hosted in JavaScriptCore inside the Safari app extension, reading a database in the app container.
+ *
+ * This is what answers the blocker in plan/safari-opfs-blocker.md — Safari rotates the extension
+ * origin on every launch, so OPFS data is stranded each restart, while the app container is keyed by
+ * bundle identifier and is not. It also takes the WASM heap, the single-connection worker handoff
+ * and the in-browser importer out of the extension in one move.
+ *
+ * Safari-only by construction: it needs the app extension on the other end. On any other browser
+ * this must stay `false` — there is nothing to talk to.
  * @type {boolean}
  */
-export const USE_SQLITE_BACKEND = true;
+export const USE_NATIVE_BACKEND = false;

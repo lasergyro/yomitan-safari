@@ -41,23 +41,6 @@ async function copyWasm(out) {
 }
 
 /**
- * Vendors the SQLite-WASM ESM build for the dictionary storage backend. The ESM entry is
- * copied verbatim as `sqlite3.js`; it locates `sqlite3.wasm` next to itself at runtime, so
- * both must sit in the same directory (`ext/lib`). Used from the DB worker via the OPFS
- * SAH-Pool VFS. See plan/design.md.
- * @param {string} out
- */
-async function copySqlite(out) {
-    const distDir = path.dirname(require.resolve('@sqlite.org/sqlite-wasm'));
-    // Copied verbatim (not bundled), so prepend the same `@ts-nocheck` banner the esbuild-bundled
-    // libs get — the backend dynamically imports this from the tsc project graph.
-    const source = fs.readFileSync(path.join(distDir, 'index.mjs'), {encoding: 'utf8'});
-    fs.writeFileSync(path.join(out, 'sqlite3.js'), `// @ts-nocheck\n${source}`);
-    fs.copyFileSync(path.join(distDir, 'sqlite3.wasm'), path.join(out, 'sqlite3.wasm'));
-}
-
-
-/**
  * @param {string} scriptPath
  */
 async function buildLib(scriptPath) {
@@ -111,5 +94,4 @@ export async function buildLibs() {
     fs.writeFileSync(path.join(extDir, 'lib/validate-schemas.js'), patchedModuleCode);
 
     await copyWasm(path.join(extDir, 'lib'));
-    await copySqlite(path.join(extDir, 'lib'));
 }

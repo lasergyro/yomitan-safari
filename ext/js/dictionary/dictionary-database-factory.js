@@ -15,32 +15,35 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import {DeflatePayloadCodec} from './deflate-payload-codec.js';
-import {USE_SQLITE_BACKEND} from './dictionary-backend-config.js';
+import {DictionaryDatabaseNative} from '../native/dictionary-database-native.js';
+import {USE_NATIVE_BACKEND} from './dictionary-backend-config.js';
 import {DictionaryDatabase} from './dictionary-database.js';
-import {DictionaryDatabaseSqlite} from './sqlite/dictionary-database-sqlite.js';
 
 /**
- * Constructs the (unprepared) dictionary database backend selected by the `USE_SQLITE_BACKEND`
- * flag. Both backends share the public API and a no-argument `prepare()`, so callers keep doing
- * `const db = createDictionaryDatabase(); await db.prepare();` unchanged. The SQLite backend is
- * cast to `DictionaryDatabase` here (they implement the same surface but are separate classes; a
- * shared interface is a follow-up). When the flag is off this returns exactly the IndexedDB backend
- * with no SQLite/WASM/pako touched at runtime — everything they need is dynamically imported inside
- * the SQLite `prepare()`.
+ * Constructs the (unprepared) dictionary database backend for this build.
  *
- * The write codec is **deflate** (plan/decisions.md #26): measured on the real `kty-de-en` it
- * gives a ~150 MB database against ~700 MB of IndexedDB, for no build step and no extra RAM. zstd
- * was built and measured and did not justify itself — see plan/history/zstd.md.
+ * Two, and only two:
+ *
+ * - **Native** (`USE_NATIVE_BACKEND`) — the Safari path. The extension stores nothing; every query
+ *   crosses `sendNativeMessage` to the SQLite engine hosted in the app extension, reading a database
+ *   in the app container. This exists because Safari rotates the extension origin on every launch,
+ *   which strands anything origin-partitioned (plan/safari-opfs-blocker.md).
+ * - **IndexedDB** — upstream Yomitan's backend, for every other browser.
+ *
+ * There used to be a third: the same SQLite engine running as WASM on OPFS inside the extension. It
+ * worked and it was measured (~700 MB of IndexedDB → 49.4 MB), but it could not survive a restart,
+ * so its storage binding was deleted rather than kept as a half-path. The engine itself was not
+ * deleted — it is what runs natively now (plan/native-rewrite.md).
+ *
+ * All backends share the public API and a no-argument `prepare()`, so callers keep doing
+ * `const db = createDictionaryDatabase(); await db.prepare();` unchanged.
  * @returns {DictionaryDatabase}
  */
 export function createDictionaryDatabase() {
-    if (USE_SQLITE_BACKEND) {
-        // pako is left to the codec's own prepare() so that it is not pulled into the module graph
-        // when the flag is off.
-        return /** @type {DictionaryDatabase} */ (/** @type {unknown} */ (
-            new DictionaryDatabaseSqlite(new DeflatePayloadCodec())
-        ));
+    if (USE_NATIVE_BACKEND) {
+        // Nothing SQLite, WASM or pako-shaped is constructed on this side at all: the engine is in
+        // the app, and this is a client for it.
+        return /** @type {DictionaryDatabase} */ (/** @type {unknown} */ (new DictionaryDatabaseNative()));
     }
     return new DictionaryDatabase();
 }

@@ -324,23 +324,6 @@ export class API {
     }
 
     /**
-     * Releases the dictionary database so another worker may open it. See `suspendDatabase` on the
-     * backend for why an import needs this.
-     * @returns {Promise<import('api').ApiReturn<'suspendDatabase'>>}
-     */
-    suspendDatabase() {
-        return this._invoke('suspendDatabase', void 0);
-    }
-
-    /**
-     * Re-opens the dictionary database after a `suspendDatabase`.
-     * @returns {Promise<import('api').ApiReturn<'resumeDatabase'>>}
-     */
-    resumeDatabase() {
-        return this._invoke('resumeDatabase', void 0);
-    }
-
-    /**
      * @param {import('api').ApiParam<'getMedia', 'targets'>} targets
      * @returns {Promise<import('api').ApiReturn<'getMedia'>>}
      */

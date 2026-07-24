@@ -16,11 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import {API} from '../comm/api.js';
 import {ExtensionError} from '../core/extension-error.js';
-import {log} from '../core/log.js';
-import {WebExtension} from '../extension/web-extension.js';
-import {USE_SQLITE_BACKEND} from './dictionary-backend-config.js';
 import {DictionaryImporterMediaLoader} from './dictionary-importer-media-loader.js';
 
 export class DictionaryWorker {
@@ -74,41 +70,8 @@ export class DictionaryWorker {
      * @param {Transferable[]} transfer
      * @param {?(arg: import('core').SafeAny) => void} onProgress
      * @param {?(result: TResponseRaw) => TResponse} formatResult
-     * @returns {Promise<TResponse>}
      */
-    async _invoke(action, params, transfer, onProgress, formatResult) {
-        // The SQLite backend's OPFS pool takes a single connection, held by the background's worker
-        // for its whole life. This worker needs that pool, so the background lets go for the duration
-        // (plan/backend-worker.md). The import stays in its own worker because the archive has to
-        // arrive as a transferable, which extension messaging cannot carry.
-        if (!USE_SQLITE_BACKEND) {
-            return await this._invokeWorker(action, params, transfer, onProgress, formatResult);
-        }
-        const api = new API(new WebExtension(), null, null);
-        await api.suspendDatabase();
-        try {
-            return await this._invokeWorker(action, params, transfer, onProgress, formatResult);
-        } finally {
-            // Always hand the database back, including when the import failed part-way.
-            try {
-                await api.resumeDatabase();
-            } catch (e) {
-                log.error(e);
-            }
-        }
-    }
-
-    /**
-     * @template [TParams=import('core').SerializableObject]
-     * @template [TResponseRaw=unknown]
-     * @template [TResponse=unknown]
-     * @param {string} action
-     * @param {TParams} params
-     * @param {Transferable[]} transfer
-     * @param {?(arg: import('core').SafeAny) => void} onProgress
-     * @param {?(result: TResponseRaw) => TResponse} formatResult
-     */
-    _invokeWorker(action, params, transfer, onProgress, formatResult) {
+    _invoke(action, params, transfer, onProgress, formatResult) {
         return new Promise((resolve, reject) => {
             const worker = new Worker('/js/dictionary/dictionary-worker-main.js', {type: 'module'});
             /** @type {import('dictionary-worker').InvokeDetails<TResponseRaw, TResponse>} */

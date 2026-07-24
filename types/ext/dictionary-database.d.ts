@@ -308,8 +308,15 @@ export type FindPredicate<TItem = unknown, TRow = unknown> = (row: TRow, item: T
 
 export type CreateResult<TItem = unknown, TRow = unknown, TResult = unknown> = (row: TRow, data: FindMultiBulkData<TItem>) => TResult;
 
+/**
+ * The set of enabled dictionaries a query is scoped to. In practice callers pass the translator's
+ * `Map<string, FindTermDictionary>`, and the in-process backends only ever ask `has`. `keys` is
+ * declared because the native client has to send the *names* across the bridge, and both `Map` and
+ * `Set` provide it — which is what lets that client take the same argument as everything else.
+ */
 export type DictionarySet = {
     has(value: string): boolean;
+    keys(): IterableIterator<string>;
 };
 
 /** API for communicating with its own worker */

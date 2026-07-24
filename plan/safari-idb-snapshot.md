@@ -1,11 +1,11 @@
 # Design: an IndexedDB snapshot so the database survives a Safari restart
 
-**Status: designed, not built — and now ON HOLD.** The chosen direction is
-[native-rewrite.md](native-rewrite.md), which moves the engine into the native app and replaces the
-storage layer wholesale rather than working around it. This document is kept because it remains the
-correct **fallback**: it is far smaller, it touches only the storage layer, and it is the shippable
-stopgap if the native work stalls or its stage-N0 measurements raise a red flag. Nothing below is
-wrong; it is simply no longer the plan.
+**Status: designed, never built — ABANDONED.** [native-rewrite.md](native-rewrite.md) was built
+instead: the engine moved into the native app, which removes the OPFS storage layer this document
+patches rather than working around it. It was held as the fallback until the stage-N0 measurements
+came back — cold start 8–10 ms, the size question answered by chunking, the App Group question not
+yet in play — and none of them raised the red flag it was insurance against. Nothing below is wrong;
+the layer it applies to no longer exists.
 
 This is the fix for the blocker in [safari-opfs-blocker.md](safari-opfs-blocker.md) — read that
 first; it establishes the constraint this design works around.
@@ -50,7 +50,7 @@ is per **dictionary**, not per byte.
 ## The API this rests on
 
 The vendored SAH-Pool utility already provides everything needed
-([ext/lib/sqlite3.js:15235-15334](../ext/lib/sqlite3.js)):
+(`ext/lib/sqlite3.js:15235-15334`, in the vendored SQLite-WASM build that this fork no longer ships):
 
 | method                            | sync?     | notes                                                                                                                                |
 | --------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------ |

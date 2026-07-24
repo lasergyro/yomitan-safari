@@ -401,9 +401,8 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     paid once per launch, and it is the only one that leaves the schema, codec, importer, inflection
     synthesis and worker topology untouched. The SAH-Pool already exposes `exportFile` /
     `importDbChunked`, so no new dependency is involved. Design in
-    [safari-idb-snapshot.md](safari-idb-snapshot.md). — _designed, not built. Two numbers gate it:
-    whether WebKit ever reclaims the per-launch orphaned OPFS copies, and what the restore actually
-    costs on the real 49.4 MB file._
+    [safari-idb-snapshot.md](safari-idb-snapshot.md). — _**abandoned, never built.** #39 landed
+    instead, which removes OPFS from the extension entirely rather than working around it._
 
 39. **The engine moves into the native app; the extension keeps display and UI.** — Chosen over
     working around the origin rotation in the browser. It makes the rotation, OPFS, the orphan leak,
@@ -415,7 +414,9 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     build time** by the existing node importer rather than imported in the browser, which deletes the
     import worker, the suspend/resume handoff, the trained-dictionary handshake and the legacy
     migration UX from the Safari target. Design in [native-rewrite.md](native-rewrite.md). —
-    _designed, not built; gated on the stage-N0 measurements._
+    _**built** (stages N1–N2). The engine runs in the app over system libsqlite3, `npm run test:jsc`
+    proves it answers identically to node on the same compiled database, and the app builds and
+    signs. The extension-side backend is `DictionaryDatabaseNative`, behind `USE_NATIVE_BACKEND`._
 
 40. **The JS core is re-hosted in JavaScriptCore, not ported to Swift.** — Yomitan's deinflection
     rules are live JS closures and regexes (`deinflect: (text) => …`), 1.1 MB across 23 languages in
@@ -427,5 +428,58 @@ ROWID` table reference rows by the full primary key, so a Japanese dictionary's 
     macOS and iOS, so the core runs unmodified inside the app over a native SQLite binding — the
     logic lives in the app process as required, and upstream keeps merging. The project is therefore
     a rewrite of the engine's **host and storage binding**, not of the engine. A Swift port of
-    individual hot pieces stays available afterwards, incrementally. — _decided; the bet is that the
-    JSC shim surface stays small, which stage N0 tests._
+    individual hot pieces stays available afterwards, incrementally. — _**built, and the bet paid.**
+    The shim surface is four host functions (`openDatabase`, `databasePath`, `log`, `now`) plus four
+    things shimmed in JavaScript (`TextEncoder`, `TextDecoder`, `console`, `setTimeout`). Cold start
+    — `JSContext` creation, parsing a 379 KiB bundle, and opening the database — measures **8–10 ms**
+    on macOS, so the app extension does not need to be kept warm for a hover to feel instant._
+
+## The native engine, as built
+
+41. **Everything crosses the bridge as one JSON string, not a property list.** — The only transport
+    measurement we have ([native-engine-probe.md](native-engine-probe.md)) timed a single flat ASCII
+    string, and its first caveat was that a plist of many nested rows might serialize very
+    differently. Sending one string keeps those numbers applicable instead of re-opening the
+    question, moves the structural cost to `JSON.parse` (fast, and profileable in the browser), and
+    sidesteps plist's lack of a byte-array type that survives `SFExtensionMessageKey` intact. Binary
+    — dictionary media — is base64 inside that string, +33% on a path that is nowhere near the hover
+    budget. — _built; `native-protocol.js` owns both directions._
+
+42. **The Swift SQLite binding implements the interface the engine already spoke.** — The engine
+    funnels every query through `openDictionaryDatabaseHandle`, which takes the `sqlite3` module as
+    an argument rather than importing it — a seam that existed so node tests could use `:memory:`.
+    The native binding substitutes at exactly that seam, so _no engine code changed at all_: the
+    1,600-line backend, the codec and the inflection synthesis keep their vitest coverage because
+    they are literally the same code. Two conversions carry real risk and are tested explicitly:
+    BLOBs must arrive as `Uint8Array` (a BLOB read back as a string decompresses to garbage rather
+    than failing), and whole numbers must bind as INTEGER, not REAL (a REAL `3.0` does not match an
+    INTEGER `3` in an index seek). — _built; `SqliteBridge.swift`, gated by `npm run test:jsc`._
+
+43. **`npm run test:jsc` is the gate that route C needs.** — vitest proves the engine is correct in
+    node and cannot prove any of what only breaks once it is hosted: a bundle that will not evaluate
+    in JavaScriptCore, a platform shim that was never installed, or a SQLite binding that quietly
+    marshals a value differently. So the same requests are answered twice — once through
+    `NativeCore` in node over SQLite-WASM, once through the real Swift host over system libsqlite3,
+    both reading **the same compiled database file** — and the answers must be identical. Reading one
+    file rather than importing twice is the point: importing separately would compare two imports
+    instead of two hosts, and would hide exactly the bugs this exists to catch. — _built; 15/15
+    identical._
+
+44. **The in-browser SQLite backend was deleted, not kept as a fallback.** — With the engine native,
+    the OPFS/SAH-Pool opener, the owner-worker proxy (`DatabaseOwnerClient` and both DB-worker
+    files), the `suspendDatabase`/`resumeDatabase` API pair, the legacy-IndexedDB migration and its
+    settings controller, the vendored `sqlite3.wasm`, `test/safari/` and the `USE_SQLITE_BACKEND`
+    flag all became a second, half-working way to do the same thing. Two backends remain and each
+    has one reason to exist: **native** for Safari, **IndexedDB** for every other browser. The
+    engine itself was not deleted — it is what runs natively. — _built; the factory is now four
+    lines._
+
+45. **Dictionaries are installed as files, chunked and staged.** — `npm run compile:dictionary`
+    produces the `.sqlite3`; `DictionaryDatabaseNative.installDatabase()` streams it into the app
+    container in 3 MB chunks. Chunked because `sendNativeMessage` has no documented size limit and
+    4 MB is the largest round trip ever measured — a 49 MB message is the kind of thing that works
+    on a developer's machine and fails on a user's. Staged in a `.incoming` file and validated (magic
+    header + `user_version`) before the swap, because an interrupted transfer writing in place would
+    leave a truncated file where a working database was, and the user would simply find their
+    dictionaries gone. — _built; the settings UI still points at the archive importer, so installs
+    go through the client method for now._
