@@ -32,8 +32,7 @@ import {generateAnkiNoteMediaFileName, INVALID_NOTE_ID, isNoteDataValid} from '.
 import {arrayBufferToBase64} from '../data/array-buffer-util.js';
 import {OptionsUtil} from '../data/options-util.js';
 import {getAllPermissions, hasPermissions, hasRequiredPermissionsForOptions} from '../data/permissions-util.js';
-import {createDictionaryDatabase} from '../dictionary/dictionary-database-factory.js';
-import {DictionaryDatabase} from '../dictionary/dictionary-database.js';
+import {DictionaryDatabaseNative} from '../native/dictionary-database-native.js';
 import {Environment} from '../extension/environment.js';
 import {getTemporaryStorage} from '../extension/temporary-storage.js';
 import {CacheMap} from '../general/cache-map.js';
@@ -43,7 +42,6 @@ import {getLanguageSummaries, isTextLookupWorthy} from '../language/languages.js
 import {Translator} from '../language/translator.js';
 import {AudioDownloader} from '../media/audio-downloader.js';
 import {getFileExtensionFromAudioMediaType, getFileExtensionFromImageMediaType} from '../media/media-util.js';
-import {ClipboardReaderProxy, DictionaryDatabaseProxy, OffscreenProxy, TranslatorProxy} from './offscreen-proxy.js';
 import {createSchema, normalizeContext} from './profile-conditions-util.js';
 import {RequestBuilder} from './request-builder.js';
 import {injectStylesheet} from './script-manager.js';
@@ -66,29 +64,20 @@ export class Backend {
         /** @type {Mecab} */
         this._mecab = new Mecab();
 
-        if (!chrome.offscreen) {
-            /** @type {?OffscreenProxy} */
-            this._offscreen = null;
-            /** @type {DictionaryDatabase|DictionaryDatabaseProxy} */
-            this._dictionaryDatabase = createDictionaryDatabase();
-            /** @type {Translator|TranslatorProxy} */
-            this._translator = new Translator(this._dictionaryDatabase);
-            /** @type {ClipboardReader|ClipboardReaderProxy} */
-            this._clipboardReader = new ClipboardReader(
-                (typeof document === 'object' && document !== null ? document : null),
-                '#clipboard-paste-target',
-                '#clipboard-rich-content-paste-target',
-            );
-        } else {
-            /** @type {?OffscreenProxy} */
-            this._offscreen = new OffscreenProxy(webExtension);
-            /** @type {DictionaryDatabase|DictionaryDatabaseProxy} */
-            this._dictionaryDatabase = new DictionaryDatabaseProxy(this._offscreen);
-            /** @type {Translator|TranslatorProxy} */
-            this._translator = new TranslatorProxy(this._offscreen);
-            /** @type {ClipboardReader|ClipboardReaderProxy} */
-            this._clipboardReader = new ClipboardReaderProxy(this._offscreen);
-        }
+        // One backend, no branch. Upstream picks between an in-page IndexedDB store and a Chrome
+        // offscreen document that proxies to one; this fork has neither. The dictionary engine runs
+        // in the Safari app extension, so this is a client for it, and the background page — which
+        // on Safari really is a page — can hold the clipboard reader itself.
+        /** @type {DictionaryDatabaseNative} */
+        this._dictionaryDatabase = new DictionaryDatabaseNative();
+        /** @type {Translator} */
+        this._translator = new Translator(this._dictionaryDatabase);
+        /** @type {ClipboardReader} */
+        this._clipboardReader = new ClipboardReader(
+            (typeof document === 'object' && document !== null ? document : null),
+            '#clipboard-paste-target',
+            '#clipboard-rich-content-paste-target',
+        );
 
         /** @type {ClipboardMonitor} */
         this._clipboardMonitor = new ClipboardMonitor(this._clipboardReader);
@@ -184,6 +173,8 @@ export class Backend {
             ['getDefaultAnkiFieldTemplates', this._onApiGetDefaultAnkiFieldTemplates.bind(this)],
             ['getDictionaryInfo',            this._onApiGetDictionaryInfo.bind(this)],
             ['purgeDatabase',                this._onApiPurgeDatabase.bind(this)],
+            ['getDictionaryCounts',          this._onApiGetDictionaryCounts.bind(this)],
+            ['deleteDictionary',             this._onApiDeleteDictionary.bind(this)],
             ['getMedia',                     this._onApiGetMedia.bind(this)],
             ['logGenericErrorBackend',       this._onApiLogGenericErrorBackend.bind(this)],
             ['logIndicatorClear',            this._onApiLogIndicatorClear.bind(this)],
@@ -206,8 +197,6 @@ export class Backend {
 
         /** @type {import('api').PmApiMap} */
         this._pmApiMap = createApiMap([
-            ['connectToDatabaseWorker', this._onPmConnectToDatabaseWorker.bind(this)],
-            ['registerOffscreenPort',   this._onPmApiRegisterOffscreenPort.bind(this)],
         ]);
         /* eslint-enable @stylistic/no-multi-spaces */
 
@@ -221,7 +210,7 @@ export class Backend {
         ]));
 
         /** @type {YomitanApi} */
-        this._yomitanApi = new YomitanApi(this._apiMap, this._offscreen);
+        this._yomitanApi = new YomitanApi(this._apiMap);
         /** @type {CacheMap<string, {originalTextLength: number, textSegments: import('api').ParseTextSegment[]}>} */
         this._textParseCache = new CacheMap(10000, 3600000); // 1 hour idle time, ~32MB per 1000 entries for Japanese
     }
@@ -289,20 +278,6 @@ export class Backend {
         chrome.runtime.onInstalled.addListener(this._onInstalled.bind(this));
     }
 
-    /** @type {import('api').PmApiHandler<'connectToDatabaseWorker'>} */
-    async _onPmConnectToDatabaseWorker(_params, ports) {
-        if (ports !== null && ports.length > 0) {
-            await this._dictionaryDatabase.connectToDatabaseWorker(ports[0]);
-        }
-    }
-
-    /** @type {import('api').PmApiHandler<'registerOffscreenPort'>} */
-    async _onPmApiRegisterOffscreenPort(_params, ports) {
-        if (ports !== null && ports.length > 0) {
-            await this._offscreen?.registerOffscreenPort(ports[0]);
-        }
-    }
-
     /**
      * @returns {Promise<void>}
      */
@@ -322,9 +297,6 @@ export class Backend {
 
             await this._requestBuilder.prepare();
             await this._environment.prepare();
-            if (this._offscreen !== null) {
-                await this._offscreen.prepare();
-            }
             this._clipboardReader.browser = this._environment.getInfo().browser;
 
             // if this is Firefox and therefore not running in Service Worker, we need to use a SharedWorker to setup a MessageChannel to postMessage with the popup
@@ -1037,6 +1009,25 @@ export class Backend {
     async _onApiPurgeDatabase() {
         await this._dictionaryDatabase.purge();
         this._triggerDatabaseUpdated('dictionary', 'purge');
+    }
+
+    /** @type {import('api').ApiHandler<'getDictionaryCounts'>} */
+    async _onApiGetDictionaryCounts({dictionaryNames, getTotal}) {
+        return await this._dictionaryDatabase.getDictionaryCounts(dictionaryNames, getTotal);
+    }
+
+    /**
+     * Deletes one dictionary.
+     *
+     * Upstream runs this in a worker with a streamed progress callback, because deleting a
+     * dictionary from IndexedDB means walking hundreds of thousands of records. Here it is a
+     * `DELETE ... WHERE dictionary_id = ?` per table in the native engine, so there is nothing to
+     * stream and nothing to keep off the main thread.
+     * @type {import('api').ApiHandler<'deleteDictionary'>}
+     */
+    async _onApiDeleteDictionary({dictionaryTitle}) {
+        await this._dictionaryDatabase.deleteDictionary(dictionaryTitle, 0, () => {});
+        this._triggerDatabaseUpdated('dictionary', 'delete');
     }
 
     /** @type {import('api').ApiHandler<'getMedia'>} */

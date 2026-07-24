@@ -588,18 +588,20 @@ export class DictionaryDatabaseSqlite {
     }
 
     /**
-     * Adds a single dictionary summary and returns an IndexedDB-style request whose `result` is the
-     * new row id (the importer awaits `onsuccess`/`result`).
+     * Adds a single dictionary summary and returns its row id.
+     *
+     * This used to impersonate an `IDBRequest` — the importer wrapped it and waited on
+     * `onsuccess`/`result` — because the IndexedDB backend genuinely returned one. That backend is
+     * gone, so the id is simply returned.
      * @param {import('dictionary-database').ObjectStoreName} objectStoreName
      * @param {import('dictionary-database').ObjectStoreData<import('dictionary-database').ObjectStoreName>} item
-     * @returns {Promise<IDBRequest<IDBValidKey>>}
+     * @returns {Promise<number>}
      */
     async addWithResult(objectStoreName, item) {
         if (objectStoreName !== 'dictionaries') {
             throw new Error(`addWithResult not implemented for store '${objectStoreName}'`);
         }
-        const id = this._upsertDictionary(/** @type {import('dictionary-importer').Summary} */ (item));
-        return this._makeRequest(id);
+        return this._upsertDictionary(/** @type {import('dictionary-importer').Summary} */ (item));
     }
 
     /**
@@ -1463,26 +1465,6 @@ export class DictionaryDatabaseSqlite {
      */
     _splitField(field) {
         return typeof field === 'string' && field.length > 0 ? field.split(' ') : [];
-    }
-
-    /**
-     * Builds a minimal IndexedDB-style request object (the importer only reads `onsuccess`/`result`).
-     * @param {IDBValidKey} result
-     * @returns {IDBRequest<IDBValidKey>}
-     */
-    _makeRequest(result) {
-        /** @type {(() => void)|null} */
-        let onsuccess = null;
-        return /** @type {IDBRequest<IDBValidKey>} */ (/** @type {unknown} */ ({
-            result,
-            error: null,
-            onerror: null,
-            get onsuccess() { return onsuccess; },
-            set onsuccess(callback) {
-                onsuccess = callback;
-                if (typeof callback === 'function') { queueMicrotask(callback); }
-            },
-        }));
     }
 
     /**

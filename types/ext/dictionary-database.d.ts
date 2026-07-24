@@ -263,6 +263,51 @@ export type MatchType = Dictionary.TermSourceMatchType;
 
 export type MatchSource = Dictionary.TermSourceMatchSource;
 
+/**
+ * The dictionary store, as everything above it sees it.
+ *
+ * This used to be the shape of a concrete class (the IndexedDB `DictionaryDatabase`), which every
+ * other backend then had to be cast to. It is a real interface now because there is exactly one
+ * implementation left in the extension — `DictionaryDatabaseNative`, a client for the engine in the
+ * Safari app — and one more in node: `DictionaryDatabaseSqlite`, which *is* that engine and which
+ * the build-time dictionary compiler drives directly.
+ *
+ * Split into a read half and a write half deliberately. The translator and the backend only read;
+ * the importer only writes, and only exists in the compiler now. Keeping them apart is what makes
+ * it obvious that `DictionaryDatabaseNative` legitimately has no write path (plan/native-rewrite.md
+ * → The dictionary pipeline).
+ *
+ * `prepare` and `close` are *not* here. Opening is the one thing the two implementations genuinely
+ * disagree about — the client takes no arguments, the engine takes an injected `sqlite3` module and
+ * a path — and only whoever constructed the thing calls them, on its concrete type.
+ */
+export type DictionaryDatabaseRead = {
+    purge(): Promise<boolean>;
+    deleteDictionary(dictionaryName: string, progressRate: number, onProgress: DeleteDictionaryProgressCallback): Promise<void>;
+    dictionaryExists(title: string): Promise<boolean>;
+    getDictionaryInfo(): Promise<DictionaryImporter.Summary[]>;
+    getDictionaryCounts(dictionaryNames: string[], getTotal: boolean): Promise<DictionaryCounts>;
+    findTermsBulk(termList: string[], dictionaries: DictionarySet, matchType: MatchType): Promise<TermEntry[]>;
+    findTermsExactBulk(termList: TermExactRequest[], dictionaries: DictionarySet): Promise<TermEntry[]>;
+    findTermsBySequenceBulk(items: DictionaryAndQueryRequest[]): Promise<TermEntry[]>;
+    findTermMetaBulk(termList: string[], dictionaries: DictionarySet): Promise<TermMeta[]>;
+    findKanjiBulk(kanjiList: string[], dictionaries: DictionarySet): Promise<KanjiEntry[]>;
+    findKanjiMetaBulk(kanjiList: string[], dictionaries: DictionarySet): Promise<KanjiMeta[]>;
+    findTagMetaBulk(items: DictionaryAndQueryRequest[]): Promise<(Tag | undefined)[]>;
+    findTagForTitle(name: string, dictionary: string): Promise<Tag | null>;
+    getMedia(items: MediaRequest[]): Promise<Media[]>;
+};
+
+export type DictionaryDatabaseWrite = {
+    isPrepared(): boolean;
+    bulkAdd<T extends ObjectStoreName>(objectStoreName: T, items: ObjectStoreData<T>[], start: number, count: number): Promise<void>;
+    addWithResult<T extends ObjectStoreName>(objectStoreName: T, item: ObjectStoreData<T>): Promise<number>;
+    bulkUpdate<T extends ObjectStoreName>(objectStoreName: T, items: DatabaseUpdateItem[], start: number, count: number): Promise<void>;
+    finalizeImport(): Promise<void>;
+};
+
+export type DictionaryDatabaseApi = DictionaryDatabaseRead & DictionaryDatabaseWrite;
+
 export type DictionaryAndQueryRequest = {
     query: string | number;
     dictionary: string;

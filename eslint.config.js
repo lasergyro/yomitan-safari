@@ -864,9 +864,11 @@ export default [
         },
     },
     {
+        // The media-drawing worker is the only worker left: the dictionary import worker went with
+        // the in-browser importer, and the database owner worker went with the OPFS backend.
         files: [
-            'ext/js/dictionary/dictionary-worker-main.js',
-            ...await getDependencies(['ext/js/dictionary/dictionary-worker-main.js']),
+            'ext/js/display/media-drawing-worker.js',
+            ...await getDependencies(['ext/js/display/media-drawing-worker.js']),
         ],
 
         languageOptions: {

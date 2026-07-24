@@ -27,6 +27,14 @@ export type ImportStep = {label: string, callback?: () => void};
 
 export type ImportSteps = ImportStep[];
 
+/**
+ * Progress reporter for a dictionary install. Named for the import it used to describe: upstream
+ * streams this out of the import worker step by step. Here the work is a chunked upload of an
+ * already-compiled database, so the steps are fewer and the counts are bytes
+ * (plan/native-rewrite.md → The dictionary pipeline).
+ */
+export type ImportProgressCallback = (details: ProgressData) => void;
+
 export type ProgressData = {
     index: number;
     count: number;

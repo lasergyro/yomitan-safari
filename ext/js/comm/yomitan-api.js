@@ -16,7 +16,6 @@
  */
 
 import {parseHTML} from '../../lib/linkedom.js';
-import {OffscreenProxy} from '../background/offscreen-proxy.js';
 import {RequestBuilder} from '../background/request-builder.js';
 import {invokeApiMapHandler} from '../core/api-map.js';
 import {EventListenerCollection} from '../core/event-listener-collection.js';
@@ -37,9 +36,8 @@ import {AnkiTemplateRenderer} from '../templates/anki-template-renderer.js';
 export class YomitanApi {
     /**
      * @param {import('api').ApiMap} apiMap
-     * @param {OffscreenProxy?} offscreen
      */
-    constructor(apiMap, offscreen) {
+    constructor(apiMap) {
         /** @type {?chrome.runtime.Port} */
         this._port = null;
         /** @type {EventListenerCollection} */
@@ -60,8 +58,6 @@ export class YomitanApi {
         this._requestBuilder = new RequestBuilder();
         /** @type {AudioDownloader} */
         this._audioDownloader = new AudioDownloader(this._requestBuilder);
-        /** @type {OffscreenProxy?} */
-        this._offscreen = offscreen;
     }
 
     /**
@@ -469,7 +465,7 @@ export class YomitanApi {
             const {name, styles} = dictionary;
             if (typeof styles === 'string') {
                 // newlines and returns do not get converted into json well, are not required in css, and cause invalid css if not parsed for by the api consumer, just do the work for them
-                const sanitizedCSS = (await this._sanitizeCSSOffscreen(options, styles, domlessDocument)).replaceAll(/(\r|\n)/g, ' ');
+                const sanitizedCSS = (await this._sanitizeCSS(options, styles, domlessDocument)).replaceAll(/(\r|\n)/g, ' ');
                 styleMap.set(name, sanitizedCSS);
             }
         }
@@ -477,26 +473,20 @@ export class YomitanApi {
     }
 
     /**
+     * Sanitizes a dictionary's CSS before it is handed to an API consumer.
+     *
+     * Chrome did this in an offscreen document, which gave it a real `CSSStyleSheet` parser in a
+     * page context a service worker does not have. Safari has no `chrome.offscreen` at all, so that
+     * branch never ran here and has been removed with the rest of the Chrome-only plumbing; what is
+     * left is the CSSOM path, which the background page can run directly because on Safari the
+     * background *is* a page.
      * @param {import('settings').ProfileOptions} options
      * @param {string} css
      * @param {Document} domlessDocument
      * @returns {Promise<string>}
      */
-    async _sanitizeCSSOffscreen(options, css, domlessDocument) {
+    async _sanitizeCSS(options, css, domlessDocument) {
         if (css.length === 0) { return ''; }
-        try {
-            if (!this._offscreen) {
-                throw new Error('Offscreen page not available');
-            }
-            const sanitizedCSS = this._offscreen ? await this._offscreen.sendMessagePromise({action: 'sanitizeCSSOffscreen', params: {css}}) : '';
-            if (sanitizedCSS.length === 0 && css.length > 0) {
-                throw new Error('CSS parsing failed');
-            }
-            return sanitizedCSS;
-        } catch (e) {
-            log.log('Offscreen CSS sanitizer failed: ' + toError(e).message);
-        }
-
         try {
             const style = domlessDocument.createElement('style');
             // eslint-disable-next-line no-unsanitized/property

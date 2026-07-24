@@ -20,8 +20,7 @@ import {ExtensionError} from '../../core/extension-error.js';
 import {readResponseJson} from '../../core/json.js';
 import {log} from '../../core/log.js';
 import {toError} from '../../core/to-error.js';
-import {getKebabCase} from '../../data/anki-template-util.js';
-import {DictionaryWorker} from '../../dictionary/dictionary-worker.js';
+import {DictionaryDatabaseNative} from '../../native/dictionary-database-native.js';
 import {querySelectorNotNull} from '../../dom/query-selector.js';
 import {DictionaryController} from './dictionary-controller.js';
 
@@ -454,7 +453,7 @@ export class DictionaryImportController {
 
     /**
      * @param {string[]} urls
-     * @param {import('dictionary-worker').ImportProgressCallback} onProgress
+     * @param {import('dictionary-importer').ImportProgressCallback} onProgress
      * @yields {Promise<File>}
      * @returns {AsyncGenerator<File, void, void>}
      */
@@ -553,11 +552,12 @@ export class DictionaryImportController {
 
             for (const progress of [...progressContainers, ...recommendedProgressContainers]) { progress.hidden = false; }
 
-            const optionsFull = await this._settingsController.getOptionsFull();
-            const importDetails = {
-                prefixWildcardsSupported: optionsFull.global.database.prefixWildcardsSupported,
-                yomitanVersion: chrome.runtime.getManifest().version,
-            };
+            // A compiled database is the *whole* store, not one dictionary added to it, so
+            // installing several in a row would mean each silently discarding the last. Compile
+            // them into one file instead: `npm run compile:dictionary a.zip b.zip --out …`.
+            if (importProgressTracker.dictionaryCount > 1) {
+                throw new Error('Select a single dictionary database. A compiled database replaces the whole store, so several archives have to be compiled into one file.');
+            }
 
             for (let i = 0; i < importProgressTracker.dictionaryCount; ++i) {
                 importProgressTracker.onNextDictionary();
@@ -569,10 +569,9 @@ export class DictionaryImportController {
                 }
                 errors = [
                     ...errors,
-                    ...(await this._importDictionaryFromZip(
+                    ...(await this._installDictionaryDatabase(
                         file,
                         profilesDictionarySettings,
-                        importDetails,
                         onProgress,
                     ) ?? []),
                 ];
@@ -591,17 +590,19 @@ export class DictionaryImportController {
     }
 
     /**
+     * The install has three phases, where the archive import had seven.
+     *
+     * Everything the missing four did — reading banks, validating against the schemas, compressing
+     * payloads, inducing inflection rules — happened once at build time in
+     * `dev/bin/compile-dictionary.js`. What is left is moving bytes and reading back what arrived.
      * @returns {import('dictionary-importer').ImportSteps}
      */
     _getFileImportSteps() {
         return [
-            {label: '', callback: this._triggerStorageChanged.bind(this)}, // Dictionary import is uninitialized
-            {label: 'Initializing import'}, // Dictionary import is uninitialized
-            {label: 'Loading dictionary'}, // Load dictionary archive and validate index
-            {label: 'Loading schemas'}, // Load schemas and get archive files
-            {label: 'Validating data'}, // Load and validate dictionary data
-            {label: 'Importing data'}, // Add dictionary descriptor, load, and import data
-            {label: 'Finalizing import', callback: this._triggerStorageChanged.bind(this)}, // Update dictionary descriptor
+            {label: '', callback: this._triggerStorageChanged.bind(this)},
+            {label: 'Reading database'},
+            {label: 'Installing database'},
+            {label: 'Applying settings', callback: this._triggerStorageChanged.bind(this)},
         ];
     }
 
@@ -610,7 +611,7 @@ export class DictionaryImportController {
      */
     _getUrlImportSteps() {
         const urlImportSteps = this._getFileImportSteps();
-        urlImportSteps.splice(2, 0, {label: 'Downloading dictionary'});
+        urlImportSteps.splice(1, 0, {label: 'Downloading database'});
         return urlImportSteps;
     }
 
@@ -627,47 +628,54 @@ export class DictionaryImportController {
     }
 
     /**
+     * Installs a build-time-compiled dictionary database.
+     *
+     * This replaces the archive import entirely. A `.zip` is turned into a `.sqlite3` once, by
+     * `npm run compile:dictionary`, and what happens here is a chunked upload into the app
+     * container — no unzipping, no schema validation, no compression, no inflection induction, and
+     * none of the ~152 seconds those cost per dictionary (plan/native-rewrite.md → The dictionary
+     * pipeline).
+     *
+     * The installed file **is** the store, so every dictionary it contains becomes present at once
+     * and anything previously installed is gone. Settings are therefore reset and rebuilt from what
+     * the engine reports afterwards, rather than one summary being appended.
      * @param {File} file
      * @param {import('settings-controller').ProfilesDictionarySettings} profilesDictionarySettings
-     * @param {import('dictionary-importer').ImportDetails} importDetails
-     * @param {import('dictionary-worker').ImportProgressCallback} onProgress
+     * @param {import('dictionary-importer').ImportProgressCallback} onProgress
      * @returns {Promise<Error[] | undefined>}
      */
-    async _importDictionaryFromZip(file, profilesDictionarySettings, importDetails, onProgress) {
-        const archiveContent = await this._readFile(file);
-        const {result, errors} = await new DictionaryWorker().importDictionary(archiveContent, importDetails, onProgress);
-        if (!result) {
-            return errors;
+    async _installDictionaryDatabase(file, profilesDictionarySettings, onProgress) {
+        onProgress({nextStep: true, index: 0, count: 1});
+        const bytes = await this._readFile(file);
+
+        onProgress({nextStep: true, index: 0, count: bytes.byteLength});
+        const database = new DictionaryDatabaseNative();
+        try {
+            await database.installDatabase(bytes, ({loaded, total}) => {
+                onProgress({nextStep: false, index: loaded, count: total});
+            });
+        } catch (error) {
+            // The staged-and-validated install means a rejection here left the previous database
+            // untouched, so this is a plain failure and not a half-broken state to warn about.
+            return [toError(error)];
         }
 
-        const errors2 = await this._addDictionarySettings(result, profilesDictionarySettings);
-
+        onProgress({nextStep: true, index: 0, count: 1});
         await this._settingsController.application.api.triggerDatabaseUpdated('dictionary', 'import');
 
-        // Only runs if updating a dictionary
-        if (profilesDictionarySettings !== null) {
-            const options = await this._settingsController.getOptionsFull();
-            const {profiles} = options;
-
-            for (const profile of profiles) {
-                for (const cardFormat of profile.options.anki.cardFormats) {
-                    const ankiTermFields = cardFormat.fields;
-                    const oldFieldSegmentRegex = new RegExp(getKebabCase(profilesDictionarySettings[profile.id].name), 'g');
-                    const newFieldSegment = getKebabCase(result.title);
-                    for (const key of Object.keys(ankiTermFields)) {
-                        ankiTermFields[key].value = ankiTermFields[key].value.replace(oldFieldSegmentRegex, newFieldSegment);
-                    }
-                }
-            }
-            await this._settingsController.setAllSettings(options);
+        const summaries = await this._settingsController.application.api.getDictionaryInfo();
+        if (summaries.length === 0) {
+            return [new Error('The database installed but reports no dictionaries. It was probably compiled from an empty archive.')];
         }
 
-        if (errors.length > 0) {
-            errors.push(new Error(`Dictionary may not have been imported properly: ${errors.length} error${errors.length === 1 ? '' : 's'} reported.`));
-            this._showErrors([...errors, ...errors2]);
-        } else if (errors2.length > 0) {
-            this._showErrors(errors2);
+        // Old entries name dictionaries that this database may not contain; leaving them would show
+        // enabled dictionaries that cannot be looked up.
+        const errors = await this._clearDictionarySettings();
+        for (const summary of summaries) {
+            errors.push(...await this._addDictionarySettings(summary, profilesDictionarySettings));
         }
+        onProgress({nextStep: false, index: 1, count: 1});
+        if (errors.length > 0) { this._showErrors(errors); }
     }
 
     /**
@@ -907,7 +915,7 @@ export class ImportProgressTracker {
         return this._dictionaryCount;
     }
 
-    /** @type {import('dictionary-worker').ImportProgressCallback} */
+    /** @type {import('dictionary-importer').ImportProgressCallback} */
     onProgress(data) {
         const {nextStep, index, count} = data;
         if (nextStep) {

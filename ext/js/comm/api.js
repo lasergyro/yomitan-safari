@@ -324,6 +324,25 @@ export class API {
     }
 
     /**
+     * Row counts per dictionary, for the settings list. Goes through the backend rather than
+     * straight to the native host so that one process owns the engine connection.
+     * @param {import('api').ApiParam<'getDictionaryCounts', 'dictionaryNames'>} dictionaryNames
+     * @param {import('api').ApiParam<'getDictionaryCounts', 'getTotal'>} getTotal
+     * @returns {Promise<import('api').ApiReturn<'getDictionaryCounts'>>}
+     */
+    getDictionaryCounts(dictionaryNames, getTotal) {
+        return this._invoke('getDictionaryCounts', {dictionaryNames, getTotal});
+    }
+
+    /**
+     * @param {import('api').ApiParam<'deleteDictionary', 'dictionaryTitle'>} dictionaryTitle
+     * @returns {Promise<import('api').ApiReturn<'deleteDictionary'>>}
+     */
+    deleteDictionary(dictionaryTitle) {
+        return this._invoke('deleteDictionary', {dictionaryTitle});
+    }
+
+    /**
      * @param {import('api').ApiParam<'getMedia', 'targets'>} targets
      * @returns {Promise<import('api').ApiReturn<'getMedia'>>}
      */
@@ -472,20 +491,6 @@ export class API {
      */
     heartbeat() {
         return this._invoke('heartbeat', void 0);
-    }
-
-    /**
-     * @param {Transferable[]} transferables
-     */
-    registerOffscreenPort(transferables) {
-        this._pmInvoke('registerOffscreenPort', void 0, transferables);
-    }
-
-    /**
-     * @param {MessagePort} port
-     */
-    connectToDatabaseWorker(port) {
-        this._pmInvoke('connectToDatabaseWorker', void 0, [port]);
     }
 
     /**

@@ -211,15 +211,13 @@ export class Application extends EventDispatcher {
         const webExtension = new WebExtension();
         log.configure(webExtension.extensionName);
 
-        const mediaDrawingWorkerToBackendChannel = new MessageChannel();
+        // No port to a database worker any more: the media-drawing worker fetches the bytes itself
+        // over the extension API, because the store is in the native app rather than in a sibling
+        // worker (see display/media-drawing-worker.js).
         const mediaDrawingWorker = inExtensionContext ? new Worker(new URL('display/media-drawing-worker.js', import.meta.url), {type: 'module'}) : null;
-        mediaDrawingWorker?.postMessage({action: 'connectToDatabaseWorker'}, [mediaDrawingWorkerToBackendChannel.port2]);
 
         const api = new API(webExtension, mediaDrawingWorker, backendPort);
         await waitForBackendReady(webExtension);
-        if (mediaDrawingWorker !== null) {
-            api.connectToDatabaseWorker(mediaDrawingWorkerToBackendChannel.port1);
-        }
         setInterval(() => {
             void api.heartbeat();
         }, 20 * 1000);

@@ -31,10 +31,10 @@ import {isCodePointChinese} from './zh/chinese.js';
  */
 export class Translator {
     /**
-     * @param {import('../dictionary/dictionary-database.js').DictionaryDatabase} database
+     * @param {import('dictionary-database').DictionaryDatabaseRead} database
      */
     constructor(database) {
-        /** @type {import('../dictionary/dictionary-database.js').DictionaryDatabase} */
+        /** @type {import('dictionary-database').DictionaryDatabaseRead} */
         this._database = database;
         /** @type {MultiLanguageTransformer} */
         this._multiLanguageTransformer = new MultiLanguageTransformer();

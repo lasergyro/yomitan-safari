@@ -339,6 +339,19 @@ type ApiSurface = {
         params: void;
         return: void;
     };
+    getDictionaryCounts: {
+        params: {
+            dictionaryNames: string[];
+            getTotal: boolean;
+        };
+        return: DictionaryDatabase.DictionaryCounts;
+    };
+    deleteDictionary: {
+        params: {
+            dictionaryTitle: string;
+        };
+        return: void;
+    };
     getMedia: {
         params: {
             targets: GetMediaDetailsTarget[];
@@ -492,32 +505,6 @@ type PmApiSurface = {
         params: {
             requests: DrawMediaRequest[];
         };
-        return: void;
-    };
-    connectToDatabaseWorker: {
-        params: void;
-        return: void;
-    };
-    drawBufferToCanvases: {
-        params: {
-            buffer: ArrayBuffer;
-            width: number;
-            height: number;
-            canvasIndexes: number[];
-            generation: number;
-        };
-        return: void;
-    };
-    drawDecodedImageToCanvases: {
-        params: {
-            decodedImage: VideoFrame | ImageBitmap;
-            canvasIndexes: number[];
-            generation: number;
-        };
-        return: void;
-    };
-    registerOffscreenPort: {
-        params: void;
         return: void;
     };
     registerDatabasePort: {

@@ -54,7 +54,7 @@ export class DictionaryImporter {
     }
 
     /**
-     * @param {import('./dictionary-database.js').DictionaryDatabase} dictionaryDatabase
+     * @param {import('dictionary-database').DictionaryDatabaseApi} dictionaryDatabase
      * @param {ArrayBuffer} archiveContent
      * @param {import('dictionary-importer').ImportDetails} details
      * @returns {Promise<import('dictionary-importer').ImportResult>}
@@ -168,12 +168,9 @@ export class DictionaryImporter {
         let summaryDetails = {prefixWildcardsSupported, counts, styles: '', yomitanVersion, importSuccess};
 
         let summary = this._createSummary(dictionaryTitle, version, index, summaryDetails);
-        const dictionarySummaryAdd = await dictionaryDatabase.addWithResult('dictionaries', summary);
-        /** @type {Promise<IDBValidKey>} */
-        const dictionarySummaryResult = new Promise((resolve, reject) => {
-            dictionarySummaryAdd.onerror = () => reject(void 0);
-            dictionarySummaryAdd.onsuccess = () => resolve(dictionarySummaryAdd.result);
-        });
+        // Written first so the banks can reference its id, then rewritten at the end with the real
+        // counts and styles.
+        const dictionarySummaryId = await dictionaryDatabase.addWithResult('dictionaries', summary);
 
         try {
             const uniqueMediaPaths = new Set();
@@ -310,13 +307,11 @@ export class DictionaryImporter {
 
         summaryDetails = {prefixWildcardsSupported, counts, styles, yomitanVersion, importSuccess};
         summary = this._createSummary(dictionaryTitle, version, index, summaryDetails);
-        const primaryKey = await dictionarySummaryResult;
-        await dictionaryDatabase.bulkUpdate('dictionaries', [{data: summary, primaryKey}], 0, 1);
+        await dictionaryDatabase.bulkUpdate('dictionaries', [{data: summary, primaryKey: dictionarySummaryId}], 0, 1);
 
-        // Runs once the rows are all in place: on the SQLite backend this induces the inflection
-        // rules, drops the derivable form-of rows, and re-analyzes/compacts the file; on the
-        // IndexedDB backend it is a no-op (plan/design.md § Inflection synthesis). Only after a
-        // successful import — a partial import has nothing consistent to finalize.
+        // Runs once the rows are all in place: induces the inflection rules, drops the derivable
+        // form-of rows, and re-analyzes/compacts the file (plan/design.md § Inflection synthesis).
+        // Only after a successful import — a partial import has nothing consistent to finalize.
         if (importSuccess) {
             try {
                 await dictionaryDatabase.finalizeImport();
@@ -844,7 +839,7 @@ export class DictionaryImporter {
      * names are not repeated in every stored record. The indexed fields (expression, reading,
      * dictionary, sequence) and the optional reverse-lookup fields stay top-level so their IndexedDB
      * indexes keep working. This reverses the object-inflation done by the bank converters above;
-     * `DictionaryDatabase._createTerm` unpacks it on read.
+     * `DictionaryDatabaseSqlite._createTerm` unpacks it on read.
      * @param {import('dictionary-database').DatabaseTermEntry} entry
      * @returns {import('dictionary-database').DatabaseTermEntryPacked}
      */

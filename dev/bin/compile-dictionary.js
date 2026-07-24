@@ -139,7 +139,7 @@ async function compile({archives, outFile}) {
         const content = fs.readFileSync(archive);
         const buffer = content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength);
         const {errors, result} = await importer.importDictionary(
-            /** @type {import('../../ext/js/dictionary/dictionary-database.js').DictionaryDatabase} */ (/** @type {unknown} */ (database)),
+            /** @type {import('dictionary-database').DictionaryDatabaseApi} */ (/** @type {unknown} */ (database)),
             buffer,
             {prefixWildcardsSupported: true, yomitanVersion: '0.0.0.0'},
         );

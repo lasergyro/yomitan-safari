@@ -70,7 +70,7 @@ async function createBackend(ruleBudget) {
     const importer = new DictionaryImporter(new DictionaryImporterMediaLoader());
     // The SQLite backend implements the same public surface; cast at the importer seam as the shared
     // translator fixtures do.
-    const database = /** @type {import('../ext/js/dictionary/dictionary-database.js').DictionaryDatabase} */ (/** @type {unknown} */ (backend));
+    const database = /** @type {import('dictionary-database').DictionaryDatabaseApi} */ (/** @type {unknown} */ (backend));
     // importDictionary finalizes on success (induces rules, drops derivable rows, ANALYZE/VACUUM),
     // so this exercises that wiring rather than calling finalizeImport by hand.
     const {errors} = await importer.importDictionary(database, archive, {prefixWildcardsSupported: false, yomitanVersion: '0.0.0.0'});
