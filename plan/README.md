@@ -65,12 +65,21 @@ thing.
   untouched by the move. There is no flag: it is the only backend.
 - **Installing.** The settings UI streams a compiled `.sqlite3` into the app container, staged and
   validated before the live database is replaced.
+- **The options store (stage N4, part).** Options moved into the app container — two host actions
+  (`optionsLoad`/`optionsSave`) over one `options.json` — with the versioned migration staying in the
+  extension and a one-time read of the legacy `chrome.storage.local` copy so an upgrade keeps a
+  user's settings ([decisions.md](decisions.md) #52).
 - **The dictionary pipeline.** `npm run compile:dictionary` turns a `.zip` into a finished
   `.sqlite3` using the real importer, so installation is a chunked, staged, validated file copy
   rather than a 152-second in-browser import.
 - **The gate.** `npm run test:jsc` answers the same requests through node (SQLite-WASM) and through
   the real Swift host (libsqlite3) against **the same compiled database**, and requires identical
   answers — including full deinflected lookups. 21/21.
+- **The installed-extension check, automated.** `npm run test:safari:e2e` drives the _installed_
+  extension talking to its app extension — the one seam `test:jsc` cannot see. The extension reaches
+  out over a build-gated loopback bridge; the runner asserts the appex reads the database, a settings
+  write reaches `options.json`, and `geschützt` → `schützen` over the bridge. 4/4
+  ([native-rewrite.md](native-rewrite.md) → Testing, layer 4).
 - **The codec is decided: deflate** ([decisions.md](decisions.md) #26), and **inflection synthesis is
   implemented** (schema v4/v5): 947,070 → 293,262 rows, verified against the source ZIP (0 lost, 0
   invented over 41,921 forms).
@@ -84,10 +93,14 @@ the in-browser import path — the import worker and every caller of it. One bac
 the extension imports it: it is now build-time-only, driven by `npm run compile:dictionary` and the
 tests.
 
-**Remaining** ([native-rewrite.md](native-rewrite.md) → Staging): options, Anki and audio moving
-native (N4); iOS (N6). Two settings affordances — "Check for Updates" and the recommended
-dictionaries list — offer `.zip` archives this build cannot consume and now fail at install with a
-clear message rather than having been removed.
+**Remaining** ([native-rewrite.md](native-rewrite.md) → Staging): Anki note-building and audio moving
+native (the rest of N4 — options is done, and Anki's HTTP proxy already was); iOS (N6). These three
+are **deferred to last by direction.** The lookup seam that gated Anki/audio is now confirmed in the
+installed app — `npm run test:safari:e2e` drives `geschützt` → `schützen` over the real bridge — so
+what remains before them is a manual check of the _display_ path (the popup rendering), which the
+automated test does not cover. Two settings affordances — "Check for Updates"
+and the recommended dictionaries list — offer `.zip` archives this build cannot consume and now fail
+at install with a clear message rather than having been removed.
 
 **Also deleted, on the same principle:** the vendored `ext/lib/pako.js` and the `dev/lib/pako.js`
 that generated it. The codec's dynamic-import fallback to it was the extension path before the engine
@@ -172,6 +185,7 @@ npm run test:unit                     # vitest (includes the SQLite backend test
 npm test                              # the whole gate: eslint + tsc + css/html/json/md + vitest
                                       #   (+ the options and json-schema suites) + a dry-run build
 npm run test:jsc                      # the native gate: node vs. JavaScriptCore, same database
+npm run test:safari:e2e -- --database d.sqlite3   # drive the installed extension (needs the bridge build)
 npm run measure:storage               # measure codecs + DB size against the real kty-de-en
 npx tsc --noEmit -p jsconfig.json     # main type-check
 npm run test:ts:test                  # type-check the test/ project

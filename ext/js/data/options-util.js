@@ -21,6 +21,7 @@ import {parseJson} from '../core/json.js';
 import {isObjectNotArray} from '../core/object-utilities.js';
 import {escapeRegExp} from '../core/utilities.js';
 import {getTemporaryStorage} from '../extension/temporary-storage.js';
+import {NativeOptionsStore} from '../native/native-options-store.js';
 import {TemplatePatcher} from '../templates/template-patcher.js';
 import {JsonSchema} from './json-schema.js';
 
@@ -31,11 +32,29 @@ import {JsonSchema} from './json-schema.js';
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 
 export class OptionsUtil {
-    constructor() {
+    /**
+     * @param {?import('options-util').OptionsStorage} [storage] Where options are persisted.
+     *   Injected by tests; the extension defaults to the native app container. Constructed lazily so
+     *   the callers that only use `update`/`getDefault` (the settings and backup controllers) never
+     *   stand up a native-messaging client they will not use.
+     */
+    constructor(storage = null) {
         /** @type {?TemplatePatcher} */
         this._templatePatcher = null;
         /** @type {?JsonSchema} */
         this._optionsSchema = null;
+        /** @type {?import('options-util').OptionsStorage} */
+        this._storage = storage;
+    }
+
+    /**
+     * @returns {import('options-util').OptionsStorage}
+     */
+    _getStorage() {
+        if (this._storage === null) {
+            this._storage = new NativeOptionsStore();
+        }
+        return this._storage;
     }
 
     /** */
@@ -117,16 +136,14 @@ export class OptionsUtil {
     async load() {
         let options;
         try {
-            const optionsStr = await new Promise((resolve, reject) => {
-                chrome.storage.local.get(['options'], (store) => {
-                    const error = chrome.runtime.lastError;
-                    if (error) {
-                        reject(new Error(error.message));
-                    } else {
-                        resolve(store.options);
-                    }
-                });
-            });
+            let optionsStr = await this._getStorage().load();
+            if (optionsStr === null) {
+                // First run on the native store: adopt the copy the extension used to keep in
+                // `chrome.storage.local`, so an upgrade does not silently reset the user's settings.
+                // The next `save` below writes it into the container, and the legacy key is left in
+                // place as a harmless fallback if the build is ever rolled back.
+                optionsStr = await this._loadLegacyOptions();
+            }
             if (typeof optionsStr !== 'string') {
                 throw new Error('Invalid value for options');
             }
@@ -150,16 +167,34 @@ export class OptionsUtil {
      * @returns {Promise<void>}
      */
     save(options) {
-        return new Promise((resolve, reject) => {
-            chrome.storage.local.set({options: JSON.stringify(options)}, () => {
-                const error = chrome.runtime.lastError;
-                if (error) {
-                    reject(new Error(error.message));
-                } else {
-                    resolve();
-                }
+        return this._getStorage().save(JSON.stringify(options));
+    }
+
+    /**
+     * The one-time migration source: the options the extension persisted before the store moved into
+     * the app container. Returns `null` when there is nothing to migrate (a fresh install, or a
+     * context without `chrome.storage`).
+     * @returns {Promise<?string>}
+     */
+    async _loadLegacyOptions() {
+        if (typeof chrome === 'undefined' || !isObjectNotArray(chrome.storage) || typeof chrome.storage.local?.get !== 'function') {
+            return null;
+        }
+        try {
+            const optionsStr = await new Promise((resolve, reject) => {
+                chrome.storage.local.get(['options'], (store) => {
+                    const error = chrome.runtime.lastError;
+                    if (error) {
+                        reject(new Error(error.message));
+                    } else {
+                        resolve(store.options);
+                    }
+                });
             });
-        });
+            return typeof optionsStr === 'string' ? optionsStr : null;
+        } catch (e) {
+            return null;
+        }
     }
 
     /**

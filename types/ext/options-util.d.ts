@@ -25,6 +25,16 @@ export type LegacyUpdateFunction = (options: LegacyOptions) => void;
 
 export type UpdateFunction = (options: IntermediateOptions) => void | Promise<void>;
 
+/**
+ * Where `OptionsUtil` persists the serialized options. The extension backs this with the native app
+ * container (`NativeOptionsStore`); tests inject a fake. `load` returns `null` when the store holds
+ * nothing yet.
+ */
+export type OptionsStorage = {
+    load(): Promise<string | null>;
+    save(optionsJson: string): Promise<void>;
+};
+
 export type TemplateFieldUpdate = {
     version: number;
     changes: string;

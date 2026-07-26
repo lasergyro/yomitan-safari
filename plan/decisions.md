@@ -491,3 +491,53 @@ termTags]`) in the IndexedDB rows. — Deterministic ~10% shrink and a stepping 
   bundle-id derivation is skipped entirely when the runtime id does not look like one, which is
   how a Firefox extension id avoids spending a round trip on a candidate that cannot exist. —
   _built._
+
+- **#52.** **Options are a host action over a plain JSON file, not an engine action, and the store is
+  the app container.** — Stage N4 moves the options/profile store native. Options never lived in
+  OPFS and so were never part of the origin-rotation blocker — `chrome.storage.local` is exempt and
+  persisted them fine — so the move is for the _other_ reason the engine went native: a standalone
+  macOS app needs the settings its logic reads to live in the app process, not the browser. Three
+  choices fell out of that:
+
+  - **Host action, not engine action.** The protocol prefers engine actions because a host implements
+    none of them ([native-protocol.md](native-protocol.md) → Changing the protocol), but options are
+    not dictionary data and the dictionary database is _replaced wholesale_ on every install, which
+    options must outlive — so they cannot share its file, and the engine has no other business
+    holding them. `optionsLoad`/`optionsSave` read and write one `options.json` beside the database
+    (`OptionsStore.swift`), on the same serialized queue as everything else. A second host implements
+    two trivial file operations.
+  - **The extension keeps the migration.** `options-util.js` is 1,800 lines of upstream, actively
+    maintained, versioned migration; none of it moves. Only the storage seam in `load`/`save` changed
+    — `chrome.storage.local` → the injected `OptionsStorage`, defaulting to `NativeOptionsStore`,
+    constructed lazily so the settings and backup controllers (which only call `update`/`getDefault`)
+    never stand up a native client. The settings UI was untouched: it already read and wrote options
+    through the backend API, and the backend is the only caller that hits storage.
+  - **One-time migration, not a reset.** On the first launch against an empty container, `load` reads
+    the copy the extension used to keep in `chrome.storage.local` and the following `save` writes it
+    into the container, so an upgrade does not silently wipe a user's settings. The legacy key is
+    left in place as a harmless rollback fallback. — _built; audio and Anki (the rest of N4) are
+    deferred until the core lookup/display path is confirmed in the installed app._
+
+- **#53.** **The installed-extension end-to-end test has the extension reach _out_ to a local server,
+  not the harness reach _in_.** — The one seam vitest and `test:jsc` cannot cover is the installed
+  extension talking to its app extension over `sendNativeMessage`; both of those run the engine
+  outside Safari. Driving it from outside is what Safari makes hard: the `safari-web-extension://`
+  origin rotates every launch and has no scriptable cold entry — a synthesized scan needs the content
+  script already granted on some page and only reveals the origin, not a driveable page; the scheme
+  is refused for direct navigation; extension hotkeys are unreliable. So `npm run test:safari:e2e`
+  inverts it. A **build-gated** content-script bridge (`YOMITAN_TEST_BRIDGE=1`, injected only on
+  `127.0.0.1`/`localhost`) runs in the extension's isolated world, long-polls a local node runner,
+  and relays `{action, params}` to the background service worker — the same message surface the real
+  UI uses; the service worker does the native round trip. Three choices fell out:
+  - **Reach out, over a bridge baked into a test build.** The bridge must run in the extension
+    context (only there is `chrome.runtime` + native messaging), so it is extension code and needs a
+    rebuild. Gating it on an env var in `build-safari.sh` means a normal build never references it and
+    it cannot ship; a plain `./rebuild-safari.sh` removes it. This is why the old OPFS-era
+    `test/safari` runner did _not_ cover this seam — it ran backend code as plain `127.0.0.1` page
+    scripts, which have no `chrome` and no appex.
+  - **Long-poll HTTP, not WebSocket.** Keeps the runner a dependency-free node `http` server; the
+    content script's same-origin `fetch` needs nothing added.
+  - **Assert the three seams that only exist in Safari**, and restore what it touched: the appex
+    reads the database, a settings write reaches `options.json` (#52), and `geschützt` → `schützen`
+    deinflects natively. The runner backs up and restores the options and database it finds. — _built,
+    4/4; recipe in [DEV.md](../DEV.md), summary in [native-rewrite.md](native-rewrite.md) → Testing._

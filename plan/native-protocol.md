@@ -179,6 +179,8 @@ Binary in the other direction (installing a database) is base64 too, chunked —
 | `installChunk`  | `chunk`        | `{ok, bytesWritten}`                                     | `chunk` is base64.                                                       |
 | `installCommit` | —              | `{ok, databaseBytes}`                                    | Validates, then replaces the live database.                              |
 | `installAbort`  | —              | `{ok}`                                                   | Discards the staging file. Idempotent.                                   |
+| `optionsLoad`   | —              | `{ok, options?}`                                         | Reads `options.json`. `options` is **omitted** when the file is absent.  |
+| `optionsSave`   | `options`      | `{ok, bytesWritten}`                                     | Writes the options JSON string atomically. `options` is that string.     |
 | `ankiRequest`   | `url`, …       | `{status, responseText}`                                 | Loopback-only HTTP proxy. Predates the engine; addressed separately.     |
 | `ping`          | `echoBytes`, … | `{ok, receivedBytes, nativeTimestampMs, payload}`        | The latency probe. Inert unless called.                                  |
 
@@ -200,6 +202,20 @@ dictionaries has lost hours:
 Chunking is 3 MB (see `INSTALL_CHUNK_BYTES`). `sendNativeMessage` has no documented size limit, the
 largest round trip ever measured was 4 MB, and a 49 MB message is the sort of thing that works on a
 developer's machine and fails on a user's.
+
+### Why options are a host action
+
+`optionsLoad`/`optionsSave` are **host** actions, not engine actions, even though the protocol
+otherwise prefers engine actions (a host implements none of those). Options are not dictionary data,
+and the dictionary database is replaced wholesale on every install — which options must survive — so
+they cannot share its file and the engine has no reason to hold them. The store is one small
+`options.json` beside the database in the app container; the extension keeps every line of the
+versioned options migration (`options-util.js`) and only the bytes move. `optionsSave` must write
+atomically (stage-and-rename), for the same reason the installer stages: a crash mid-write must not
+truncate a working options file. The one payload is small and unchunked. A first `optionsLoad` that
+finds no file omits `options` entirely, which is the extension's cue to migrate its legacy
+`chrome.storage.local` copy once and otherwise fall back to defaults ([decisions.md](decisions.md)
+#52).
 
 ---
 
@@ -261,7 +277,8 @@ object and call `core.invoke`. A shipping Linux host is that, plus:
 - `node:sqlite` (built in since node 22, which this repo already requires) instead of SQLite-WASM, so
   there are no native dependencies to build;
 - the stdio native-messaging framing — a `uint32` little-endian length prefix, then UTF-8 JSON;
-- the install actions against XDG paths;
+- the install actions against XDG paths, and the `optionsLoad`/`optionsSave` pair reading and
+  writing an `options.json` beside the database — both are file I/O, no engine involved;
 - an installer that writes the native-messaging manifest.
 
 ---

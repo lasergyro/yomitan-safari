@@ -50,6 +50,7 @@ done
 python3 - "$ROOT_DIR" "$WEB_EXTENSION_DIR" "$VERSION" <<'PY'
 import copy
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -141,6 +142,19 @@ for variant in chain:
     for excluded in variant.get("excludeFiles", []):
         if excluded not in exclude_files:
             exclude_files.append(excluded)
+
+# DEV/TEST ONLY: inject the loopback test bridge (ext/js/native/loopback-test-bridge.js) as a
+# content script on 127.0.0.1/localhost so `npm run test:safari:e2e` can drive the installed
+# extension over a loopback HTTP endpoint (see that runner and DEV.md). Gated on an env var so a
+# normal build -- and therefore anything that ships -- never references it. Match patterns ignore the
+# port, so this covers whichever port the runner picks.
+if os.environ.get("YOMITAN_TEST_BRIDGE"):
+    manifest.setdefault("content_scripts", []).append({
+        "run_at": "document_idle",
+        "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+        "all_frames": False,
+        "js": ["js/native/loopback-test-bridge.js"],
+    })
 
 if output_dir.exists():
     shutil.rmtree(output_dir)

@@ -63,6 +63,8 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             handleEngineStatus(context: context)
         case "installBegin", "installChunk", "installCommit", "installAbort":
             handleInstall(action: action, message: message, context: context)
+        case "optionsLoad", "optionsSave":
+            handleOptions(action: action, message: message, context: context)
         case "ankiRequest":
             proxyAnkiRequest(message: message, context: context)
         case "ping":
@@ -146,6 +148,39 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             } catch {
                 DictionaryInstaller.shared.abort()
                 os_log(.error, "Yomitan dictionary install failed: %{public}@", "\(error)")
+                self.complete(context: context, response: ["error": "\(error)"])
+            }
+        }
+    }
+
+    // MARK: - Options store
+
+    /// Reads and writes the options JSON file in the app container (OptionsStore).
+    ///
+    /// On `Self.engineQueue` like everything else: options touch no engine state, but sharing the
+    /// one queue serializes concurrent saves for free and keeps a single audit point for container
+    /// access. Neither call is on the hover path, so waiting behind a lookup costs nothing that
+    /// matters. `optionsLoad` omits the `options` key entirely when the file is absent, so the
+    /// extension sees `undefined` rather than a null it would have to special-case.
+    private func handleOptions(action: String, message: [String: Any], context: NSExtensionContext) {
+        Self.engineQueue.async {
+            do {
+                switch action {
+                case "optionsSave":
+                    guard let json = message["options"] as? String else {
+                        throw OptionsStoreError.missingOptions
+                    }
+                    let written = try OptionsStore.save(json)
+                    self.complete(context: context, response: ["ok": true, "bytesWritten": written])
+                default:
+                    var response: [String: Any] = ["ok": true]
+                    if let options = try OptionsStore.load() {
+                        response["options"] = options
+                    }
+                    self.complete(context: context, response: response)
+                }
+            } catch {
+                os_log(.error, "Yomitan options store failed: %{public}@", "\(error)")
                 self.complete(context: context, response: ["error": "\(error)"])
             }
         }

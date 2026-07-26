@@ -138,6 +138,50 @@ error**, not an exception: the encoders in `native-protocol.js` exist precisely 
 or `RegExp` that reaches `JSON.stringify` unencoded stringifies to `{}`, and the lookup then quietly
 returns nothing.
 
+**Options now cross the same bridge** (`optionsLoad`/`optionsSave` → `options.json` in the container).
+Neither vitest nor `test:jsc` can see that seam either. To check it: open the settings page, change a
+visible setting, **quit and relaunch Safari**, and confirm the change stuck — that proves the write
+reached the container and the next launch read it back, not `chrome.storage.local`. On the very first
+launch after this change lands, existing settings should be **preserved**, not reset: `optionsLoad`
+returns nothing, the extension migrates the legacy `chrome.storage.local` copy once, and the following
+save writes it into the container.
+
+### Automated end-to-end check (`npm run test:safari:e2e`)
+
+The manual pass above depends on a scriptable entry into the extension, which Safari does not give us:
+the `safari-web-extension://` origin rotates every launch and there is no cold way in (a synthesized
+scan needs the content script already granted on some page and the popup only reveals the origin, not
+a driveable page). So instead of reaching **into** the extension, the extension reaches **out**.
+
+`dev/bin/test-safari-e2e.js` serves a loopback HTTP endpoint on `127.0.0.1`, opens it as a background
+tab with `open -g` (no focus steal, an ordinary http origin so none of the scheme/seed problems
+apply), and a **build-gated content-script bridge** (`ext/js/native/loopback-test-bridge.js`, injected
+only on `127.0.0.1`/`localhost`, and only when the build was made with `YOMITAN_TEST_BRIDGE=1`) runs
+in the extension's isolated world, long-polls the runner for `{action, params}` commands, and relays
+each to the background service worker — the same `chrome.runtime` message surface the real UI uses.
+The service worker does the native round trip; the answer comes back over the socket. This is the one
+layer vitest and `test:jsc` cannot reach, because both run the engine outside Safari.
+
+```sh
+YOMITAN_TEST_BRIDGE=1 ./rebuild-safari.sh                     # once: build+install with the bridge
+npm run compile:dictionary -- dictionaries/kty-de-en.zip --out /tmp/kty.sqlite3
+npm run test:safari:e2e -- --database /tmp/kty.sqlite3        # install, drive, assert, restore
+```
+
+It installs the compiled database (backing up whatever was there), then asserts three seams in order:
+the appex answers and reads the database (`getDictionaryInfo`); a settings write crosses the bridge
+into `options.json` (registering the dictionary — the options-save seam, [plan/decisions.md](plan/decisions.md) #52);
+and a real lookup deinflects natively (**`geschützt` → `schützen`**, the same assertion as the manual
+recipe). It restores the options and database it found on the way in (`KEEP=1` to leave them). The
+bridge **never ships**: a normal `./rebuild-safari.sh` omits the content-script entry entirely, so the
+installed extension you use day to day has no loopback code in it. Rebuild without the flag to remove
+it.
+
+The residual manual gate is unchanged and is Apple's, not the harness's: the extension must be
+**enabled and granted host permission** once in Safari Settings → Extensions (do not synthesize those
+clicks), and **Allow JavaScript from Apple Events** is not needed here at all — this path uses no
+`do JavaScript`.
+
 ## Automated Safari inspection (macOS)
 
 How to drive a real, logged-in Safari from the shell to inspect a live page's

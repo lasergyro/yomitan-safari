@@ -35,6 +35,7 @@ directory that the protocol does not describe.
 | `Sources/YomitanNative/NativeEngineHost.swift`          | The `JSContext`: platform surface, bundle evaluation, and the timer pump.                        |
 | `Sources/YomitanNative/SafariWebExtensionHandler.swift` | The message router. Thin by design — the engine may move to a long-lived main-app process later. |
 | `Sources/YomitanNative/DictionaryStore.swift`           | Container paths, and the staged/validated install of a compiled database.                        |
+| `Sources/YomitanNative/OptionsStore.swift`              | The options/profile store: one `options.json` in the container, read and written atomically.     |
 | `Tools/jsc-harness/`                                    | A CLI that runs the bundle in a real `JSContext`. The equivalence gate.                          |
 | `Resources/yomitan-core.js`                             | **Generated** (`npm run build:native-core`), gitignored. Minified by default.                    |
 

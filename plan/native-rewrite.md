@@ -4,8 +4,8 @@
 inflection synthesis **and the translator** — runs in the Safari app extension, in JavaScriptCore,
 over the system `libsqlite3`, reading a database in the app container. The app builds and signs, and
 `npm run test:jsc` proves the native host answers identically to node on the same compiled database,
-including full deinflected lookups. Stage N4 (options, Anki, audio) and N6 (iOS) remain — see
-[Staging](#staging) for exactly what is done.
+including full deinflected lookups. Stage N4's options store is now in the app container too; N4's
+Anki and audio, and N6 (iOS), remain — see [Staging](#staging) for exactly what is done.
 
 Supersedes [safari-idb-snapshot.md](history/safari-idb-snapshot.md), which was never built and is now
 abandoned rather than held as a fallback: the OPFS storage layer it patched no longer exists in the
@@ -254,11 +254,20 @@ The strategy has to survive the core moving hosts. Four layers:
    mapping, chunking. _Not built._ What exists instead is `test:jsc` driving the real host end to
    end, plus `test/native-host-shims.test.js`, which pins the schema version the Swift installer
    validates against.
-4. **Extension-origin protocol test.** _Not built as a script._ `npm run test:safari` lost its
-   purpose (there is no OPFS backend to prove) and was deleted with it. What replaces it is a manual
-   check against the installed extension: **[DEV.md](../DEV.md) → The native engine → Checking the
-   installed extension end to end**, which is the only place that recipe is written down. It is the
-   one thing neither vitest nor `test:jsc` can see, because both run the engine outside Safari.
+4. **Extension-origin end-to-end test. DONE** — `npm run test:safari:e2e`. This is the one seam
+   neither vitest nor `test:jsc` can see, because both run the engine outside Safari: the installed
+   extension talking to its app extension over `sendNativeMessage`. Safari gives no scriptable way
+   _into_ the rotating `safari-web-extension://` origin, so the extension reaches _out_ — a
+   build-gated content-script bridge (`YOMITAN_TEST_BRIDGE=1 ./rebuild-safari.sh`, injected only on
+   `127.0.0.1`) long-polls a local runner and relays `{action, params}` to the background service
+   worker. The runner asserts three seams end to end against a real installed dictionary: the appex
+   reads the database (`getDictionaryInfo`), a settings write lands in `options.json` in the
+   container (registering the dictionary — the options-save seam, [decisions.md](decisions.md) #52),
+   and a real lookup deinflects natively (`geschützt` → `schützen`). The recipe and the why are in
+   **[DEV.md](../DEV.md) → The native engine → Automated end-to-end check**; the older single manual
+   lookup beside it is the same assertion by hand, kept for when the extension cannot be rebuilt with
+   the bridge. `npm run test:safari` (the OPFS-era runner) stays deleted — there is no OPFS backend
+   to prove.
 
 ---
 
@@ -305,7 +314,15 @@ single-digit to tens of milliseconds — sizes and timings in
 between calls on macOS. The bundle is minified by default so the artifact the gate tests is the one
 that ships.
 
-**Stage N4 — services.** _Remaining._ Options, Anki and audio still run in the extension.
+**Stage N4 — services.** _Options: DONE. Anki and audio: remaining._ The options/profile store moved
+into the app container: two host actions (`optionsLoad`/`optionsSave`) over one `options.json`, the
+extension keeping every line of the versioned migration and only relocating the bytes off
+`chrome.storage.local` — with a one-time read of the legacy copy so an upgrade does not reset a
+user's settings ([decisions.md](decisions.md) #52). Anki's loopback HTTP proxy is already a host
+action (`ankiRequest`); the remaining Anki note-building and audio fetching still run in the
+extension, and are **deferred to last by direction**, alongside iOS (N6). The lookup seam that gated
+them is now confirmed in the installed app by `npm run test:safari:e2e` (Testing, layer 4); what is
+left to check by hand before they move is the display path.
 
 **Stage N5 — delete. DONE.** The OPFS backend, the owner worker, the suspend/resume API, the
 migration UX, `USE_SQLITE_BACKEND`, **the IndexedDB backend**, the Chrome offscreen document, the
