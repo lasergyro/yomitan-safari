@@ -19,7 +19,9 @@ import {DeflatePayloadCodec} from '../dictionary/deflate-payload-codec.js';
 import {DictionaryDatabaseSqlite} from '../dictionary/sqlite/dictionary-database-sqlite.js';
 import {DICTIONARY_SQLITE_SCHEMA_VERSION} from '../dictionary/sqlite/dictionary-sqlite-schema.js';
 import {Translator} from '../language/translator.js';
+import {AudioDownloader} from '../media/audio-downloader.js';
 import {decodeDictionarySet, decodeFindKanjiOptions, decodeFindTermsOptions, encodeMediaResults} from './native-protocol.js';
+import {NativeRequestBuilder} from './native-web-shims.js';
 
 /**
  * The dictionary engine, as it runs inside the native app.
@@ -64,6 +66,15 @@ export class NativeCore {
          */
         this._translator = new Translator(this._database);
         /**
+         * Audio source resolution and download, run here rather than in the extension background
+         * (plan/native-rewrite.md, stage N4). It is upstream `AudioDownloader`, unmodified — its
+         * browser platform assumptions are met by `NativeRequestBuilder` (native fetch) and the
+         * web-platform shims (native-web-shims.js). Moving it native is what lets a future non-browser
+         * client (a game or desktop overlay) get audio without an extension around it.
+         * @type {AudioDownloader}
+         */
+        this._audioDownloader = new AudioDownloader(/** @type {import('../background/request-builder.js').RequestBuilder} */ (/** @type {unknown} */ (new NativeRequestBuilder(host))));
+        /**
          * In-flight (or completed) preparation. The app extension can be terminated between calls,
          * so a client cannot be relied on to have called `prepare` first — every action awaits this,
          * and it costs one already-resolved promise once the process is warm.
@@ -86,7 +97,10 @@ export class NativeCore {
         if (typeof handler !== 'function') {
             throw new Error(`Unsupported engine action: ${action}`);
         }
-        if (action !== 'prepare') { await this._prepare(); }
+        // Audio actions are network-only and touch no dictionary state, so they do not open the
+        // database — which is what lets a client with no dictionaries (a future overlay) still fetch
+        // audio.
+        if (action !== 'prepare' && !PREPARE_EXEMPT_ACTIONS.has(action)) { await this._prepare(); }
         return await handler(/** @type {never} */ (params));
     }
 
@@ -144,9 +158,46 @@ export class NativeCore {
             kanjiFind: ({text, options}) => this._translator.findKanji(text, decodeFindKanjiOptions(options)),
             getTermFrequencies: ({termReadingList, dictionaries}) => this._translator.getTermFrequencies(termReadingList, dictionaries),
             clearDatabaseCaches: () => { this._translator.clearDatabaseCaches(); },
+            getTermAudioInfoList: ({source, term, reading, languageSummary}) => this._audioDownloader.getTermAudioInfoList(source, term, reading, languageSummary),
+            downloadTermAudio: ({sources, preferredAudioIndex, term, reading, idleTimeout, languageSummary, enableDefaultAudioSources}) => this._audioDownloader.downloadTermAudio(sources, preferredAudioIndex, term, reading, idleTimeout, languageSummary, enableDefaultAudioSources),
+            // Playback bytes for one already-resolved audio URL. The display plays these from a
+            // same-origin blob URL because the in-page overlay — an extension iframe embedded in the
+            // page — cannot load a cross-origin audio URL directly under Safari (plan/audio-service.md).
+            // Uses the host fetch directly (anonymous, like the download pipeline), so it opens no
+            // database and is exempt from `prepare`.
+            getAudioUrlBytes: ({url}) => this._fetchAudioUrlBytes(url),
         };
     }
+
+    /**
+     * Fetches one audio URL's bytes over the host's synchronous fetch and returns them base64, with
+     * the response's content type. `{data, contentType}` matches `downloadTermAudio`'s reply shape so
+     * the display handles both the same way.
+     * @param {string} url
+     * @returns {import('audio-downloader').AudioBinaryBase64}
+     * @throws {Error} If the host fetch itself failed (an unreachable host, a bad scheme).
+     */
+    _fetchAudioUrlBytes(url) {
+        const result = this._host.fetch({url, method: 'GET', headers: {}, bodyBase64: '', timeoutMs: 0});
+        if (typeof result.error === 'string') { throw new Error(result.error); }
+        let contentType = null;
+        for (const key of Object.keys(result.headers)) {
+            if (key.toLowerCase() === 'content-type') {
+                contentType = result.headers[key];
+                break;
+            }
+        }
+        return {data: result.bodyBase64, contentType};
+    }
 }
+
+/**
+ * Actions that must not open the dictionary database before running. Audio is network work with no
+ * dictionary dependency, so requiring `prepare` would both waste a database open on the hover-free
+ * audio path and make audio impossible for a client that has no dictionaries installed at all.
+ * @type {Set<string>}
+ */
+const PREPARE_EXEMPT_ACTIONS = new Set(['getTermAudioInfoList', 'downloadTermAudio', 'getAudioUrlBytes']);
 
 /**
  * The schema version reported to the client at `prepare`, and the version the Swift installer checks

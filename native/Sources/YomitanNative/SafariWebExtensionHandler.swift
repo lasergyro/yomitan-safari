@@ -67,6 +67,10 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             handleOptions(action: action, message: message, context: context)
         case "ankiRequest":
             proxyAnkiRequest(message: message, context: context)
+        case "ttsVoices":
+            handleTtsVoices(context: context)
+        case "ttsSynthesize":
+            handleTtsSynthesize(message: message, context: context)
         case "ping":
             handlePing(message: message, context: context)
         default:
@@ -201,6 +205,53 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             "nativeTimestampMs": Date().timeIntervalSince1970 * 1000.0,
             "payload": echoBytes > 0 ? String(repeating: "x", count: echoBytes) : "",
         ])
+    }
+
+    // MARK: - Text-to-speech
+
+    /// Lists the installed system voices for the settings picker. Native `AVSpeechSynthesizer` sees
+    /// the whole set where Safari's `speechSynthesis.getVoices()` returns only `Anna`
+    /// (plan/audio-service.md), which is the reason TTS is rendered natively at all.
+    private func handleTtsVoices(context: NSExtensionContext) {
+        DispatchQueue.main.async {
+            self.complete(context: context, response: ["ok": true, "voices": TtsService.voices()])
+        }
+    }
+
+    /// Offline-renders one utterance to WAV bytes (base64) for the display to play from a blob.
+    ///
+    /// On the **main queue**, not `engineQueue`: `AVSpeechSynthesizer.write` only delivers its
+    /// buffers on the main run loop, and keeping synthesis off the engine queue means a render never
+    /// stalls a dictionary lookup. Guarded at 10.15 because offline `write` is unavailable on the
+    /// appex's 10.14 floor; below it the extension falls back to browser `speechSynthesis`.
+    private func handleTtsSynthesize(message: [String: Any], context: NSExtensionContext) {
+        guard let text = message["text"] as? String, !text.isEmpty else {
+            complete(context: context, response: ["error": "Missing text"])
+            return
+        }
+        let voiceId = message["voice"] as? String
+        let language = message["language"] as? String
+        let rate = (message["rate"] as? NSNumber)?.floatValue
+        let pitch = (message["pitch"] as? NSNumber)?.floatValue
+        DispatchQueue.main.async {
+            guard #available(macOS 10.15, *) else {
+                self.complete(context: context, response: ["error": "Native TTS requires macOS 10.15 or later"])
+                return
+            }
+            TtsService.synthesize(text: text, voiceId: voiceId, language: language, rate: rate, pitch: pitch) { result in
+                switch result {
+                case .success(let data):
+                    self.complete(context: context, response: [
+                        "ok": true,
+                        "data": data.base64EncodedString(),
+                        "contentType": "audio/wav",
+                    ])
+                case .failure(let error):
+                    os_log(.error, "Yomitan TTS synthesis failed: %{public}@", "\(error)")
+                    self.complete(context: context, response: ["error": "\(error)"])
+                }
+            }
+        }
     }
 
     private func proxyAnkiRequest(message: [String: Any], context: NSExtensionContext) {

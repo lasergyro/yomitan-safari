@@ -20,12 +20,14 @@ Three clusters. Start with the first.
 
 **Where it is going (start here):**
 
-| File                                             | What it holds                                                                   |
-| ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| [native-rewrite.md](native-rewrite.md)           | **The plan and its status**: the engine in the native app, staged N0-N6         |
-| [../native/README.md](../native/README.md)       | **What was built**: layout, the build, the test gate, installing a dictionary   |
-| [native-protocol.md](native-protocol.md)         | **The wire contract**: what a second host (Linux, Firefox) implements           |
-| [native-engine-probe.md](native-engine-probe.md) | The measurement that made it viable: the native bridge costs ~1 ms and ~60 MB/s |
+| File                                             | What it holds                                                                                                                                              |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [native-rewrite.md](native-rewrite.md)           | **The plan and its status**: the engine in the native app, staged N0-N6                                                                                    |
+| [../native/README.md](../native/README.md)       | **What was built**: layout, the build, the test gate, installing a dictionary                                                                              |
+| [native-protocol.md](native-protocol.md)         | **The wire contract**: what a second host (Linux, Firefox) implements                                                                                      |
+| [audio-service.md](audio-service.md)             | **Audio as a native service**: what moved, the blocking fetch, German voices                                                                               |
+| [native-engine-probe.md](native-engine-probe.md) | The measurement that made it viable: the native bridge costs ~1 ms and ~60 MB/s                                                                            |
+| [../DEV.md](../DEV.md)                           | **How to verify against real Safari**: drive the installed extension from the shell (`open -g` + Apple Events), not just the out-of-Safari `test:jsc` gate |
 
 **What exists today (carries over):**
 
@@ -69,6 +71,14 @@ thing.
   (`optionsLoad`/`optionsSave`) over one `options.json` — with the versioned migration staying in the
   extension and a one-time read of the legacy `chrome.storage.local` copy so an upgrade keeps a
   user's settings ([decisions.md](decisions.md) #52).
+- **Audio production (stage N4, part).** Source resolution and download run in the engine
+  (`getTermAudioInfoList`/`downloadTermAudio`), and playback fetches its bytes natively too
+  (`getAudioUrlBytes`, played from a blob) because the in-page overlay cannot load a cross-origin
+  audio URL — all over a new **synchronous, blocking** `host.fetch` and a set of web-platform shims,
+  so upstream `AudioDownloader` runs unmodified. TTS deliberately stays **browser-side**
+  (`speechSynthesis`, the same system voices a native render would use) — routing it through the host
+  would be pure overhead; native TTS is only for a future non-browser client. See
+  [audio-service.md](audio-service.md).
 - **The dictionary pipeline.** `npm run compile:dictionary` turns a `.zip` into a finished
   `.sqlite3` using the real importer, so installation is a chunked, staged, validated file copy
   rather than a 152-second in-browser import.
@@ -78,7 +88,8 @@ thing.
 - **The installed-extension check, automated.** `npm run test:safari:e2e` drives the _installed_
   extension talking to its app extension — the one seam `test:jsc` cannot see. The extension reaches
   out over a build-gated loopback bridge; the runner asserts the appex reads the database, a settings
-  write reaches `options.json`, and `geschützt` → `schützen` over the bridge. 4/4
+  write reaches `options.json`, `geschützt` → `schützen` over the bridge, and native TTS answers
+  (`ttsVoices` returns 183 voices where Safari shows one). 6/6
   ([native-rewrite.md](native-rewrite.md) → Testing, layer 4).
 - **The codec is decided: deflate** ([decisions.md](decisions.md) #26), and **inflection synthesis is
   implemented** (schema v4/v5): 947,070 → 293,262 rows, verified against the source ZIP (0 lost, 0
@@ -93,13 +104,17 @@ the in-browser import path — the import worker and every caller of it. One bac
 the extension imports it: it is now build-time-only, driven by `npm run compile:dictionary` and the
 tests.
 
-**Remaining** ([native-rewrite.md](native-rewrite.md) → Staging): Anki note-building and audio moving
-native (the rest of N4 — options is done, and Anki's HTTP proxy already was); iOS (N6). These three
-are **deferred to last by direction.** The lookup seam that gated Anki/audio is now confirmed in the
-installed app — `npm run test:safari:e2e` drives `geschützt` → `schützen` over the real bridge — so
-what remains before them is a manual check of the _display_ path (the popup rendering), which the
-automated test does not cover. Two settings affordances — "Check for Updates"
-and the recommended dictionaries list — offer `.zip` archives this build cannot consume and now fail
+**Remaining** ([native-rewrite.md](native-rewrite.md) → Staging): Anki **note-building** (DOM-bound
+display code, stays in the extension by that rule), the `_injectAnkiNoteMedia` orchestration, and iOS
+(N6, **deferred to last by direction**). Audio resolution, download, playback bytes **and TTS** are now
+native — see [audio-service.md](audio-service.md). TTS moved because Safari's `speechSynthesis` exposes
+only **one** voice (`Anna`), so the extension renders through `AVSpeechSynthesizer` instead, which sees
+all 183; this **reversed** the earlier "TTS stays browser-side" call. **Known open issue, and the next
+task:** audio does not play in the in-page **pop-up** (the search page works). The native seams are
+proven by `npm run test:safari:e2e` (6/6, including TTS), so the gap is **display-side and specific to
+the pop-up** — see [audio-service.md](audio-service.md) → _Open_. Two settings affordances — "Check for
+Updates" and the recommended dictionaries list — offer `.zip` archives this build cannot consume and
+now fail
 at install with a clear message rather than having been removed.
 
 **Also deleted, on the same principle:** the vendored `ext/lib/pako.js` and the `dev/lib/pako.js`

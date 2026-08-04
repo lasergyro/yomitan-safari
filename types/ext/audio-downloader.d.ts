@@ -45,6 +45,16 @@ export type AudioBinaryBase64 = {
     contentType: string | null;
 };
 
+export type TtsVoice = {
+    /** The `AVSpeechSynthesisVoice.identifier`, stored as the source's `voice`. */
+    id: string;
+    name: string;
+    /** BCP-47 language tag, e.g. `de-DE`. */
+    language: string;
+    /** `default` | `enhanced` | `premium`. */
+    quality: string;
+};
+
 export type CustomAudioList = {
     type: 'audioSourceList';
     audioSources: CustomAudioListSource[];

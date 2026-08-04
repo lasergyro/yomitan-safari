@@ -414,7 +414,7 @@ termTags]`) in the IndexedDB rows. — Deterministic ~10% shrink and a stepping 
   `NativeCore` in node over SQLite-WASM, once through the real Swift host over system libsqlite3,
   both reading **the same compiled database file** — and the answers must be identical. Reading one
   file rather than importing twice is the point: importing separately would compare two imports
-  instead of two hosts, and would hide exactly the bugs this exists to catch. — _built; 21/21
+  instead of two hosts, and would hide exactly the bugs this exists to catch. — _built; 23/23
   identical (15/15 when this was written, before the translator actions of #48)._
 
 - **#45.** **Dictionaries are installed as files, chunked and staged.** — `npm run compile:dictionary`
@@ -454,7 +454,7 @@ termTags]`) in the IndexedDB rows. — Deterministic ~10% shrink and a stepping 
   it is the same code — but `FindTermsOptions`: it holds a `Map`, a `Set|null` and live `RegExp`
   objects, and `JSON.stringify` turns all three into `{}` **without complaining**, so a lookup
   would return nothing rather than fail. `encodeFindTermsOptions` handles them and the equivalence
-  gate passes a real `textReplacements` pattern so the rebuild path is covered. — _built; 21/21
+  gate passes a real `textReplacements` pattern so the rebuild path is covered. — _built; 23/23
   identical between node and JavaScriptCore._
 
 - **#49.** **The engine bundle is minified, and the gate tests the minified artifact.** — Adding the
@@ -537,7 +537,8 @@ termTags]`) in the IndexedDB rows. — Deterministic ~10% shrink and a stepping 
     scripts, which have no `chrome` and no appex.
   - **Long-poll HTTP, not WebSocket.** Keeps the runner a dependency-free node `http` server; the
     content script's same-origin `fetch` needs nothing added.
-  - **Assert the three seams that only exist in Safari**, and restore what it touched: the appex
-    reads the database, a settings write reaches `options.json` (#52), and `geschützt` → `schützen`
-    deinflects natively. The runner backs up and restores the options and database it finds. — _built,
-    4/4; recipe in [DEV.md](../DEV.md), summary in [native-rewrite.md](native-rewrite.md) → Testing._
+  - **Assert the seams that only exist in Safari**, and restore what it touched: the appex reads the
+    database, a settings write reaches `options.json` (#52), `geschützt` → `schützen` deinflects
+    natively, and native TTS answers (`ttsVoices`/`ttsSynthesize`). The runner backs up and restores
+    the options and database it finds. — _built, 6/6; recipe in [DEV.md](../DEV.md), summary in
+    [native-rewrite.md](native-rewrite.md) → Testing._

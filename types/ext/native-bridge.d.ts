@@ -15,9 +15,12 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import type * as Audio from './audio';
+import type * as AudioDownloader from './audio-downloader';
 import type * as Dictionary from './dictionary';
 import type * as DictionaryDatabase from './dictionary-database';
 import type * as DictionaryImporter from './dictionary-importer';
+import type * as Language from './language';
 import type * as SqliteWasm from './sqlite-wasm';
 import type * as Translation from './translation';
 import type * as Translator from './translator';
@@ -74,6 +77,17 @@ export type NativeHost = {
     log(level: string, message: string): void;
     /** Monotonic milliseconds; `performance.now` does not exist in bare JavaScriptCore. */
     now(): number;
+    /**
+     * One synchronous HTTP round trip. Blocking is deliberate: the engine already runs on a queue
+     * that `invoke` holds until the call settles, so a blocking fetch fits the model without an
+     * async-I/O path (native/Sources/YomitanNative/NativeEngineHost.swift). Request and response
+     * bodies are base64 so arbitrary bytes survive the JSON-only bridge. Backs the audio downloader.
+     */
+    fetch(request: {url: string, method: string, headers: {[key: string]: string}, bodyBase64: string, timeoutMs: number}): {status: number, url: string, headers: {[key: string]: string}, bodyBase64: string, error?: string};
+    /** `new URL(url, base).href`, resolved by Foundation rather than a hand-written parser. */
+    resolveUrl(url: string, base: string): string;
+    /** SHA-256 of base64 bytes, returned base64. Backs `crypto.subtle.digest`. */
+    sha256(base64: string): string;
 };
 
 /**
@@ -157,6 +171,18 @@ export type EngineApiSurface = {
     clearDatabaseCaches: {
         params: Record<string, never>;
         return: void;
+    };
+    getTermAudioInfoList: {
+        params: {source: Audio.AudioSourceInfo, term: string, reading: string, languageSummary: Language.LanguageSummary};
+        return: AudioDownloader.Info[];
+    };
+    downloadTermAudio: {
+        params: {sources: Audio.AudioSourceInfo[], preferredAudioIndex: number | null, term: string, reading: string, idleTimeout: number | null, languageSummary: Language.LanguageSummary, enableDefaultAudioSources: boolean};
+        return: AudioDownloader.AudioBinaryBase64;
+    };
+    getAudioUrlBytes: {
+        params: {url: string};
+        return: AudioDownloader.AudioBinaryBase64;
     };
 };
 

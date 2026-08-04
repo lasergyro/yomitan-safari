@@ -19,6 +19,7 @@ import * as pakoNamespace from 'pako';
 import {parseJson} from '../core/json.js';
 import {NativeCore} from './native-core.js';
 import {ERROR_KEY, RESULT_KEY, serializeError} from './native-protocol.js';
+import {installEngineWebShims} from './native-web-shims.js';
 import {TextDecoderShim, TextEncoderShim} from './text-codec-shim.js';
 
 /**
@@ -78,6 +79,11 @@ function installShims(host) {
 
     if (typeof global.TextEncoder === 'undefined') { global.TextEncoder = TextEncoderShim; }
     if (typeof global.TextDecoder === 'undefined') { global.TextDecoder = TextDecoderShim; }
+
+    // The audio downloader is upstream browser code; give it the web-platform surface it assumes
+    // (URL, URLSearchParams, crypto.subtle, AbortController) so it runs unmodified. Installed after
+    // the text codecs because the URL-encoding serializer leans on TextEncoder.
+    installEngineWebShims(host);
 
     // Routed to os_log so engine output lands in Console.app alongside the Swift side's, which is
     // the only place to see it: there is no Web Inspector attached to a JSContext in an appex.

@@ -80,6 +80,34 @@ There used to be a `npm run test:safari` here, which ran the OPFS backend in rea
 loopback server. It went with the OPFS backend. What replaces it is `test:jsc` for the engine, plus
 the manual end-to-end check below.
 
+### Seeding a dictionary into the container (`SEED_DICTIONARY`)
+
+Importing a real dictionary (kty-de-en is ~49 MB) through the settings page on every rebuild is
+tedious. This build-flag does it for you — it writes the two files an import-and-enable would have
+produced, straight into the app container, as if the dictionary had been downloaded and activated:
+
+```sh
+SEED_DICTIONARY=~/dicts/kty-de-en.zip SEED_LANGUAGE=de ./rebuild-safari.sh
+```
+
+The input may be a `.zip` (compiled on the fly with `compile:dictionary`) or an already-compiled
+`.sqlite3`. `SEED_LANGUAGE` also sets each profile's scanning language, so a German dictionary is
+usable without a trip to the settings page. Under the hood it is
+[dev/bin/seed-dictionary.js](dev/bin/seed-dictionary.js), which can be run on its own:
+
+```sh
+node dev/bin/seed-dictionary.js kty-de-en.zip --language de   # write into the container
+node dev/bin/seed-dictionary.js kty-de-en.zip --print         # print options.json, touch nothing
+```
+
+It merges into the container's existing `options.json` when there is one (so it does not clobber
+other settings) and generates a default otherwise, using the same `OptionsUtil` the extension does,
+so the version and shape are what the extension expects to read back. `rebuild-safari.sh` runs it
+while Safari is quit, so the app extension reads the seeded files when it relaunches. On a
+**first-ever** install the container does not exist yet — open Safari once (which creates it), then
+re-run. The dictionary title it registers is read from the compiled database through the same engine
+node runs in `test:jsc`, so it matches what lookups key off.
+
 ### Driving the installed extension
 
 `open -g -a Safari <url>` loads a page in the **real** browser but, thanks to `-g`, never brings it
@@ -168,11 +196,13 @@ npm run compile:dictionary -- dictionaries/kty-de-en.zip --out /tmp/kty.sqlite3
 npm run test:safari:e2e -- --database /tmp/kty.sqlite3        # install, drive, assert, restore
 ```
 
-It installs the compiled database (backing up whatever was there), then asserts three seams in order:
+It installs the compiled database (backing up whatever was there), then asserts four seams in order:
 the appex answers and reads the database (`getDictionaryInfo`); a settings write crosses the bridge
 into `options.json` (registering the dictionary — the options-save seam, [plan/decisions.md](plan/decisions.md) #52);
-and a real lookup deinflects natively (**`geschützt` → `schützen`**, the same assertion as the manual
-recipe). It restores the options and database it found on the way in (`KEEP=1` to leave them). The
+a real lookup deinflects natively (**`geschützt` → `schützen`**, the same assertion as the manual
+recipe); and native TTS answers (`getTextToSpeechVoices` returns the full installed set — 183 on this
+machine, where Safari's `speechSynthesis` shows one — and `getTextToSpeechAudio` renders a WAV clip).
+It restores the options and database it found on the way in (`KEEP=1` to leave them). The
 bridge **never ships**: a normal `./rebuild-safari.sh` omits the content-script entry entirely, so the
 installed extension you use day to day has no loopback code in it. Rebuild without the flag to remove
 it.

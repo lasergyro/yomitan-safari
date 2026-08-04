@@ -7,7 +7,7 @@ type file, which is a bad thing to ask a second implementer to reverse-engineer.
 
 **The engine is not part of this contract.** The engine is JavaScript
 ([`ext/js/native/native-core.js`](../ext/js/native/native-core.js)) and every host runs the same
-bundle. What a host implements is the four-function platform surface underneath it, a message
+bundle. What a host implements is the seven-function platform surface underneath it, a message
 router, and the file-installer actions. Everything in "Engine actions" below is already written and
 is not a host's problem.
 
@@ -231,25 +231,52 @@ authority.
 | Dictionary | `getDictionaryInfo`, `getDictionaryCounts`, `dictionaryExists`, `deleteDictionary`, `purge`                                                                                  |
 | Queries    | `findTermsBulk`, `findTermsExactBulk`, `findTermsBySequenceBulk`, `findTermMetaBulk`, `findKanjiBulk`, `findKanjiMetaBulk`, `findTagMetaBulk`, `findTagForTitle`, `getMedia` |
 | Translator | `termsFind`, `kanjiFind`, `getTermFrequencies`, `clearDatabaseCaches`                                                                                                        |
+| Audio      | `getTermAudioInfoList`, `downloadTermAudio`                                                                                                                                  |
 
 `prepare` returns `{schemaVersion, dictionaryCount}` and is the version handshake. Every other action
 prepares implicitly, because a host process may be terminated between calls and a client cannot be
-made responsible for noticing.
+made responsible for noticing — **except the two audio actions**, which touch no dictionary state and
+so do not open the database. That is deliberate: it is what lets a client with no dictionaries
+installed (a future game or desktop overlay) still fetch audio.
+
+The audio actions run upstream `AudioDownloader` in the engine, over `fetch` below rather than the
+browser's. Bytes come back base64 in `downloadTermAudio`'s `{data, contentType}`; audio is small
+enough to need none of the chunking a database install does. Two source types are not yet handled
+natively and return empty rather than throwing: `text-to-speech*` (browser `speechSynthesis`, still
+played extension-side) and `custom-json` (its schema fetch wants a `chrome` the engine does not
+have).
 
 ---
 
 ## What a host must implement
 
-Four functions and a router. That is the whole of it.
+Seven functions and a router. That is the whole of it.
 
 ```ts
 openDatabase(path: string): SqliteDatabaseHandle  // the interface in types/ext/sqlite-wasm.d.ts
 databasePath(): string                            // where the database lives on this platform
 log(level: string, message: string): void         // engine logging, to wherever this OS logs
 now(): number                                     // monotonic milliseconds
+fetch(request): {status, url, headers, bodyBase64, error?}  // one synchronous HTTP round trip
+resolveUrl(url: string, base: string): string     // new URL(url, base).href
+sha256(base64: string): string                    // SHA-256 of base64 bytes, base64 out
 ```
 
 Plus: evaluate the bundle in a JavaScript engine, pump it, and route messages.
+
+**`fetch` is synchronous and blocking**, which is not a limitation but the fit: the engine runs on
+one queue that the host holds until a call settles (there is no async-I/O path — the async surface is
+microtask-only), so a blocking fetch returns the whole body without the pump loop having to learn
+about the network. It backs the audio downloader; `resolveUrl` and `sha256` back the two
+web-platform bits that are easy to get subtly wrong, so a host supplies correct native ones rather
+than the engine reimplementing them (native/Sources/YomitanNative/NativeEngineHost.swift; the JS
+shims are `ext/js/native/native-web-shims.js`).
+
+**Scope of `fetch`, stated because it is a real widening.** Unlike `ankiRequest`, which is
+loopback-only, this reaches whatever host an audio source names — including arbitrary
+`custom`/`custom-json` URLs a user configures. It is the same outbound traffic the extension already
+made, now from the host process; a host should still refuse non-`http(s)` schemes, as the Safari one
+does.
 
 **The SQLite handle is where the risk is.** Two conversions are silent when wrong and are pinned by
 `test:jsc`:
@@ -279,6 +306,8 @@ object and call `core.invoke`. A shipping Linux host is that, plus:
 - the stdio native-messaging framing — a `uint32` little-endian length prefix, then UTF-8 JSON;
 - the install actions against XDG paths, and the `optionsLoad`/`optionsSave` pair reading and
   writing an `options.json` beside the database — both are file I/O, no engine involved;
+- a real `fetch` (any HTTP client) in place of the gate's fixture one, plus `resolveUrl`/`sha256`
+  from `node:url` and `node:crypto`;
 - an installer that writes the native-messaging manifest.
 
 ---

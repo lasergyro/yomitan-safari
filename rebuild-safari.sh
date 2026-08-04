@@ -68,7 +68,22 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 "$LSREGISTER" -u "$BUILT_APP" 2>/dev/null || true
 "$LSREGISTER" -f "$APP" 2>/dev/null || true
 
-# 5. Launch once so Safari picks up the updated extension (stays enabled).
+# 5. Optionally seed a dictionary into the app container, as if it had been imported and enabled.
+#
+#   SEED_DICTIONARY=/path/to/kty-de-en.zip SEED_LANGUAGE=de ./rebuild-safari.sh
+#
+# Done here, while Safari is quit and the app extension is therefore not running, so the seeded
+# dictionaries.sqlite3 and options.json are in place before the appex next opens them (the relaunch
+# below). The container is keyed by bundle id and persists across launches; on a first-ever install
+# where it does not exist yet, open Safari once to create it and re-run. See DEV.md.
+if [ -n "${SEED_DICTIONARY:-}" ]; then
+    printf 'Seeding %s into the app container...\n' "$SEED_DICTIONARY"
+    node "$ROOT_DIR/dev/bin/seed-dictionary.js" "$SEED_DICTIONARY" \
+        --bundle-id "dev.yomitan.safari.extension" \
+        ${SEED_LANGUAGE:+--language "$SEED_LANGUAGE"}
+fi
+
+# 6. Launch once so Safari picks up the updated extension (stays enabled).
 open "$APP"
 
 printf 'Done. Installed app: %s\n' "$APP"

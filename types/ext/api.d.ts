@@ -256,6 +256,24 @@ type ApiSurface = {
         };
         return: AudioDownloader.Info[];
     };
+    getAudioUrlBytes: {
+        params: {
+            url: string;
+        };
+        return: AudioDownloader.AudioBinaryBase64;
+    };
+    getTextToSpeechVoices: {
+        params: void;
+        return: AudioDownloader.TtsVoice[];
+    };
+    getTextToSpeechAudio: {
+        params: {
+            text: string;
+            voice: string;
+            language: string;
+        };
+        return: AudioDownloader.AudioBinaryBase64;
+    };
     commandExec: {
         params: {
             command: string;
@@ -345,6 +363,10 @@ type ApiSurface = {
             getTotal: boolean;
         };
         return: DictionaryDatabase.DictionaryCounts;
+    };
+    getDictionaryDatabaseSize: {
+        params: void;
+        return: {databaseBytes: number};
     };
     deleteDictionary: {
         params: {

@@ -260,10 +260,12 @@ The strategy has to survive the core moving hosts. Four layers:
    _into_ the rotating `safari-web-extension://` origin, so the extension reaches _out_ — a
    build-gated content-script bridge (`YOMITAN_TEST_BRIDGE=1 ./rebuild-safari.sh`, injected only on
    `127.0.0.1`) long-polls a local runner and relays `{action, params}` to the background service
-   worker. The runner asserts three seams end to end against a real installed dictionary: the appex
+   worker. The runner asserts four seams end to end against a real installed dictionary: the appex
    reads the database (`getDictionaryInfo`), a settings write lands in `options.json` in the
    container (registering the dictionary — the options-save seam, [decisions.md](decisions.md) #52),
-   and a real lookup deinflects natively (`geschützt` → `schützen`). The recipe and the why are in
+   a real lookup deinflects natively (`geschützt` → `schützen`), and native TTS answers
+   (`getTextToSpeechVoices` returns the full installed voice set, `getTextToSpeechAudio` renders a
+   clip). The recipe and the why are in
    **[DEV.md](../DEV.md) → The native engine → Automated end-to-end check**; the older single manual
    lookup beside it is the same assertion by hand, kept for when the extension cannot be rebuilt with
    the bridge. `npm run test:safari` (the OPFS-era runner) stays deleted — there is no OPFS backend
@@ -314,15 +316,32 @@ single-digit to tens of milliseconds — sizes and timings in
 between calls on macOS. The bundle is minified by default so the artifact the gate tests is the one
 that ships.
 
-**Stage N4 — services.** _Options: DONE. Anki and audio: remaining._ The options/profile store moved
-into the app container: two host actions (`optionsLoad`/`optionsSave`) over one `options.json`, the
-extension keeping every line of the versioned migration and only relocating the bytes off
-`chrome.storage.local` — with a one-time read of the legacy copy so an upgrade does not reset a
-user's settings ([decisions.md](decisions.md) #52). Anki's loopback HTTP proxy is already a host
-action (`ankiRequest`); the remaining Anki note-building and audio fetching still run in the
-extension, and are **deferred to last by direction**, alongside iOS (N6). The lookup seam that gated
-them is now confirmed in the installed app by `npm run test:safari:e2e` (Testing, layer 4); what is
-left to check by hand before they move is the display path.
+**Stage N4 — services.** _Options: DONE. Audio (resolution, download, and playback bytes): DONE. Anki
+note-building: remaining. TTS: stays browser-side by design, not a remaining item._ The
+options/profile store moved into the app container: two host actions
+(`optionsLoad`/`optionsSave`) over one `options.json`, the extension keeping every line of the
+versioned migration and only relocating the bytes off `chrome.storage.local` — with a one-time read
+of the legacy copy so an upgrade does not reset a user's settings ([decisions.md](decisions.md) #52).
+
+Audio source resolution and download moved next (`getTermAudioInfoList`/`downloadTermAudio` engine
+actions; `AudioDownloaderNative` forwards from the backend). The move was reframed by direction: the
+native app is to serve more than the Safari extension — a game overlay, perhaps a desktop overlay —
+so audio is built as a native service any client can call, not extension-coupled. (The shipped
+dictionary is German, and for German a good `speechSynthesis` voice is a fine default — **native TTS
+is only for a future non-browser client**, not a quality upgrade for the extension, since Safari's
+`speechSynthesis` uses the same system voices; see [audio-service.md](audio-service.md).) The design
+study is [audio-service.md](audio-service.md). It runs
+upstream `AudioDownloader` unmodified in JavaScriptCore (route C) over a new **synchronous,
+blocking** `host.fetch` — which fits because the engine already runs on a queue the host blocks until
+a call settles — plus web-platform shims (`URL`, `URLSearchParams`, `crypto.subtle`, `AbortController`)
+in `native-web-shims.js`. `test:jsc` answers the audio requests through node's real
+URL/crypto/base64 and through the shims and requires them identical. Still in the extension: **note
+field-building**, which is DOM-bound display code (`anki-template-renderer.js` renders structured
+content through a real-DOM renderer frame) and stays by the same rule display always does; **TTS**
+(browser `speechSynthesis`, and staying there — routing it native and back would be pure overhead);
+and the `_injectAnkiNoteMedia` orchestration, whose audio leg already calls the native
+`downloadTermAudio`. Anki's loopback HTTP proxy was already a host
+action (`ankiRequest`). iOS (N6) remains **deferred to last by direction**.
 
 **Stage N5 — delete. DONE.** The OPFS backend, the owner worker, the suspend/resume API, the
 migration UX, `USE_SQLITE_BACKEND`, **the IndexedDB backend**, the Chrome offscreen document, the

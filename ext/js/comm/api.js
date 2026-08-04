@@ -202,6 +202,41 @@ export class API {
     }
 
     /**
+     * Downloads the bytes of a resolved audio URL through the native host, base64-encoded.
+     *
+     * Playback fetches audio this way rather than pointing an `HTMLAudioElement` at the remote URL:
+     * the in-page overlay is an extension-origin iframe embedded in the page, and Safari blocks it
+     * from loading a cross-origin audio URL directly (plan/audio-service.md). The host already runs
+     * the (anonymous) fetch for the download pipeline, so this reuses it and the display plays the
+     * bytes from a same-origin blob URL.
+     * @param {import('api').ApiParam<'getAudioUrlBytes', 'url'>} url
+     * @returns {Promise<import('api').ApiReturn<'getAudioUrlBytes'>>}
+     */
+    getAudioUrlBytes(url) {
+        return this._invoke('getAudioUrlBytes', {url});
+    }
+
+    /**
+     * The installed system voices for the TTS picker, from the native host — Safari's
+     * `speechSynthesis.getVoices()` exposes only one, so the settings UI reads the real set here.
+     * @returns {Promise<import('api').ApiReturn<'getTextToSpeechVoices'>>}
+     */
+    getTextToSpeechVoices() {
+        return this._invoke('getTextToSpeechVoices', void 0);
+    }
+
+    /**
+     * Renders one utterance to audio bytes through the native host, for playback from a blob.
+     * @param {import('api').ApiParam<'getTextToSpeechAudio', 'text'>} text
+     * @param {import('api').ApiParam<'getTextToSpeechAudio', 'voice'>} voice
+     * @param {import('api').ApiParam<'getTextToSpeechAudio', 'language'>} language
+     * @returns {Promise<import('api').ApiReturn<'getTextToSpeechAudio'>>}
+     */
+    getTextToSpeechAudio(text, voice, language) {
+        return this._invoke('getTextToSpeechAudio', {text, voice, language});
+    }
+
+    /**
      * @param {import('api').ApiParam<'commandExec', 'command'>} command
      * @param {import('api').ApiParam<'commandExec', 'params'>} [params]
      * @returns {Promise<import('api').ApiReturn<'commandExec'>>}
@@ -332,6 +367,20 @@ export class API {
      */
     getDictionaryCounts(dictionaryNames, getTotal) {
         return this._invoke('getDictionaryCounts', {dictionaryNames, getTotal});
+    }
+
+    /**
+     * The on-disk size of the dictionary database in the app container.
+     *
+     * This is the honest "storage used" figure now that the engine is native: the database is a
+     * `.sqlite3` file the app extension owns (plan/native-rewrite.md → Storage location), not
+     * anything in the extension origin. `navigator.storage.estimate()`, which the settings page used
+     * before, measures the extension origin — near-empty since the engine moved out — so it reported
+     * a number that had nothing to do with the dictionaries.
+     * @returns {Promise<import('api').ApiReturn<'getDictionaryDatabaseSize'>>}
+     */
+    getDictionaryDatabaseSize() {
+        return this._invoke('getDictionaryDatabaseSize', void 0);
     }
 
     /**

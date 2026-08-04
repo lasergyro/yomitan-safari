@@ -404,6 +404,18 @@ async function main() {
         }
         check(`"${LOOKUP_TERM}" yields "${EXPECTED_HEADWORD}" (got ${JSON.stringify([...new Set(headwords)])})`, headwords.includes(EXPECTED_HEADWORD));
 
+        // 4. Native TTS: the voice list and a rendered clip both cross the bridge (the ttsVoices /
+        // ttsSynthesize host actions → AVSpeechSynthesizer). This covers the native round trip, not
+        // the display's blob playback, which is DOM and outside this runner's reach.
+        log('==> 4. native TTS seam (voices + synthesize)');
+        const voices = /** @type {{id: string, name: string, language: string, quality: string}[]} */ (await send('getTextToSpeechVoices'));
+        check(`getTextToSpeechVoices returns voices (${Array.isArray(voices) ? voices.length : 'none'})`, Array.isArray(voices) && voices.length > 0);
+        const germanVoice = Array.isArray(voices) ? voices.find((v) => typeof v.language === 'string' && v.language.toLowerCase().startsWith('de')) : null;
+        const voiceId = germanVoice ? germanVoice.id : (Array.isArray(voices) && voices.length > 0 ? voices[0].id : '');
+        const clip = /** @type {{data: string, contentType: string | null}} */ (await send('getTextToSpeechAudio', {text: EXPECTED_HEADWORD, voice: voiceId, language: 'de'}));
+        const clipBytes = typeof clip.data === 'string' ? clip.data.length : 0;
+        check(`getTextToSpeechAudio renders a clip (${clipBytes} b64 chars, ${clip.contentType}, voice ${JSON.stringify(voiceId)})`, clipBytes > 0);
+
         await restore();
     } finally {
         await restore().catch(() => {});

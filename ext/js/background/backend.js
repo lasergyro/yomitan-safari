@@ -40,7 +40,7 @@ import {CacheMap} from '../general/cache-map.js';
 import {ObjectPropertyAccessor} from '../general/object-property-accessor.js';
 import {distributeFuriganaInflected, isCodePointJapanese, convertKatakanaToHiragana as jpConvertKatakanaToHiragana} from '../language/ja/japanese.js';
 import {getLanguageSummaries, isTextLookupWorthy} from '../language/languages.js';
-import {AudioDownloader} from '../media/audio-downloader.js';
+import {AudioDownloaderNative} from '../native/audio-downloader-native.js';
 import {getFileExtensionFromAudioMediaType, getFileExtensionFromImageMediaType} from '../media/media-util.js';
 import {createSchema, normalizeContext} from './profile-conditions-util.js';
 import {RequestBuilder} from './request-builder.js';
@@ -93,8 +93,14 @@ export class Backend {
         this._defaultAnkiFieldTemplates = null;
         /** @type {RequestBuilder} */
         this._requestBuilder = new RequestBuilder();
-        /** @type {AudioDownloader} */
-        this._audioDownloader = new AudioDownloader(this._requestBuilder);
+        /**
+         * Audio resolution and download run in the native engine now (plan/native-rewrite.md, stage
+         * N4); this forwards to it with the method names the call sites already used. The Yomitan API
+         * (comm/yomitan-api.js) keeps its own in-extension `AudioDownloader`, since it serves an
+         * external HTTP client from the background worker rather than the native host.
+         * @type {AudioDownloaderNative}
+         */
+        this._audioDownloader = new AudioDownloaderNative();
         /** @type {OptionsUtil} */
         this._optionsUtil = new OptionsUtil();
         /** @type {AccessibilityController} */
@@ -158,6 +164,9 @@ export class Backend {
             ['suspendAnkiCardsForNote',      this._onApiSuspendAnkiCardsForNote.bind(this)],
             ['commandExec',                  this._onApiCommandExec.bind(this)],
             ['getTermAudioInfoList',         this._onApiGetTermAudioInfoList.bind(this)],
+            ['getAudioUrlBytes',             this._onApiGetAudioUrlBytes.bind(this)],
+            ['getTextToSpeechVoices',        this._onApiGetTextToSpeechVoices.bind(this)],
+            ['getTextToSpeechAudio',         this._onApiGetTextToSpeechAudio.bind(this)],
             ['sendMessageToFrame',           this._onApiSendMessageToFrame.bind(this)],
             ['broadcastTab',                 this._onApiBroadcastTab.bind(this)],
             ['frameInformationGet',          this._onApiFrameInformationGet.bind(this)],
@@ -174,6 +183,7 @@ export class Backend {
             ['getDictionaryInfo',            this._onApiGetDictionaryInfo.bind(this)],
             ['purgeDatabase',                this._onApiPurgeDatabase.bind(this)],
             ['getDictionaryCounts',          this._onApiGetDictionaryCounts.bind(this)],
+            ['getDictionaryDatabaseSize',    this._onApiGetDictionaryDatabaseSize.bind(this)],
             ['deleteDictionary',             this._onApiDeleteDictionary.bind(this)],
             ['getMedia',                     this._onApiGetMedia.bind(this)],
             ['logGenericErrorBackend',       this._onApiLogGenericErrorBackend.bind(this)],
@@ -863,6 +873,21 @@ export class Backend {
         return await this._audioDownloader.getTermAudioInfoList(source, term, reading, languageSummary);
     }
 
+    /** @type {import('api').ApiHandler<'getAudioUrlBytes'>} */
+    async _onApiGetAudioUrlBytes({url}) {
+        return await this._audioDownloader.getAudioUrlBytes(url);
+    }
+
+    /** @type {import('api').ApiHandler<'getTextToSpeechVoices'>} */
+    async _onApiGetTextToSpeechVoices() {
+        return await this._audioDownloader.getTextToSpeechVoices();
+    }
+
+    /** @type {import('api').ApiHandler<'getTextToSpeechAudio'>} */
+    async _onApiGetTextToSpeechAudio({text, voice, language}) {
+        return await this._audioDownloader.getTextToSpeechAudio(text, voice, language);
+    }
+
     /** @type {import('api').ApiHandler<'sendMessageToFrame'>} */
     _onApiSendMessageToFrame({frameId: targetFrameId, message}, sender) {
         if (!sender) { return false; }
@@ -1014,6 +1039,17 @@ export class Backend {
     /** @type {import('api').ApiHandler<'getDictionaryCounts'>} */
     async _onApiGetDictionaryCounts({dictionaryNames, getTotal}) {
         return await this._dictionaryDatabase.getDictionaryCounts(dictionaryNames, getTotal);
+    }
+
+    /**
+     * The size of the dictionary database file in the app container, for the settings "Storage"
+     * figure. The engine reports it without opening the database (a `stat`, not a `prepare`), so a
+     * status call is cheap and never pays a cold start.
+     * @type {import('api').ApiHandler<'getDictionaryDatabaseSize'>}
+     */
+    async _onApiGetDictionaryDatabaseSize() {
+        const {databaseBytes} = await this._dictionaryDatabase.getEngineStatus();
+        return {databaseBytes};
     }
 
     /**

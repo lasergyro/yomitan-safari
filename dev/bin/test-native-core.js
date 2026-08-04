@@ -59,6 +59,28 @@ const fixtureTitle = 'Test Dictionary 2';
  * that must return nothing rather than everything when the dictionary set is empty.
  * @type {import('native-bridge').NativeRequest[]}
  */
+/**
+ * A minimal Japanese `LanguageSummary`; the jpod101 audio handler only reads a couple of fields, but
+ * the whole object crosses the bridge, so it is spelled out rather than faked as `{}`.
+ * @type {import('language').LanguageSummary}
+ */
+const JAPANESE_SUMMARY = {name: 'Japanese', iso: 'ja', iso639_3: 'jpn', exampleText: ''};
+
+/**
+ * The `host.fetch` fixture: every URL the audio requests reach, mapped to a canned response, so
+ * `getTermAudioInfoList`/`downloadTermAudio` run identically in both hosts without the network. The
+ * one entry is the jpod101 audio URL `getTermAudioInfoList` produces for 打つ/うつ; its body is
+ * arbitrary bytes that must survive base64 both ways.
+ * @type {{[url: string]: {status?: number, headers?: {[key: string]: string}, body?: string, bodyBase64?: string}}}
+ */
+const FETCH_FIXTURE = {
+    'https://assets.languagepod101.com/dictionary/japanese/audiomp3.php?kanji=%E6%89%93%E3%81%A4&kana=%E3%81%86%E3%81%A4': {
+        status: 200,
+        headers: {'Content-Type': 'audio/mpeg'},
+        bodyBase64: Buffer.from('FAKE-MP3-AUDIO-BYTES').toString('base64'),
+    },
+};
+
 const REQUESTS = [
     {action: 'prepare', params: {}},
     {action: 'getDictionaryInfo', params: {}},
@@ -83,6 +105,18 @@ const REQUESTS = [
     {action: 'kanjiFind', params: {text: '打', options: createFindKanjiOptions()}},
     {action: 'getTermFrequencies', params: {termReadingList: [{term: '打つ', reading: null}], dictionaries: [fixtureTitle]}},
     {action: 'clearDatabaseCaches', params: {}},
+    // Audio moved native in stage N4. These exercise the whole seam the move introduced: the
+    // URLSearchParams shim (getTermAudioInfoList builds a query with no network), then the native
+    // fetch, the fetch-Response shim, `crypto.subtle.digest` and `btoa` (downloadTermAudio pulls the
+    // bytes). node answers with its *real* URL/crypto/base64, the JSC host with the shims, so a
+    // divergence in any shim shows up here. Both read the same fetch fixture, so nothing hits the
+    // network.
+    {action: 'getTermAudioInfoList', params: {source: {type: 'jpod101', url: '', voice: ''}, term: '打つ', reading: 'うつ', languageSummary: JAPANESE_SUMMARY}},
+    {action: 'downloadTermAudio', params: {sources: [{type: 'jpod101', url: '', voice: ''}], preferredAudioIndex: null, term: '打つ', reading: 'うつ', idleTimeout: null, languageSummary: JAPANESE_SUMMARY, enableDefaultAudioSources: false}},
+    // Playback fetch: the display plays these bytes from a blob URL because the in-page overlay
+    // cannot load the remote URL directly under Safari. Reads the same fetch fixture, so node's real
+    // fetch and the JSC host's shimmed one must return identical bytes and content type.
+    {action: 'getAudioUrlBytes', params: {url: 'https://assets.languagepod101.com/dictionary/japanese/audiomp3.php?kanji=%E6%89%93%E3%81%A4&kana=%E3%81%86%E3%81%A4'}},
     {action: 'noSuchAction', params: {}},
 ];
 
@@ -121,6 +155,26 @@ function createFindKanjiOptions() {
         enabledDictionaryMap: [[fixtureTitle, {index: 0, alias: fixtureTitle}]],
         removeNonJapaneseCharacters: false,
     };
+}
+
+/**
+ * The node side of `host.fetch`: the same lookup the Swift fixture fetcher does, over the same
+ * `FETCH_FIXTURE`. A missing URL is a 404 rather than a throw, matching the harness.
+ * @param {string} url
+ * @returns {{status: number, url: string, headers: {[key: string]: string}, bodyBase64: string}}
+ */
+function fetchFromFixture(url) {
+    const entry = FETCH_FIXTURE[url];
+    if (typeof entry === 'undefined') {
+        return {status: 404, url, headers: {}, bodyBase64: ''};
+    }
+    let bodyBase64 = '';
+    if (typeof entry.bodyBase64 === 'string') {
+        bodyBase64 = entry.bodyBase64;
+    } else if (typeof entry.body === 'string') {
+        bodyBase64 = Buffer.from(entry.body, 'utf8').toString('base64');
+    }
+    return {status: entry.status ?? 200, url, headers: entry.headers ?? {}, bodyBase64};
 }
 
 /**
@@ -176,12 +230,26 @@ async function answerInNode(databasePath) {
     const virtualPath = '/fixture.sqlite3';
     sqlite3.capi.sqlite3_js_posix_create_file(virtualPath, new Uint8Array(fs.readFileSync(databasePath)));
 
+    const {createHash} = await import('node:crypto');
     /** @type {import('native-bridge').NativeHost} */
     const host = {
         openDatabase: (/** @type {string} */ openPath) => new sqlite3.oo1.DB(openPath),
         databasePath: () => virtualPath,
         log: () => {},
         now: () => Date.now(),
+        // The audio host surface. `fetch` answers from the same fixture the JSC harness reads, so the
+        // two hosts see identical bytes; `resolveUrl`/`sha256` mirror what Foundation/CryptoKit do on
+        // the Swift side — they are only reached in the JSC host (node uses its real URL/crypto), but
+        // are implemented here so the host is complete rather than stubbed.
+        fetch: (request) => fetchFromFixture(request.url),
+        resolveUrl: (url, base) => {
+            try {
+                return base ? new URL(url, base).href : new URL(url).href;
+            } catch (e) {
+                return url;
+            }
+        },
+        sha256: (base64) => createHash('sha256').update(Buffer.from(base64, 'base64')).digest('base64'),
     };
     const core = new NativeCore(host, {pako: /** @type {import('pako')} */ (pako), databasePath: virtualPath});
 
@@ -201,11 +269,12 @@ async function answerInNode(databasePath) {
 /**
  * Answers every request through the real Swift host, in a real `JSContext`, over system libsqlite3.
  * @param {string} databasePath
+ * @param {string} fetchFixturePath The `host.fetch` fixture, so the audio requests hit no network.
  * @returns {string[]}
  */
-function answerInJavaScriptCore(databasePath) {
+function answerInJavaScriptCore(databasePath, fetchFixturePath) {
     /** @type {string[]} */
-    const args = ['--bundle', bundlePath, '--database', databasePath];
+    const args = ['--bundle', bundlePath, '--database', databasePath, '--fetch-fixture', fetchFixturePath];
     for (const request of REQUESTS) {
         args.push('--request', JSON.stringify(request));
     }
@@ -250,9 +319,12 @@ async function main() {
         log('==> compiling the fixture dictionary');
         const databasePath = await compileFixtureDatabase(workingDirectory);
 
+        const fetchFixturePath = path.join(workingDirectory, 'fetch-fixture.json');
+        fs.writeFileSync(fetchFixturePath, JSON.stringify(FETCH_FIXTURE));
+
         log('==> answering in node (SQLite-WASM) and in JavaScriptCore (libsqlite3)');
         const nodeResponses = await answerInNode(databasePath);
-        const jscResponses = answerInJavaScriptCore(databasePath);
+        const jscResponses = answerInJavaScriptCore(databasePath, fetchFixturePath);
 
         if (nodeResponses.length !== jscResponses.length) {
             throw new Error(`Response count differs: node ${nodeResponses.length}, JavaScriptCore ${jscResponses.length}`);

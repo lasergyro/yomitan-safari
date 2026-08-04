@@ -25,22 +25,12 @@ export class StorageController {
     constructor(persistentStorageController) {
     /** @type {import('./persistent-storage-controller.js').PersistentStorageController} */
         this._persistentStorageController = persistentStorageController;
-        /** @type {?StorageEstimate} */
-        this._mostRecentStorageEstimate = null;
-        /** @type {boolean} */
-        this._storageEstimateFailed = false;
         /** @type {boolean} */
         this._isUpdating = false;
         /** @type {?NodeListOf<HTMLElement>} */
         this._storageUsageNodes = null;
         /** @type {?NodeListOf<HTMLElement>} */
-        this._storageQuotaNodes = null;
-        /** @type {?NodeListOf<HTMLElement>} */
         this._storageUseFiniteNodes = null;
-        /** @type {?NodeListOf<HTMLElement>} */
-        this._storageUseExhaustWarnNodes = null;
-        /** @type {?NodeListOf<HTMLElement>} */
-        this._storageUseInfiniteNodes = null;
         /** @type {?NodeListOf<HTMLElement>} */
         this._storageUseValidNodes = null;
         /** @type {?NodeListOf<HTMLElement>} */
@@ -50,10 +40,7 @@ export class StorageController {
     /** */
     prepare() {
         this._storageUsageNodes = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.storage-usage'));
-        this._storageQuotaNodes = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.storage-quota'));
         this._storageUseFiniteNodes = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.storage-use-finite'));
-        this._storageUseExhaustWarnNodes = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.storage-exhaustion-alert'));
-        this._storageUseInfiniteNodes = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.storage-use-infinite'));
         this._storageUseValidNodes = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.storage-use-valid'));
         this._storageUseInvalidNodes = /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.storage-use-invalid'));
         /** @type {HTMLButtonElement} */
@@ -77,65 +64,48 @@ export class StorageController {
         void this._updateStats();
     }
 
-    /** */
+    /**
+     * The "Storage" figure is the size of the dictionary database file in the app container, not
+     * `navigator.storage.estimate()`. The engine moved into the native app, so the dictionaries no
+     * longer live in the extension origin the estimate measures (plan/native-rewrite.md → Storage
+     * location) — the old figure reported the near-empty origin and had nothing to do with the
+     * installed dictionaries. There is no meaningful quota for a file in the container beyond the
+     * disk, so only a usage figure is shown.
+     */
     async _updateStats() {
         if (this._isUpdating) { return; }
 
         try {
             this._isUpdating = true;
 
-            const estimate = await this._storageEstimate();
-            const valid = (estimate !== null);
-            let storageIsLow = false;
-
-            // Firefox reports usage as 0 when persistent storage is enabled.
-            const finite = valid && ((typeof estimate.usage === 'number' && estimate.usage > 0) || !(await this._persistentStorageController.isStoragePeristent()));
-            if (finite) {
-                let {usage, quota} = estimate;
-
-                if (typeof usage !== 'number') { usage = 0; }
-                if (typeof quota !== 'number') {
-                    quota = 0;
-                } else {
-                    storageIsLow = quota <= (3 * 1000000000);
-                }
-                const usageString = this._bytesToLabeledString(usage);
-                const quotaString = this._bytesToLabeledString(quota);
+            const databaseBytes = await this._databaseBytes();
+            const valid = (databaseBytes !== null);
+            if (valid) {
+                const usageString = this._bytesToLabeledString(databaseBytes);
                 for (const node of /** @type {NodeListOf<HTMLElement>} */ (this._storageUsageNodes)) {
                     node.textContent = usageString;
                 }
-                for (const node of /** @type {NodeListOf<HTMLElement>} */ (this._storageQuotaNodes)) {
-                    node.textContent = quotaString;
-                }
             }
 
-            this._setElementsVisible(this._storageUseFiniteNodes, valid && finite);
-            this._setElementsVisible(this._storageUseInfiniteNodes, valid && !finite);
+            this._setElementsVisible(this._storageUseFiniteNodes, valid);
             this._setElementsVisible(this._storageUseValidNodes, valid);
             this._setElementsVisible(this._storageUseInvalidNodes, !valid);
-            this._setElementsVisible(this._storageUseExhaustWarnNodes, storageIsLow);
         } finally {
             this._isUpdating = false;
         }
     }
 
-    // Private
-
     /**
-     * @returns {Promise<?StorageEstimate>}
+     * @returns {Promise<?number>} The database file size in bytes, or `null` if the app extension
+     *   could not be reached.
      */
-    async _storageEstimate() {
-        if (this._storageEstimateFailed && this._mostRecentStorageEstimate === null) {
+    async _databaseBytes() {
+        try {
+            const {databaseBytes} = await this._persistentStorageController.application.api.getDictionaryDatabaseSize();
+            return typeof databaseBytes === 'number' ? databaseBytes : null;
+        } catch (e) {
             return null;
         }
-        try {
-            const value = await navigator.storage.estimate();
-            this._mostRecentStorageEstimate = value;
-            return value;
-        } catch (e) {
-            this._storageEstimateFailed = true;
-        }
-        return null;
     }
 
     /**

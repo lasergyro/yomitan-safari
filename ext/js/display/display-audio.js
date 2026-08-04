@@ -17,6 +17,7 @@
  */
 
 import {EventListenerCollection} from '../core/event-listener-collection.js';
+import {base64ToArrayBuffer} from '../data/array-buffer-util.js';
 import {PopupMenu} from '../dom/popup-menu.js';
 import {querySelectorNotNull} from '../dom/query-selector.js';
 import {getRequiredAudioSourceList} from '../media/audio-downloader.js';
@@ -47,6 +48,12 @@ export class DisplayAudio {
         this._eventListeners = new EventListenerCollection();
         /** @type {Map<string, import('display-audio').CacheItem>} */
         this._cache = new Map();
+        /**
+         * Blob URLs minted for playback (below), tracked so they can be revoked when the audio
+         * elements holding them are dropped — which is when the cache is cleared.
+         * @type {Set<string>}
+         */
+        this._objectUrls = new Set();
         /** @type {Element} */
         this._menuContainer = querySelectorNotNull(document, '#popup-menus');
         /** @type {import('core').TokenObject} */
@@ -198,12 +205,14 @@ export class DisplayAudio {
         data.audioEnabled = enabled.toString();
 
         this._cache.clear();
+        this._revokeObjectUrls();
     }
 
     /** */
     _onContentClear() {
         this._entriesToken = {};
         this._cache.clear();
+        this._revokeObjectUrls();
         this.clearAutoPlayTimer();
         this._eventListeners.removeAllEventListeners();
     }
@@ -670,12 +679,67 @@ export class DisplayAudio {
     async _createAudioFromInfo(info, source) {
         switch (info.type) {
             case 'url':
-                return await this._audioSystem.createAudio(info.url, source.type);
+                return await this._audioSystem.createAudio(await this._getPlayableAudioUrl(info.url), source.type);
             case 'tts':
-                return this._audioSystem.createTextToSpeechAudio(info.text, info.voice);
+                return await this._createTtsAudio(info.text, info.voice, source.type);
             default:
                 throw new Error(`Unsupported type: ${/** @type {import('core').SafeAny} */ (info).type}`);
         }
+    }
+
+    /**
+     * Plays a text-to-speech source from audio the **native host** renders, not the browser's
+     * `speechSynthesis`. Safari exposes only one voice (`Anna`) to `speechSynthesis.getVoices()`,
+     * while `AVSpeechSynthesizer` reaches every installed voice, so the bytes come from the host and
+     * play through the same blob path as a downloaded clip (plan/audio-service.md). Falls back to
+     * browser `speechSynthesis` when the native render is unavailable (the 10.14 floor) or fails.
+     * @param {string} text
+     * @param {string} voice
+     * @param {import('settings').AudioSourceType} sourceType
+     * @returns {Promise<import('display-audio').GenericAudio>}
+     */
+    async _createTtsAudio(text, voice, sourceType) {
+        const languageSummary = this._display.getLanguageSummary();
+        const language = languageSummary !== null ? languageSummary.iso : '';
+        try {
+            const {data, contentType} = await this._display.application.api.getTextToSpeechAudio(text, voice, language);
+            if (typeof data === 'string' && data.length > 0) {
+                const blob = new Blob([base64ToArrayBuffer(data)], {type: typeof contentType === 'string' ? contentType : 'audio/wav'});
+                const objectUrl = URL.createObjectURL(blob);
+                this._objectUrls.add(objectUrl);
+                return await this._audioSystem.createAudio(objectUrl, sourceType);
+            }
+        } catch (e) {
+            // Fall back to the browser's speechSynthesis (below); on the 10.14 floor there is no
+            // native render, and a single-voice fallback still beats silence.
+        }
+        return this._audioSystem.createTextToSpeechAudio(text, voice);
+    }
+
+    /**
+     * Turns a resolved remote audio URL into one the display can actually play.
+     *
+     * The bytes are fetched by the native host and played from a same-origin `blob:` URL rather than
+     * pointing `new Audio()` at the remote URL directly: the in-page overlay is an extension-origin
+     * iframe embedded in the page, and Safari blocks it from loading a cross-origin audio URL — the
+     * click would hang and fall through to the fallback sound (plan/audio-service.md). A URL that is
+     * already local (`data:`/`blob:`, e.g. a custom source) is played as-is.
+     * @param {string} url
+     * @returns {Promise<string>}
+     */
+    async _getPlayableAudioUrl(url) {
+        if (/^(?:data|blob):/i.test(url)) { return url; }
+        const {data, contentType} = await this._display.application.api.getAudioUrlBytes(url);
+        const blob = new Blob([base64ToArrayBuffer(data)], {type: typeof contentType === 'string' ? contentType : ''});
+        const objectUrl = URL.createObjectURL(blob);
+        this._objectUrls.add(objectUrl);
+        return objectUrl;
+    }
+
+    /** Revokes every blob URL minted for playback. Safe once the cache holding the audio is cleared. */
+    _revokeObjectUrls() {
+        for (const url of this._objectUrls) { URL.revokeObjectURL(url); }
+        this._objectUrls.clear();
     }
 
     /**

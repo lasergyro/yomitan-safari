@@ -28,6 +28,7 @@ private struct Options {
     var database = ":memory:"
     var requests: [String] = []
     var reportStartup = false
+    var fetchFixture: String?
 }
 
 private func parseArguments() -> Options {
@@ -44,6 +45,8 @@ private func parseArguments() -> Options {
             if !arguments.isEmpty { options.requests.append(arguments.removeFirst()) }
         case "--startup":
             options.reportStartup = true
+        case "--fetch-fixture":
+            options.fetchFixture = arguments.isEmpty ? nil : arguments.removeFirst()
         default:
             FileHandle.standardError.write(Data("jsc-harness: unknown argument \(flag)\n".utf8))
             exit(2)
@@ -65,7 +68,42 @@ private func fail(_ message: String) -> Never {
 private let options = parseArguments()
 private let bundlePath = requireBundle(options.bundle)
 
-private let host = NativeEngineHost(databasePath: options.database, bundleURL: URL(fileURLWithPath: bundlePath))
+/// A fixture-backed fetcher: answers `host.fetch` from a JSON map of url → response, so the audio
+/// paths can be exercised through both hosts without touching the network. The same fixture drives
+/// the node side of the gate, so a divergence means a real behavioral difference, not a flaky host.
+private func makeFixtureFetcher(_ path: String) -> UrlFetcher {
+    guard let data = FileManager.default.contents(atPath: path),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else {
+        fail("could not read --fetch-fixture \(path)")
+    }
+    return { request in
+        guard let entry = json[request.url] else {
+            return FetchResult(status: 404, url: request.url, headers: [:], body: Data(), error: nil)
+        }
+        let status = (entry["status"] as? Int) ?? 200
+        var headers: [String: String] = [:]
+        if let rawHeaders = entry["headers"] as? [String: Any] {
+            for (key, value) in rawHeaders where value is String { headers[key] = value as? String }
+        }
+        let body: Data
+        if let bodyBase64 = entry["bodyBase64"] as? String {
+            body = Data(base64Encoded: bodyBase64) ?? Data()
+        } else if let text = entry["body"] as? String {
+            body = Data(text.utf8)
+        } else {
+            body = Data()
+        }
+        return FetchResult(status: status, url: request.url, headers: headers, body: body, error: nil)
+    }
+}
+
+private let host: NativeEngineHost = {
+    let bundleURL = URL(fileURLWithPath: bundlePath)
+    if let fixture = options.fetchFixture {
+        return NativeEngineHost(databasePath: options.database, bundleURL: bundleURL, fetcher: makeFixtureFetcher(fixture))
+    }
+    return NativeEngineHost(databasePath: options.database, bundleURL: bundleURL)
+}()
 
 for request in options.requests {
     do {

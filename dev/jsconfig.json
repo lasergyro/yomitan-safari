@@ -15,6 +15,24 @@
             "api-map": [
                 "../types/ext/api-map"
             ],
+            "audio": [
+                "../types/ext/audio"
+            ],
+            "audio-downloader": [
+                "../types/ext/audio-downloader"
+            ],
+            "request-builder.js": [
+                "../types/ext/request-builder"
+            ],
+            "simple-dom-parser": [
+                "../types/ext/simple-dom-parser"
+            ],
+            "options-util": [
+                "../types/ext/options-util"
+            ],
+            "template-patcher": [
+                "../types/ext/template-patcher"
+            ],
             "anki-templates": [
                 "../types/ext/anki-templates"
             ],

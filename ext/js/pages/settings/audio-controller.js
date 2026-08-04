@@ -18,6 +18,7 @@
 
 import {EventDispatcher} from '../../core/event-dispatcher.js';
 import {EventListenerCollection} from '../../core/event-listener-collection.js';
+import {base64ToArrayBuffer} from '../../data/array-buffer-util.js';
 import {querySelectorNotNull} from '../../dom/query-selector.js';
 import {AudioSystem} from '../../media/audio-system.js';
 
@@ -81,8 +82,8 @@ export class AudioController extends EventDispatcher {
 
         this._audioSourceAddButton.addEventListener('click', this._onAddAudioSource.bind(this), false);
 
-        this._audioSystem.on('voiceschanged', this._updateTextToSpeechVoices.bind(this));
-        this._updateTextToSpeechVoices();
+        this._audioSystem.on('voiceschanged', () => { void this._updateTextToSpeechVoices(); });
+        void this._updateTextToSpeechVoices();
 
         testButton.addEventListener('click', this._onTestTextToSpeech.bind(this), false);
 
@@ -167,6 +168,10 @@ export class AudioController extends EventDispatcher {
         } = options;
 
         this._language = language;
+        // The initial voice fetch in `prepare` runs before options are known, so the
+        // preferred-language sort is stale until now; recompute it before the entries below read the
+        // list. No native round trip — only the ordering depends on the language.
+        this._resortVoices();
 
         for (const entry of this._audioSourceEntries) {
             entry.cleanup();
@@ -185,11 +190,16 @@ export class AudioController extends EventDispatcher {
 
     /** */
     _onTestTextToSpeech() {
+        void this._testTextToSpeech();
+    }
+
+    /** */
+    async _testTextToSpeech() {
         try {
             const input = /** @type {HTMLInputElement} */ (this._voiceTestTextInput);
             const text = input.value || '';
-            const voiceUri = input.dataset.voice;
-            const audio = this._audioSystem.createTextToSpeechAudio(text, typeof voiceUri === 'string' ? voiceUri : '');
+            const voice = typeof input.dataset.voice === 'string' ? input.dataset.voice : '';
+            const audio = await this._createTtsTestAudio(text, voice);
             audio.volume = 1;
             void audio.play();
         } catch (e) {
@@ -197,53 +207,93 @@ export class AudioController extends EventDispatcher {
         }
     }
 
-    /** */
-    _updateTextToSpeechVoices() {
-        const voices = (
-            typeof speechSynthesis !== 'undefined' ?
-            [...speechSynthesis.getVoices()].map((voice, index) => ({
-                voice,
-                isJapanese: this._languageTagIsJapanese(voice.lang),
-                index,
-            })) :
-            []
-        );
-        voices.sort(this._textToSpeechVoiceCompare.bind(this));
-        this._voices = voices;
-        this.trigger('voicesUpdated', {});
+    /**
+     * The test button renders through the native host too, so it plays the *selected* voice rather
+     * than the one voice Safari's `speechSynthesis` would fall back to. Blob playback is fine on the
+     * settings page: it is an extension page, and `media-src` allows `blob:`.
+     * @param {string} text
+     * @param {string} voice
+     * @returns {Promise<import('display-audio').GenericAudio>}
+     */
+    async _createTtsTestAudio(text, voice) {
+        try {
+            const {data, contentType} = await this._settingsController.application.api.getTextToSpeechAudio(text, voice, this._language);
+            if (typeof data === 'string' && data.length > 0) {
+                const blob = new Blob([base64ToArrayBuffer(data)], {type: typeof contentType === 'string' ? contentType : 'audio/wav'});
+                return new Audio(URL.createObjectURL(blob));
+            }
+        } catch (e) {
+            // Fall back to the browser voice below.
+        }
+        return this._audioSystem.createTextToSpeechAudio(text, voice);
     }
 
     /**
+     * Loads the voice list from the **native host** rather than `speechSynthesis.getVoices()`, which
+     * on Safari returns only a single voice (plan/audio-service.md). One host round trip; the native
+     * voice set is static, so there is no `voiceschanged` equivalent to listen for.
+     */
+    async _updateTextToSpeechVoices() {
+        /** @type {import('audio-downloader').TtsVoice[]} */
+        let nativeVoices;
+        try {
+            nativeVoices = await this._settingsController.application.api.getTextToSpeechVoices();
+        } catch (e) {
+            nativeVoices = [];
+        }
+        this._voices = nativeVoices.map((voice, index) => ({
+            voice,
+            isPreferredLanguage: this._voiceMatchesLanguage(voice.language),
+            index,
+        }));
+        this._voices.sort(this._textToSpeechVoiceCompare.bind(this));
+        this.trigger('voicesUpdated', {});
+    }
+
+    /** Recomputes the preferred-language flag and re-sorts, when the language changes. */
+    _resortVoices() {
+        for (const info of this._voices) {
+            info.isPreferredLanguage = this._voiceMatchesLanguage(info.voice.language);
+        }
+        this._voices.sort(this._textToSpeechVoiceCompare.bind(this));
+    }
+
+    /**
+     * Sorts the current language's voices first, then higher quality tiers (premium, enhanced), then
+     * install order — so the picker opens on the voices a user of this language actually wants.
      * @param {import('audio-controller').VoiceInfo} a
      * @param {import('audio-controller').VoiceInfo} b
      * @returns {number}
      */
     _textToSpeechVoiceCompare(a, b) {
-        if (a.isJapanese) {
-            if (!b.isJapanese) { return -1; }
-        } else {
-            if (b.isJapanese) { return 1; }
+        if (a.isPreferredLanguage !== b.isPreferredLanguage) {
+            return a.isPreferredLanguage ? -1 : 1;
         }
-
-        if (a.voice.default) {
-            if (!b.voice.default) { return -1; }
-        } else {
-            if (b.voice.default) { return 1; }
-        }
-
+        const qualityDelta = this._voiceQualityRank(b.voice.quality) - this._voiceQualityRank(a.voice.quality);
+        if (qualityDelta !== 0) { return qualityDelta; }
         return a.index - b.index;
     }
 
     /**
-     * @param {string} languageTag
-     * @returns {boolean}
+     * @param {string} quality
+     * @returns {number}
      */
-    _languageTagIsJapanese(languageTag) {
-        return (
-            languageTag.startsWith('ja_') ||
-            languageTag.startsWith('ja-') ||
-            languageTag.startsWith('jpn-')
-        );
+    _voiceQualityRank(quality) {
+        switch (quality) {
+            case 'premium': return 2;
+            case 'enhanced': return 1;
+            default: return 0;
+        }
+    }
+
+    /**
+     * @param {string} voiceLanguage A BCP-47 tag like `de-DE`.
+     * @returns {boolean} Whether it belongs to the currently selected language (`de`).
+     */
+    _voiceMatchesLanguage(voiceLanguage) {
+        const language = this._language.toLowerCase();
+        const voice = voiceLanguage.toLowerCase().replace(/_/g, '-');
+        return voice === language || voice.startsWith(`${language}-`);
     }
 
     /**
@@ -412,8 +462,9 @@ class AudioSourceEntry {
 
         for (const {voice} of voices) {
             option = document.createElement('option');
-            option.value = voice.voiceURI;
-            option.textContent = `${voice.name} (${voice.lang})`;
+            option.value = voice.id;
+            const quality = voice.quality !== 'default' ? ` — ${voice.quality}` : '';
+            option.textContent = `${voice.name} (${voice.language})${quality}`;
             fragment.appendChild(option);
         }
 

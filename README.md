@@ -89,6 +89,12 @@ Then open <http://127.0.0.1:8723/test-iframe.html> or
 
 ## Development notes
 
-See [`DEV.md`](DEV.md) for development learnings, including how to drive a real
-logged-in Safari from the shell to inspect a live page's rendered DOM and
-hit-testing (used to diagnose page-specific scanning bugs).
+See [`DEV.md`](DEV.md) for development learnings. In particular, you can **drive the real installed
+extension in your logged-in Safari from the shell** — `open -g -a Safari <url>` loads a page without
+stealing focus, and AppleScript's `do JavaScript … in <tab>` then runs a live lookup or reads back
+the rendered popup DOM. Serve a page over `http://127.0.0.1` (Safari disables extensions on
+`file://`), or reach the extension's own `search.html` at its runtime origin. This is the way to
+**verify a change against Safari itself** rather than only against the out-of-Safari engine gate
+(`npm run test:jsc`); `npm run test:safari:e2e` automates the same channel for the native seam. The
+recipes are in [`DEV.md`](DEV.md) → _Driving the installed extension_, _Checking the installed
+extension end to end_, and _Automated Safari inspection_.
