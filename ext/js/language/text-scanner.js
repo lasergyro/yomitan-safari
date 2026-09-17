@@ -96,6 +96,8 @@ export class TextScanner extends EventDispatcher {
 
         /** @type {PointerEvent | null} */
         this._lastMouseMove = null;
+        /** @type {{x: number, y: number, inputInfo: import('text-scanner').InputInfo} | null} */
+        this._pendingMouseMove = null;
 
         /** @type {boolean} */
         this._deepContentScan = false;
@@ -395,6 +397,7 @@ export class TextScanner extends EventDispatcher {
     /** */
     clearMousePosition() {
         this._lastMouseMove = null;
+        this._pendingMouseMove = null;
     }
 
     /**
@@ -667,6 +670,21 @@ export class TextScanner extends EventDispatcher {
      * @returns {boolean|void}
      */
     _onMouseDown(e) {
+        if (this._ignoreElements !== null) {
+            const ignored = this._ignoreElements();
+            const path = (typeof e.composedPath === 'function') ? e.composedPath() : [];
+            const target = /** @type {?Element} */ (e.target);
+            if (ignored.some((el) => {
+                if (el.contains(target) || path.includes(el)) return true;
+                const shadow = /** @type {?any} */ (el).shadowRoot;
+                if (shadow && (shadow.contains(target) || (typeof shadow.elementsFromPoint === 'function' && shadow.elementsFromPoint(e.clientX, e.clientY).length > 0))) return true;
+                const r = el.getBoundingClientRect();
+                return (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+            })) {
+                return;
+            }
+        }
+
         if (this._preventNextMouseDown) {
             this._preventNextMouseDown = false;
             this._preventNextClick = true;
@@ -703,6 +721,15 @@ export class TextScanner extends EventDispatcher {
      * @returns {boolean|void}
      */
     _onClick(e) {
+        if (this._ignoreElements !== null) {
+            const ignored = this._ignoreElements();
+            const path = (typeof e.composedPath === 'function') ? e.composedPath() : [];
+            const target = /** @type {?Element} */ (e.target);
+            if (ignored.some((el) => el.contains(target) || path.includes(el))) {
+                return;
+            }
+        }
+
         if (this._preventNextClick) {
             this._preventNextClick = false;
             e.preventDefault();
@@ -1357,6 +1384,11 @@ export class TextScanner extends EventDispatcher {
             log.error(e);
         } finally {
             this._pendingLookup = false;
+            const next = this._pendingMouseMove;
+            if (next !== null) {
+                this._pendingMouseMove = null;
+                void this._searchAtFromMouseMove(next.x, next.y, next.inputInfo);
+            }
         }
     }
 
@@ -1366,7 +1398,10 @@ export class TextScanner extends EventDispatcher {
      * @param {import('text-scanner').InputInfo} inputInfo
      */
     async _searchAtFromMouseMove(x, y, inputInfo) {
-        if (this._pendingLookup) { return; }
+        if (this._pendingLookup) {
+            this._pendingMouseMove = {x, y, inputInfo};
+            return;
+        }
 
         if (inputInfo.passive && !await this._scanTimerWait()) {
             // Aborted
