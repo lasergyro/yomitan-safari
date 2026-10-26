@@ -1277,7 +1277,7 @@ export class Display extends EventDispatcher {
      * @returns {boolean}
      */
     _isSafariWebExtension() {
-        return chrome.runtime.getURL('/').startsWith('safari-web-extension://');
+        return (chrome.runtime.getURL('/').startsWith('safari-web-extension://') || chrome.runtime.getURL('/').startsWith('yomitan-bridge://'));
     }
 
     /**

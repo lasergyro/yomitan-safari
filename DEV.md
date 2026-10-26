@@ -212,6 +212,35 @@ The residual manual gate is unchanged and is Apple's, not the harness's: the ext
 clicks), and **Allow JavaScript from Apple Events** is not needed here at all — this path uses no
 `do JavaScript`.
 
+### Automated inline-pop-up audio check (`npm run test:safari:audio`)
+
+The inline pop-up plays audio **off-page** — through a hidden extension-origin
+[`inline-audio-player.html`](ext/inline-audio-player.html) iframe it injects (see
+[plan/audio-service.md](plan/audio-service.md)). `test:safari:e2e` proves the native TTS/fetch seams
+but not that playback works, because playback is DOM-bound. This runner does, over the **same loopback
+bridge** (so it needs the same `YOMITAN_TEST_BRIDGE=1 ./rebuild-safari.sh` build):
+
+```sh
+YOMITAN_TEST_BRIDGE=1 ./rebuild-safari.sh    # once: build+install with the bridge
+npm run test:safari:audio                    # drive the probe, print the evidence table
+```
+
+The bridge runs an in-page `audioProbe` that drives the **real player code** on the real
+`http://127.0.0.1` origin in three embeddings — the extension-origin iframe **with** `allow="autoplay"`
+(the pop-up itself), the same iframe **without** it (what the bug was), and a top-level clip in the host
+page (the search page's top-level context) — and reports objective playback evidence per cell
+(`play()` resolved, `currentTime` advanced, `paused`, `readyState`, `MediaError`). The fixture is a
+native-TTS render, so it needs no network and no dictionary.
+
+**What it asserts vs. what stays a listening test.** A script-driven run carries **no user gesture**,
+and Safari blocks _audible_ autoplay without one — so the probe plays **muted** (which does not need a
+gesture) and machine-verifies the pipeline (source resolution; the blob loading under the extension's
+CSP inside the injected cross-origin iframe) plus that muted playback **starts and progresses** in the
+pop-up's exact configuration. It prints the muted `allow`-vs-no-`allow` A/B so a regression in the
+autoplay delegation is visible, and runs each cell unmuted for the record. It **cannot** confirm
+audible sound from a real click — that remains the human listening test in _Driving the installed
+extension_ above.
+
 ## Automated Safari inspection (macOS)
 
 How to drive a real, logged-in Safari from the shell to inspect a live page's

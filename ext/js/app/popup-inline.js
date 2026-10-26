@@ -25,6 +25,7 @@ import {getDynamicTemplates} from '../data/anki-template-util.js';
 import {INVALID_NOTE_ID} from '../data/anki-util.js';
 import {DisplayContentManager} from '../display/display-content-manager.js';
 import {DisplayGenerator} from '../display/display-generator.js';
+import {getRequiredAudioSourceList} from '../media/audio-downloader.js';
 import {TemplateRendererProxy} from '../templates/template-renderer-proxy.js';
 
 /**
@@ -77,20 +78,24 @@ export class PopupInline extends EventDispatcher {
         this._container.style.zIndex = '2147483647';
         this._container.style.left = '0';
         this._container.style.top = '0';
-        this._container.style.width = '300px';
-        this._container.style.maxWidth = '300px';
-        this._container.style.maxHeight = '400px';
-        this._container.style.overflow = 'auto';
+        this._container.style.width = '360px';
+        this._container.style.minWidth = '240px';
+        this._container.style.maxWidth = '90vw';
+        this._container.style.minHeight = '180px';
+        this._container.style.maxHeight = '90vh';
+        this._container.style.resize = 'both';
+        this._container.style.overflow = 'hidden';
         this._container.style.boxSizing = 'border-box';
         this._container.style.border = '1px solid rgba(0, 0, 0, 0.18)';
         this._container.style.borderRadius = '10px';
         this._container.style.background = '#ffffff';
         this._container.style.color = '#111827';
         this._container.style.boxShadow = '0 16px 40px rgba(0, 0, 0, 0.25)';
-        this._container.style.padding = '12px';
+        this._container.style.padding = '0';
         this._container.style.font = '14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
         this._container.style.wordBreak = 'break-word';
         this._container.style.display = 'none';
+        this._container.style.flexDirection = 'column';
         this._container.style.opacity = '0';
         this._container.style.transition = 'opacity 180ms ease';
         this._container.style.whiteSpace = 'normal';
@@ -98,8 +103,16 @@ export class PopupInline extends EventDispatcher {
         this._container.style.userSelect = 'text';
         this._container.addEventListener('mouseenter', this._onMouseEnter.bind(this), false);
         this._container.addEventListener('mouseleave', this._onMouseLeave.bind(this), false);
-        this._container.addEventListener('mousedown', (e) => e.stopPropagation(), false);
-        this._container.addEventListener('click', (e) => e.stopPropagation(), false);
+        this._container.addEventListener('mousedown', (e) => {
+            this.stopHideDelayed();
+            this._isPointerOver = true;
+            e.stopPropagation();
+        }, false);
+        this._container.addEventListener('click', (e) => {
+            this.stopHideDelayed();
+            this._isPointerOver = true;
+            e.stopPropagation();
+        }, false);
         /** @type {boolean} */
         this._visible = false;
         /** @type {boolean} */
@@ -158,6 +171,8 @@ export class PopupInline extends EventDispatcher {
         this._renderToken = null;
         /** @type {?{left: number, top: number}} */
         this._savedPosition = null;
+        /** @type {?{width: number, height: number}} */
+        this._savedSize = null;
         /** @type {boolean} */
         this._positionLoaded = false;
         /** @type {?{offsetX: number, offsetY: number}} */
@@ -168,8 +183,55 @@ export class PopupInline extends EventDispatcher {
         this._onDragMoveBound = this._onDragMove.bind(this);
         /** @type {() => void} */
         this._onDragEndBound = this._onDragEnd.bind(this);
+        /** @type {ResizeObserver} */
+        this._resizeObserver = new ResizeObserver(() => {
+            if (!this._visible || this._displayModeIsFullWidth) { return; }
+            const rect = this._container.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                const roundedW = Math.round(rect.width);
+                const roundedH = Math.round(rect.height);
+                if (
+                    this._savedSize === null ||
+                    Math.abs(this._savedSize.width - roundedW) > 2 ||
+                    Math.abs(this._savedSize.height - roundedH) > 2
+                ) {
+                    this._savedSize = {width: roundedW, height: roundedH};
+                    this._frameRect = {
+                        left: rect.left,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                        valid: true,
+                    };
+                    void this._saveSize();
+                }
+            }
+        });
+        this._resizeObserver.observe(this._container);
 
-        this._container.addEventListener('mousedown', this._onDragStart.bind(this), false);
+        // Audio plays off-page: the inline pop-up runs in the host page, so it drives a hidden
+        // extension-origin iframe (inline-audio-player.html) that plays under the extension's own CSP.
+        // See app/inline-audio-player-main.js and plan/audio-service.md.
+        /** @type {?HTMLIFrameElement} */
+        this._audioPlayerFrame = null;
+        /** @type {boolean} */
+        this._audioPlayerReady = false;
+        /** The extension origin, the exact `targetOrigin` for posting to the player frame. */
+        this._audioPlayerTargetOrigin = chrome.runtime.getURL('/').replace(/\/$/, '');
+        /** @type {?import('inline-audio-player').PlayParams} */
+        this._pendingAudioPlay = null;
+        /** @type {number} */
+        this._audioRequestId = 0;
+        /** @type {boolean} */
+        this._audioEnabled = false;
+        /** @type {number} */
+        this._audioVolume = 100;
+        /** @type {import('settings').FallbackSoundType} */
+        this._audioFallbackSoundType = 'click';
+        /** @type {import('inline-audio-player').SourceData[]} */
+        this._audioSources = [];
+        /** @type {(event: MessageEvent) => void} */
+        this._onWindowMessageBound = this._onWindowMessage.bind(this);
     }
 
     /** @returns {string} */
@@ -204,6 +266,7 @@ export class PopupInline extends EventDispatcher {
         if (this._container.parentNode === null) {
             document.documentElement.appendChild(this._container);
         }
+        window.addEventListener('message', this._onWindowMessageBound, false);
     }
 
     /**
@@ -216,20 +279,55 @@ export class PopupInline extends EventDispatcher {
         const options = await this._application.api.optionsGet(optionsContext2);
         this._options = options;
         const {general, scanning} = options;
-        this._displayModeIsFullWidth = (general.popupDisplayMode === 'full-width');
+        const isBridge = (window.location.hostname === '127.0.0.1' || window.location.protocol === 'yomitan-bridge:');
+        this._displayModeIsFullWidth = isBridge ? false : (general.popupDisplayMode === 'full-width');
         this._initialWidth = general.popupWidth;
         this._initialHeight = general.popupHeight;
         this._horizontalOffset = general.popupHorizontalOffset;
         this._verticalOffset = general.popupVerticalOffset;
         this._horizontalOffset2 = general.popupHorizontalOffset2;
-        this._verticalOffset2 = general.popupVerticalOffset2;
-        this._hidePopupOnCursorExit = scanning.hidePopupOnCursorExit;
+        this._hidePopupOnCursorExit = isBridge ? false : scanning.hidePopupOnCursorExit;
         this._hidePopupOnCursorExitDelay = scanning.hidePopupOnCursorExitDelay;
         // The standard popup receives the user's custom CSS through the Display inside its
         // iframe; the inline popup has no such Display, so read and apply it here directly.
         this._customCss = typeof general.customPopupCss === 'string' ? general.customPopupCss : '';
         this._applyCustomCss();
+        this._updateAudioConfig(options);
         this._updateContainerSize();
+    }
+
+    /**
+     * Reads the audio options into the fields the play buttons and the off-page player use, building
+     * the ordered source list exactly as `DisplayAudio._onOptionsUpdated` does (options first, then any
+     * language defaults when `enableDefaultAudioSources`). A `data-audio-enabled` attribute on the host
+     * gates the play button's visibility in the shadow stylesheet.
+     * @param {import('settings').ProfileOptions} options
+     * @returns {void}
+     */
+    _updateAudioConfig(options) {
+        const {general: {language}, audio: {enabled, volume, fallbackSoundType, sources, enableDefaultAudioSources}} = options;
+        this._audioEnabled = enabled;
+        this._audioVolume = volume;
+        this._audioFallbackSoundType = fallbackSoundType;
+
+        /** @type {import('inline-audio-player').SourceData[]} */
+        const sourceData = [];
+        /** @type {Set<import('settings').AudioSourceType>} */
+        const requiredAudioSources = enableDefaultAudioSources ? getRequiredAudioSourceList(language) : new Set();
+        for (const {type, url, voice} of sources) {
+            sourceData.push({type, url, voice});
+            requiredAudioSources.delete(type);
+        }
+        for (const type of requiredAudioSources) {
+            sourceData.push({type, url: '', voice: ''});
+        }
+        this._audioSources = sourceData;
+
+        if (enabled) {
+            this._container.dataset.audioEnabled = 'true';
+        } else {
+            delete this._container.dataset.audioEnabled;
+        }
     }
 
     /**
@@ -245,6 +343,9 @@ export class PopupInline extends EventDispatcher {
         this._frameRect = {left: 0, top: 0, right: 0, bottom: 0, valid: false};
         if (this._child !== null) {
             this._child.hide(false);
+        }
+        if (typeof window !== 'undefined' && typeof window.__bridgeReportRects === 'function') {
+            window.__bridgeReportRects();
         }
     }
 
@@ -300,7 +401,7 @@ export class PopupInline extends EventDispatcher {
         } else if (this._container.textContent !== '') {
             this._visible = true;
             this._container.hidden = false;
-            this._container.style.display = 'block';
+            this._container.style.display = 'flex';
             this._container.style.opacity = '1';
         }
         return token;
@@ -361,9 +462,18 @@ export class PopupInline extends EventDispatcher {
         if (!this._visible || !this._frameRect.valid || this._displayModeIsFullWidth) {
             this._position(details.sourceRects);
         }
+        const query = displayDetails?.params?.query;
+        if (typeof query === 'string' && query !== this._lastRenderedQuery) {
+            this._lastRenderedQuery = query;
+            const scroll = this._shadow.querySelector('.content-scroll');
+            if (scroll) {
+                scroll.scrollTop = 0;
+                scroll.scrollLeft = 0;
+            }
+        }
         this._visible = true;
         this._container.hidden = false;
-        this._container.style.display = 'block';
+        this._container.style.display = 'flex';
         this._container.style.opacity = '1';
     }
 
@@ -497,6 +607,14 @@ export class PopupInline extends EventDispatcher {
         const top = e.clientY - offsetY;
         const position = this._clampPosition(left, top);
         this._applyPosition(position.left, position.top);
+        const rect = this._container.getBoundingClientRect();
+        this._frameRect = {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            valid: true,
+        };
     }
 
     /** @returns {void} */
@@ -505,7 +623,21 @@ export class PopupInline extends EventDispatcher {
         this._dragState = null;
         window.removeEventListener('mousemove', this._onDragMoveBound, true);
         window.removeEventListener('mouseup', this._onDragEndBound, true);
-        void this._savePosition();
+        if (this._lastPosition !== null) {
+            this._savedPosition = {left: this._lastPosition.left, top: this._lastPosition.top};
+            void this._savePosition();
+        }
+        const rect = this._container.getBoundingClientRect();
+        this._frameRect = {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            valid: true,
+        };
+        if (typeof window !== 'undefined' && typeof window.__bridgeReportRects === 'function') {
+            window.__bridgeReportRects();
+        }
     }
 
     /** @returns {void} */
@@ -533,22 +665,49 @@ export class PopupInline extends EventDispatcher {
             this._positionFullWidth(sourceRects);
             return;
         }
-        const width = Math.min(this._initialWidth, Math.max(160, window.innerWidth - 16));
-        const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
-        this._container.style.width = `${width}px`;
-        this._container.style.maxWidth = `${width}px`;
-        // Grow to fit the content (up to the configured height) when not full-width.
-        this._container.style.height = 'auto';
-        this._container.style.maxHeight = `${height}px`;
-        this._container.style.display = 'block';
+
+        const width = this._savedSize?.width ?? 360;
+        const height = this._savedSize?.height ?? 420;
+        const clampedW = Math.min(Math.max(width, 240), Math.max(240, window.innerWidth - 16));
+        const clampedH = Math.min(Math.max(height, 180), Math.max(180, window.innerHeight - 16));
+
+        this._container.style.width = `${clampedW}px`;
+        this._container.style.height = `${clampedH}px`;
+        this._container.style.display = 'flex';
         this._container.hidden = false;
-        const popupRect = this._container.getBoundingClientRect();
+
         let left;
         let top;
+        const bounds = this._getGameBounds();
+        if (this._savedPosition !== null) {
+            if (
+                this._savedPosition.left < bounds.x ||
+                this._savedPosition.left > bounds.x + bounds.w - 80 ||
+                this._savedPosition.top < bounds.y ||
+                this._savedPosition.top > bounds.y + bounds.h - 60
+            ) {
+                this._savedPosition = null;
+            }
+        }
+        if (this._lastPosition !== null) {
+            if (
+                this._lastPosition.left < bounds.x ||
+                this._lastPosition.left > bounds.x + bounds.w - 80 ||
+                this._lastPosition.top < bounds.y ||
+                this._lastPosition.top > bounds.y + bounds.h - 60
+            ) {
+                this._lastPosition = null;
+            }
+        }
+
         if (this._savedPosition !== null) {
             ({left, top} = this._clampPosition(this._savedPosition.left, this._savedPosition.top));
+        } else if (this._lastPosition !== null) {
+            ({left, top} = this._clampPosition(this._lastPosition.left, this._lastPosition.top));
         } else {
-            ({left, top} = this._getSourcePosition(sourceRects, popupRect.width, popupRect.height));
+            ({left, top} = this._getDefaultFixedPosition(clampedW, clampedH));
+            this._savedPosition = {left, top};
+            void this._savePosition();
         }
         this._applyPosition(left, top);
 
@@ -648,19 +807,170 @@ export class PopupInline extends EventDispatcher {
         displayContentManager.unloadAll();
         const dictionaryInfo = await this._getDictionaryInfo();
         if (this._renderToken !== renderToken) { return; }
+        // Warm the off-page audio player while the user reads, so the first click has less to wait on.
+        if (this._audioEnabled) { this._ensureAudioPlayerFrame(); }
+        /** @type {[import('dictionary').DictionaryEntry, HTMLElement][]} */
+        const rendered = [];
         for (const entry of dictionaryEntries.slice(0, 8)) {
             const node = (
                 entry.type === 'kanji' ?
                 displayGenerator.createKanjiEntry(entry, dictionaryInfo) :
                 displayGenerator.createTermEntry(entry, dictionaryInfo)
             );
-            await this._addAnkiActions(entry, node, displayDetails);
-            if (this._renderToken !== renderToken) { return; }
+            if (entry.type === 'term') { this._wireAudioButtons(entry, node); }
             fragment.appendChild(node);
+            rendered.push([entry, node]);
         }
         if (this._renderToken !== renderToken) { return; }
         contentRoot.replaceChildren(fragment);
+        // Anki buttons arrive after the entries, as in the full display: each needs an AnkiConnect
+        // round trip, and with Anki closed those are slow to fail — the definitions must not wait on them.
+        void this._addAnkiActionsAfterRender(rendered, displayDetails, renderToken);
         await displayContentManager.executeMediaRequests();
+    }
+
+    /**
+     * @param {[import('dictionary').DictionaryEntry, HTMLElement][]} rendered The entries and their nodes, in display order.
+     * @param {?import('display').ContentDetails} displayDetails The display content details.
+     * @param {import('core').TokenObject} renderToken The render these nodes belong to; a newer render abandons the rest.
+     * @returns {Promise<void>}
+     */
+    async _addAnkiActionsAfterRender(rendered, displayDetails, renderToken) {
+        for (const [entry, node] of rendered) {
+            if (this._renderToken !== renderToken) { return; }
+            try {
+                await this._addAnkiActions(entry, node, displayDetails);
+            } catch (e) {
+                log.error(e);
+            }
+        }
+    }
+
+    /**
+     * Wires each headword's (now visible) play-audio button, and the entry header's, to the off-page player. Nodes are replaced
+     * wholesale on the next render, so these listeners fall away with them — no explicit removal needed.
+     * @param {import('dictionary').TermDictionaryEntry} entry
+     * @param {HTMLElement} node
+     * @returns {void}
+     */
+    _wireAudioButtons(entry, node) {
+        if (!this._audioEnabled) { return; }
+        const {headwords} = entry;
+        for (const headwordNode of node.querySelectorAll('.headword')) {
+            if (!(headwordNode instanceof HTMLElement)) { continue; }
+            const indexString = headwordNode.dataset.index;
+            if (typeof indexString !== 'string') { continue; }
+            const index = Number.parseInt(indexString, 10);
+            if (!Number.isFinite(index) || index < 0 || index >= headwords.length) { continue; }
+            const button = headwordNode.querySelector('.action-button[data-action="play-audio"]');
+            if (button === null) { continue; }
+            const {term, reading} = headwords[index];
+            this._addAudioButtonListener(button, term, reading);
+        }
+        // The entry header carries its own play button; as in the full display, it plays the first headword.
+        const entryButton = node.querySelector('.entry-header .action-button[data-action="play-audio"]');
+        if (entryButton !== null && headwords.length > 0) {
+            const {term, reading} = headwords[0];
+            this._addAudioButtonListener(entryButton, term, reading);
+        }
+    }
+
+    /**
+     * @param {Element} button
+     * @param {string} term
+     * @param {string} reading
+     * @returns {void}
+     */
+    _addAudioButtonListener(button, term, reading) {
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this._playHeadwordAudio(term, reading);
+        }, false);
+    }
+
+    /**
+     * @param {string} term
+     * @param {string} reading
+     * @returns {void}
+     */
+    _playHeadwordAudio(term, reading) {
+        if (!this._audioEnabled || this._options === null) { return; }
+        this._ensureAudioPlayerFrame();
+        /** @type {import('inline-audio-player').PlayParams} */
+        const params = {
+            id: ++this._audioRequestId,
+            term,
+            reading,
+            sources: this._audioSources,
+            language: this._options.general.language,
+            volume: this._audioVolume,
+            fallbackSoundType: this._audioFallbackSoundType,
+        };
+        // The frame is created lazily and its module boots asynchronously; hold the newest request
+        // until it announces itself, then flush that one (a later click supersedes an earlier pending).
+        if (this._audioPlayerReady) {
+            this._postAudioPlay(params);
+        } else {
+            this._pendingAudioPlay = params;
+        }
+    }
+
+    /** @returns {void} */
+    _ensureAudioPlayerFrame() {
+        if (this._audioPlayerFrame !== null) { return; }
+        const frame = document.createElement('iframe');
+        frame.className = 'yomitan-inline-audio-player';
+        // Cross-origin (extension-origin) child: WebKit gates its audio behind the `autoplay`
+        // Permissions-Policy feature, which defaults to `self`, so delegate it — otherwise a play
+        // triggered from the pop-up button in this parent frame is blocked in the child.
+        frame.allow = 'autoplay';
+        frame.setAttribute('aria-hidden', 'true');
+        frame.style.position = 'absolute';
+        frame.style.top = '0';
+        frame.style.left = '0';
+        frame.style.width = '0';
+        frame.style.height = '0';
+        frame.style.border = '0';
+        frame.style.pointerEvents = 'none';
+        frame.src = chrome.runtime.getURL('/inline-audio-player.html');
+        document.documentElement.appendChild(frame);
+        this._audioPlayerFrame = frame;
+    }
+
+    /**
+     * @param {MessageEvent<unknown>} event
+     * @returns {void}
+     */
+    _onWindowMessage(event) {
+        // Match on the extension origin only — no host page can forge it, and only our player frame
+        // posts from it. Deliberately NOT `event.source === frame.contentWindow`: in Safari's isolated
+        // content-script world that identity check does not hold (the `WindowProxy` from a `message`
+        // event is not `===` the one read off the iframe), which silently swallowed the ready signal.
+        if (this._audioPlayerFrame === null || event.origin !== this._audioPlayerTargetOrigin) { return; }
+        const data = event.data;
+        if (data === null || typeof data !== 'object') { return; }
+        const message = /** @type {import('inline-audio-player').PlayerOutboundMessage} */ (data);
+        if (message.action === 'inlineAudioPlayerReady') {
+            this._audioPlayerReady = true;
+            const pending = this._pendingAudioPlay;
+            if (pending !== null) {
+                this._pendingAudioPlay = null;
+                this._postAudioPlay(pending);
+            }
+        }
+        // 'inlineAudioPlayerPlayed' is informational — the fallback sound is played in the frame, so
+        // there is no button state to update here.
+    }
+
+    /**
+     * @param {import('inline-audio-player').PlayParams} params
+     * @returns {void}
+     */
+    _postAudioPlay(params) {
+        const win = this._audioPlayerFrame !== null ? this._audioPlayerFrame.contentWindow : null;
+        if (win === null) { return; }
+        win.postMessage({action: 'play', params}, this._audioPlayerTargetOrigin);
     }
 
     /**
@@ -869,6 +1179,31 @@ export class PopupInline extends EventDispatcher {
         customStyle.textContent = this._customCss;
         this._customCssStyleNode = customStyle;
 
+        const dragBar = document.createElement('div');
+        dragBar.className = 'yomitan-drag-bar';
+        dragBar.innerHTML = `
+            <div class="yomitan-drag-title">
+                <span class="yomitan-drag-grip">⋮⋮</span>
+                <span class="yomitan-drag-name">Yomitan</span>
+                <span class="yomitan-drag-hint">drag to move</span>
+            </div>
+            <button class="yomitan-drag-close" type="button" title="Close">✕</button>
+        `;
+
+        const closeButton = dragBar.querySelector('.yomitan-drag-close');
+        if (closeButton !== null) {
+            closeButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                this.hide(false);
+            }, false);
+            closeButton.addEventListener('mousedown', (event) => {
+                event.stopPropagation();
+            }, false);
+        }
+
+        dragBar.addEventListener('mousedown', this._onDragStart.bind(this), false);
+
         const wrapper = document.createElement('div');
         wrapper.className = 'content-outer';
         wrapper.dataset.browser = 'safari';
@@ -876,7 +1211,7 @@ export class PopupInline extends EventDispatcher {
         wrapper.dataset.outerTheme = 'default';
         wrapper.innerHTML = '<div class="content"><div class="content-scroll contain-overscroll scrollbar"><div class="content-body"><div class="content-body-inner"></div></div></div></div>';
 
-        this._shadow.replaceChildren(style, customStyle, wrapper);
+        this._shadow.replaceChildren(style, customStyle, dragBar, wrapper);
         this._contentRoot = wrapper.querySelector('.content-body-inner');
         this._displayGenerator = displayGenerator;
         this._displayContentManager = displayContentManager;
@@ -925,14 +1260,56 @@ export class PopupInline extends EventDispatcher {
             this._container.style.maxHeight = `${height}px`;
             return;
         }
-        const height = Math.min(this._initialHeight, Math.max(120, window.innerHeight - 16));
-        const width = Math.min(this._initialWidth, Math.max(160, window.innerWidth - 16));
+        const savedW = this._savedSize?.width ?? this._initialWidth;
+        const savedH = this._savedSize?.height ?? this._initialHeight;
+        const width = Math.min(Math.max(savedW, 240), window.innerWidth - 16);
+        const height = Math.min(Math.max(savedH, 180), window.innerHeight - 16);
         this._container.style.width = `${width}px`;
-        this._container.style.maxWidth = `${width}px`;
-        this._container.style.minHeight = '0';
-        // The standard popup grows to fit its content (up to the configured height).
-        this._container.style.height = 'auto';
-        this._container.style.maxHeight = `${height}px`;
+        this._container.style.maxWidth = '90vw';
+        this._container.style.minWidth = '240px';
+        this._container.style.minHeight = '180px';
+        this._container.style.height = `${height}px`;
+        this._container.style.maxHeight = '90vh';
+    }
+
+    /**
+     * Returns the bounding rectangle of the game window in viewport DOM coordinates.
+     * If the bridge has provided `window.__bridgeGameBounds`, uses that.
+     * Otherwise defaults to the full viewport window.
+     * @returns {{x: number, y: number, w: number, h: number}}
+     */
+    _getGameBounds() {
+        let bridgeBounds = /** @type {any} */ (window).__bridgeGameBounds;
+        if (!bridgeBounds && document.documentElement && document.documentElement.dataset.gameBounds) {
+            try {
+                bridgeBounds = JSON.parse(document.documentElement.dataset.gameBounds);
+            } catch (e) {
+                // ignore
+            }
+        }
+        if (
+            typeof bridgeBounds === 'object' &&
+            bridgeBounds !== null &&
+            typeof bridgeBounds.x === 'number' &&
+            typeof bridgeBounds.y === 'number' &&
+            typeof bridgeBounds.w === 'number' &&
+            typeof bridgeBounds.h === 'number' &&
+            bridgeBounds.w > 300 &&
+            bridgeBounds.h > 200
+        ) {
+            return {
+                x: Math.max(0, bridgeBounds.x),
+                y: Math.max(0, bridgeBounds.y),
+                w: Math.min(window.innerWidth - Math.max(0, bridgeBounds.x), bridgeBounds.w),
+                h: Math.min(window.innerHeight - Math.max(0, bridgeBounds.y), bridgeBounds.h),
+            };
+        }
+        return {
+            x: 0,
+            y: 0,
+            w: window.innerWidth,
+            h: window.innerHeight,
+        };
     }
 
     /** @returns {Promise<void>} */
@@ -940,11 +1317,13 @@ export class PopupInline extends EventDispatcher {
         if (this._positionLoaded) { return; }
         this._positionLoaded = true;
         const key = this._getPositionStorageKey();
+        const sizeKey = this._getSizeStorageKey();
         const store = /** @type {{[key: string]: unknown}} */ (await new Promise((resolve) => {
-            chrome.storage.local.get([key], (result) => {
+            chrome.storage.local.get([key, sizeKey], (result) => {
                 resolve(result);
             });
         }));
+        const bounds = this._getGameBounds();
         const value = store[key];
         if (
             typeof value === 'object' &&
@@ -952,7 +1331,27 @@ export class PopupInline extends EventDispatcher {
             'left' in value && typeof value.left === 'number' &&
             'top' in value && typeof value.top === 'number'
         ) {
-            this._savedPosition = {left: value.left, top: value.top};
+            // Must be within game bounds and below menu safe zone
+            if (value.top >= 38 && value.left >= bounds.x && value.left <= bounds.x + bounds.w - 100 &&
+                value.top <= bounds.y + bounds.h - 80) {
+                this._savedPosition = {left: value.left, top: value.top};
+            } else {
+                this._savedPosition = null;
+            }
+        }
+        const sizeValue = store[sizeKey];
+        if (
+            typeof sizeValue === 'object' &&
+            sizeValue !== null &&
+            'width' in sizeValue && typeof sizeValue.width === 'number' &&
+            'height' in sizeValue && typeof sizeValue.height === 'number'
+        ) {
+            if (sizeValue.width >= 200 && sizeValue.width <= Math.min(800, bounds.w - 20) &&
+                sizeValue.height >= 160 && sizeValue.height <= Math.min(800, bounds.h - 20)) {
+                this._savedSize = {width: sizeValue.width, height: sizeValue.height};
+            } else {
+                this._savedSize = null;
+            }
         }
     }
 
@@ -962,6 +1361,22 @@ export class PopupInline extends EventDispatcher {
         const key = this._getPositionStorageKey();
         const value = {left: this._lastPosition.left, top: this._lastPosition.top};
         this._savedPosition = value;
+        await /** @type {Promise<void>} */ (new Promise((resolve) => {
+            chrome.storage.local.set({[key]: value}, () => resolve());
+        }));
+    }
+
+    /** @returns {string} */
+    _getSizeStorageKey() {
+        const host = window.location.hostname || 'default';
+        return `popupInlineSize:${host}`;
+    }
+
+    /** @returns {Promise<void>} */
+    async _saveSize() {
+        if (this._savedSize === null) { return; }
+        const key = this._getSizeStorageKey();
+        const value = {width: this._savedSize.width, height: this._savedSize.height};
         await /** @type {Promise<void>} */ (new Promise((resolve) => {
             chrome.storage.local.set({[key]: value}, () => resolve());
         }));
@@ -982,18 +1397,14 @@ export class PopupInline extends EventDispatcher {
     _getSourcePosition(sourceRects, width, height) {
         const sourceRect = this._getBoundingSourceRect(sourceRects);
         const hasArea = sourceRect.right > sourceRect.left && sourceRect.bottom > sourceRect.top;
-        // macOS Live Text selections (and any source without DOM rects) yield no usable rect;
-        // fall back to the default corner placement in that case.
         if (sourceRects.length === 0 || !hasArea) {
             return this._getDefaultPosition(width, height);
         }
         const gap = 5;
-        // Prefer placing the popup just below the selection, flipping above when there isn't room.
         const spaceBelow = window.innerHeight - sourceRect.bottom;
         const top = (spaceBelow >= height + gap || spaceBelow >= sourceRect.top) ?
             sourceRect.bottom + gap :
             sourceRect.top - gap - height;
-        // Align the popup's left edge with the selection; _clampPosition keeps it on-screen.
         return this._clampPosition(sourceRect.left, top);
     }
 
@@ -1010,18 +1421,39 @@ export class PopupInline extends EventDispatcher {
     }
 
     /**
+     * @param {number} width
+     * @param {number} height
+     * @returns {{left: number, top: number}}
+     */
+    _getDefaultFixedPosition(width, height) {
+        const bounds = this._getGameBounds();
+        const padding = 24;
+        const left = bounds.x + bounds.w - width - padding;
+        const top = bounds.y + padding;
+        return this._clampPosition(left, top);
+    }
+
+    /**
      * @param {number} left
      * @param {number} top
      * @returns {{left: number, top: number}}
      */
     _clampPosition(left, top) {
+        const bounds = this._getGameBounds();
         const rect = this._container.getBoundingClientRect();
-        const width = rect.width || this._initialWidth;
-        const height = rect.height || this._initialHeight;
+        const width = (rect.width > 0 ? rect.width : (this._savedSize?.width || this._initialWidth || 360));
+        const height = (rect.height > 0 ? rect.height : (this._savedSize?.height || this._initialHeight || 420));
         const margin = 8;
+        const minTopMargin = 40;
+
+        const minX = bounds.x + margin;
+        const maxX = Math.max(minX, bounds.x + bounds.w - width - margin);
+        const minY = Math.max(minTopMargin, bounds.y + margin);
+        const maxY = Math.max(minY, bounds.y + bounds.h - height - margin);
+
         return {
-            left: Math.max(margin, Math.min(Math.round(left), window.innerWidth - width - margin)),
-            top: Math.max(margin, Math.min(Math.round(top), window.innerHeight - height - margin)),
+            left: Math.max(minX, Math.min(Math.round(left), maxX)),
+            top: Math.max(minY, Math.min(Math.round(top), maxY)),
         };
     }
 
@@ -1058,36 +1490,108 @@ export class PopupInline extends EventDispatcher {
     /** @returns {string} */
     _getInlineCssOverrides() {
         return `
+:host([hidden]) {
+    display: none !important;
+}
 :host {
-    display: block;
-    all: initial;
-    contain: content;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+::-webkit-resizer {
+    background-color: rgba(156, 163, 175, 0.4);
+    border-top-left-radius: 4px;
+}
+.yomitan-drag-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 30px;
+    padding: 0 10px;
+    background: var(--sidebar-background-color, #f3f4f6);
+    color: var(--text-color, #374151);
+    border-bottom: 1px solid var(--light-border-color, rgba(0, 0, 0, 0.12));
+    border-top-left-radius: 9px;
+    border-top-right-radius: 9px;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    flex-shrink: 0;
+    box-sizing: border-box;
+}
+.yomitan-drag-bar:active {
+    cursor: grabbing;
+}
+.yomitan-drag-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: inherit;
+    pointer-events: none;
+}
+.yomitan-drag-grip {
+    font-size: 14px;
+    color: #9ca3af;
+    letter-spacing: -1px;
+}
+.yomitan-drag-hint {
+    font-size: 11px;
+    font-weight: normal;
+    color: #9ca3af;
+    margin-left: 2px;
+}
+.yomitan-drag-close {
+    background: transparent;
+    border: none;
+    font-size: 13px;
+    color: inherit;
+    opacity: 0.65;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.yomitan-drag-close:hover {
+    opacity: 1;
+    background: rgba(0, 0, 0, 0.08);
 }
 .content-outer {
-    display: block;
-    background: var(--background-color);
-    color: var(--text-color);
-    width: 100%;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    background: var(--background-color, #ffffff);
+    color: var(--text-color, #111827);
+    width: 100% !important;
     height: auto !important;
-    overflow: visible !important;
+    border-bottom-left-radius: 9px;
+    border-bottom-right-radius: 9px;
 }
 .content {
-    display: block;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
     position: static !important;
     height: auto !important;
-    overflow: visible !important;
 }
 .content-scroll {
     position: static !important;
-    left: auto !important;
-    top: auto !important;
-    right: auto !important;
-    bottom: auto !important;
     display: block !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
     overflow-x: hidden !important;
     overflow-y: auto !important;
-    max-height: none !important;
-    height: auto !important;
+    padding: 12px 14px 16px 14px;
+    box-sizing: border-box;
 }
 .content-body {
     position: static !important;
@@ -1117,7 +1621,7 @@ export class PopupInline extends EventDispatcher {
 .entry + .entry {
     border-top: 1px solid var(--light-border-color);
 }
-.headword-list .headword-details > .action-button[data-action="play-audio"] {
+:host(:not([data-audio-enabled="true"])) .headword-list .headword-details > .action-button[data-action="play-audio"] {
     display: none !important;
 }
 .entry-current-indicator,

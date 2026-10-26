@@ -759,7 +759,7 @@ export class AnkiConnect {
      */
     _isSafariWebExtension() {
         try {
-            return chrome.runtime.getURL('/').startsWith('safari-web-extension://');
+            return (chrome.runtime.getURL('/').startsWith('safari-web-extension://') || chrome.runtime.getURL('/').startsWith('yomitan-bridge://'));
         } catch (e) {
             return false;
         }

@@ -103,7 +103,11 @@ enum TtsService {
             }
             // A final empty buffer signals completion.
             if pcm.frameLength == 0 {
-                if let file = outputFile, let data = try? Data(contentsOf: file.url) {
+                // Release the file *before* reading it: AVAudioFile only finalizes the RIFF header on
+                // close, and WebKit refuses to decode a WAV whose header sizes are stale.
+                let wroteAudio = outputFile != nil
+                outputFile = nil
+                if wroteAudio, let data = try? Data(contentsOf: outputURL) {
                     finish(.success(data))
                 } else {
                     finish(.failure(TtsError.producedNothing))

@@ -220,34 +220,88 @@ Report the three legs separately so the redirect, the scrape, and the decode are
 "audio is slow". The online numbers above are the first row of that table; TTS and the scrape-heavy
 sources are not yet filled in.
 
-## Open: the pop-up view still has no audio
+## The in-page pop-up had no audio — because it is `PopupInline`, which had none (now built)
 
-Reported after this session's build, and the **starting point for the next one**: audio plays on the
-**search page** but **not in the in-page pop-up**. The observation was that the search page "works but
-appears to still use the old system" — i.e. it may be playing the remote URL directly
-(`new Audio(url)`), which a top-level extension page is allowed to do, while the pop-up needs the
-`getAudioUrlBytes` → blob path this session added (and the native TTS path) and something in it is not
-taking effect there.
+Audio played on the **search page** but not in the **in-page pop-up**. The report framed this as a
+`Display`/`DisplayAudio` divergence — "both pop-up and search are `DisplayAudio` instances; check the
+options reached the pop-up one" — and that framing was **wrong about what the Safari pop-up is**. The
+real cause was architectural: not a regression to fix but a feature to **build** (now done — see
+[Built: audio in the inline pop-up, played off-page](#built-audio-in-the-inline-pop-up-played-off-page)
+below, **pending a device listening test**).
 
-What is already ruled in and out:
+**The Safari in-page pop-up is not the iframe `Popup`.** `PopupFactory` branches on the origin: on
+`safari-web-extension://…` it constructs **`PopupInline`**, not `Popup`
+([popup-factory.js](../ext/js/app/popup-factory.js), the `startsWith('safari-web-extension://')` arm).
+`PopupInline` renders the entries as a `<div class="yomitan-inline-popup">` **in the host page's
+content-script context** — its own `DisplayGenerator` over a minimal `Display` **stub**, no iframe, no
+`Display`, and **no `DisplayAudio`** (it exists because Safari cannot use the extension-origin iframe
+popup at all — see [../docs/browser-bugs.md](../docs/browser-bugs.md), Safari Web Extension port). So
+none of `display-audio.js` runs for the in-page pop-up. The whole "unified `_getPlayableAudioUrl` blob
+path" this stage built serves the **search page and the pop-up _window_** (both real `Display`s), which
+is exactly why those play and the inline pop-up does not.
 
-- **The native seams work.** `test:safari:e2e` is 6/6 through the installed appex — `getAudioUrlBytes`,
-  `getTextToSpeechVoices`/`getTextToSpeechAudio` all answer. So the gap is **display-side, and specific
-  to the pop-up**, not the host.
-- **The CSP is in place.** The installed appex manifest ships `media-src * blob:` (verified), so a
-  `blob:` audio element should be allowed in an extension-origin frame.
+**And its audio button is deliberately hidden.** `PopupInline`'s injected stylesheet sets
+`.action-button[data-action="play-audio"] { display: none !important; }`
+([popup-inline.js](../ext/js/app/popup-inline.js), added in `c7498b61` "cosmetic fixes") — the button
+the shared `DisplayGenerator` emits is present in the DOM but hidden, and nothing is wired to it. So
+"no audio" is literally true and by construction: no control, no handler, no playback.
 
-Where to look next:
+So the fix I first reached for — `allow="autoplay"` on the iframe `Popup`, to clear WebKit's
+cross-origin-iframe autoplay gate — was **reverted**: it is a real latent fix for the Chromium/Firefox
+iframe popup, but that class is never instantiated on Safari, so it does nothing for the reported bug.
 
-- Confirm which path each context actually runs. Does the pop-up reach
-  `display-audio.js` → `_createAudioFromInfo` → `_getPlayableAudioUrl` / `_createTtsAudio` at all, or
-  fail earlier (the `api` call not resolving in the pop-up frame, or `AudioSystem.createAudio`'s
-  `loadeddata` never firing for the blob)? And is the **search page bypassing** the blob path (still
-  `new Audio(remoteUrl)`), which would explain "works but old system"?
-- The pop-up and the search page are **different `Display`/`DisplayAudio` instances**; confirm both run
-  the rebuilt code and that the audio options (sources) reached the pop-up instance.
-- Whether the pop-up document actually inherits the extension `media-src` (it is an extension-origin
-  iframe, but verify) and that `URL.createObjectURL` + `new Audio('blob:…')` is not blocked there.
+### Built: audio in the inline pop-up, played off-page
+
+The feature is now built, playing **off-page** (the choice made when the design question below was put
+to the user — robust to the host page's CSP, at the cost of an extra frame). The native seams it stands
+on were already proven (`test:safari:e2e` 6/6: `getAudioUrlBytes`,
+`getTextToSpeechVoices`/`getTextToSpeechAudio`). Three pieces:
+
+1. **A hidden extension-origin player frame.** `ext/inline-audio-player.html` +
+   [inline-audio-player-main.js](../ext/js/app/inline-audio-player-main.js) — a minimal extension page
+   the inline pop-up injects into the host page as a **0-size iframe** at the extension origin (added to
+   `web_accessible_resources` in both `ext/manifest.json` and `dev/data/manifest-variants.json`). Because
+   it is extension-origin, its `Audio` element and blobs run under the extension's `media-src * blob:`,
+   **not** the host page's CSP. It walks the audio sources exactly as `DisplayAudio._createTermAudio`
+   does (first source that yields audio wins), plays the blob / TTS render through the shared
+   `AudioSystem`, and falls back to the fallback sound — all over the same API calls
+   (`getTermAudioInfoList` → `getAudioUrlBytes` / `getTextToSpeechAudio`).
+2. **The pop-up drives it.** [popup-inline.js](../ext/js/app/popup-inline.js) un-hides the play-audio
+   button (now gated by a `:host([data-audio-enabled="true"])` rule instead of a blanket
+   `display:none`), wires each headword's button to post a `play` request — the term/reading plus the
+   ordered sources it computes from options the same way `DisplayAudio._onOptionsUpdated` does — and
+   holds the newest request until the frame signals ready (its module boots asynchronously).
+3. **`allow="autoplay"` on the player frame.** The frame is cross-origin to the host page, so WebKit
+   gates its audio behind the `autoplay` Permissions-Policy feature (default allowlist `self`); the pop-up
+   sets `allow="autoplay"` when injecting it, so a play triggered from the button in the parent is
+   allowed without a gesture inside the child. (This is the same autoplay insight that did **not** apply
+   to the unused iframe `Popup` — here it applies to a frame that is actually used.)
+
+**Why off-page rather than in the host page.** Playing directly in `PopupInline` (host-page context)
+would put the `Audio` element and blob under the **host page's** `media-src`, which a restrictive page
+could block. Images in the inline pop-up already load through `URL.createObjectURL` blobs in that same
+context ([display-content-manager.js](../ext/js/display/display-content-manager.js) →
+`executeMediaRequests`), so in-page audio might well have worked on most pages — but "most pages" is not
+"all pages", and the off-page frame removes the host CSP from the picture entirely.
+
+**Automated check: `npm run test:safari:audio`** ([DEV.md](../DEV.md) → _Automated inline-pop-up audio
+check_). It drives the **real player code** on a real `http://127.0.0.1` page over the same loopback
+bridge `test:safari:e2e` uses, in three embeddings — the extension-origin iframe **with**
+`allow="autoplay"` (the pop-up), **without** it (the bug), and top-level (the search page's context) —
+and reports objective playback evidence (`play()` resolved, `currentTime` advanced, `readyState`,
+`MediaError`). It machine-verifies the whole off-page pipeline — the crucial part being that the blob
+**loads and plays under the extension's CSP inside the injected cross-origin iframe** — and that
+playback starts and progresses there.
+
+**What still stays a listening test.** The probe plays **muted**, because a script-driven run carries
+no user gesture and Safari blocks _audible_ autoplay without one (so does the real pop-up until the
+user clicks — the gesture is what unblocks it). So the automated check confirms everything up to and
+including muted playback in the pop-up's exact configuration, but **audible sound from a real click** is
+still a human check: scan a German word on an `http://127.0.0.1` page, click the pop-up's audio button,
+and confirm sound ([DEV.md](../DEV.md) → _Driving the installed extension_). The specific behaviour both
+checks watch is whether WebKit honours `allow="autoplay"` on a **content-script-injected** cross-origin
+iframe; if the muted A/B ever shows it does not, the frame would need a real gesture forwarded into it,
+or the pop-up window as the surface.
 
 ## Not yet, and deliberately
 

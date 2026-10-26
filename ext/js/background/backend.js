@@ -539,10 +539,12 @@ export class Backend {
 
     /** @type {import('api').ApiHandler<'requestBackendReadySignal'>} */
     _onApiRequestBackendReadySignal(_params, sender) {
-        // Tab ID isn't set in background (e.g. browser_action)
+        // Tab ID isn't set in background (e.g. browser_action). An extension-origin frame embedded in a
+        // tab (the inline pop-up's audio player) has a tab, but `tabs.sendMessage` reaches only content
+        // scripts under WKWebExtension, so it is answered over `runtime.sendMessage` like an extension page.
         /** @type {import('application').ApiMessage<'applicationBackendReady'>} */
         const data = {action: 'applicationBackendReady'};
-        if (typeof sender.tab === 'undefined') {
+        if (typeof sender.tab === 'undefined' || this._isExtensionPageSender(sender)) {
             this._sendMessageIgnoreResponse(data);
             return false;
         } else {
@@ -552,6 +554,14 @@ export class Backend {
             }
             return true;
         }
+    }
+
+    /**
+     * @param {chrome.runtime.MessageSender} sender
+     * @returns {boolean}
+     */
+    _isExtensionPageSender(sender) {
+        return typeof sender.url === 'string' && sender.url.startsWith(chrome.runtime.getURL('/'));
     }
 
     /** @type {import('api').ApiHandler<'optionsGet'>} */
@@ -1655,7 +1665,7 @@ export class Backend {
      * @returns {boolean}
      */
     _isSafariWebExtension() {
-        return chrome.runtime.getURL('/').startsWith('safari-web-extension://');
+        return (chrome.runtime.getURL('/').startsWith('safari-web-extension://') || chrome.runtime.getURL('/').startsWith('yomitan-bridge://'));
     }
 
     /**

@@ -214,7 +214,7 @@ export class Frontend {
         /** @type {boolean} */
         this._scanHighlightActive = false;
         /** @type {boolean} */
-        this._safariInlineScanEnabled = false;
+        this._safariInlineScanEnabled = (window.location.hostname === '127.0.0.1' || window.location.protocol === 'yomitan-bridge:');
         /** @type {?import('input').ModifierKey} */
         this._safariInlineToggleModifierKey = null;
         /** @type {boolean} */
@@ -528,11 +528,13 @@ export class Frontend {
 
     /** */
     _onWindowFocus() {
+        if (this._isBridgeMode()) { return; }
         void this._syncSafariInlineScanEnabledState();
     }
 
     /** */
     _onVisibilityChange() {
+        if (this._isBridgeMode()) { return; }
         if (document.visibilityState !== 'visible') { return; }
         void this._syncSafariInlineScanEnabledState();
     }
@@ -542,7 +544,8 @@ export class Frontend {
      * @returns {void}
      */
     _onKeyDown(e) {
-        if (!this._isSafariInlinePopupMode() || e.repeat) { return; }
+        const isBridge = (window.location.hostname === '127.0.0.1' || window.location.protocol === 'yomitan-bridge:');
+        if (!this._isSafariInlinePopupMode() || isBridge || e.repeat) { return; }
         const toggleModifierKey = this._safariInlineToggleModifierKey;
         if (toggleModifierKey === null) { return; }
         if (this._isKeyboardEventForModifierKey(e, toggleModifierKey)) {
@@ -562,7 +565,8 @@ export class Frontend {
      * @returns {void}
      */
     _onKeyUp(e) {
-        if (!this._isSafariInlinePopupMode()) { return; }
+        const isBridge = (window.location.hostname === '127.0.0.1' || window.location.protocol === 'yomitan-bridge:');
+        if (!this._isSafariInlinePopupMode() || isBridge) { return; }
         const toggleModifierKey = this._safariInlineToggleModifierKey;
         if (toggleModifierKey === null || !this._isKeyboardEventForModifierKey(e, toggleModifierKey)) { return; }
         if (this._safariInlineToggleArmed && !this._safariInlineToggleInvalid) {
@@ -626,8 +630,18 @@ export class Frontend {
      */
     _onTextScannerClear(details) {
         const {reason} = details;
-        if (this._isSafariInlinePopupMode() && reason === 'mousedown' && this._popup !== null && this._popup.isPointerOver()) {
-            return;
+        if (this._isSafariInlinePopupMode() && reason === 'mousedown' && this._popup !== null) {
+            if (this._popup.isPointerOver() || this._isPointerOverPopup) {
+                return;
+            }
+            const container = this._popup.container;
+            if (container) {
+                const r = container.getBoundingClientRect();
+                const mouse = this._textScanner.mousePosition;
+                if (mouse && mouse.x >= r.left && mouse.x <= r.right && mouse.y >= r.top && mouse.y <= r.bottom) {
+                    return;
+                }
+            }
         }
         this._clearSelection(false);
     }
@@ -786,7 +800,7 @@ export class Frontend {
 
     /** */
     _onSelectionChange() {
-        if (!this._isSafariInlinePopupMode() || !this._safariInlineScanEnabled || !this._textScanner.isEnabled()) { return; }
+        if (!this._isSafariInlinePopupMode() || this._isBridgeMode() || !this._safariInlineScanEnabled || !this._textScanner.isEnabled()) { return; }
 
         const selection = window.getSelection();
         if (selection === null || selection.toString().length === 0) { return; }
@@ -813,8 +827,9 @@ export class Frontend {
         this._safariInlineToggleModifierKey = this._getSafariInlineToggleModifierKey(scanningOptions.inputs);
         this._safariInlineToggleArmed = false;
         this._safariInlineToggleInvalid = false;
+        const isBridge = (window.location.hostname === '127.0.0.1' || window.location.protocol === 'yomitan-bridge:');
         const scanningInputs = /** @type {import('settings').ScanningInput[]} */ (
-            this._isSafariInlinePopupMode() ?
+            (this._isSafariInlinePopupMode() && !isBridge) ?
             this._getSafariInlineScanningInputs(scanningOptions.inputs) :
             scanningOptions.inputs
         );
@@ -833,7 +848,7 @@ export class Frontend {
             preventBackForwardOnTextHover,
             sentenceParsingOptions,
             scanWithoutMousemove: scanningOptions.scanWithoutMousemove,
-            scanResolution: scanningOptions.scanResolution,
+            scanResolution: (this._isSafariInlinePopupMode() ? 'word' : scanningOptions.scanResolution),
         });
         this._updateTextScannerEnabled();
 
@@ -855,7 +870,19 @@ export class Frontend {
      * @returns {boolean}
      */
     _isSafariInlinePopupMode() {
-        return chrome.runtime.getURL('/').startsWith('safari-web-extension://');
+        const url = chrome.runtime.getURL('/');
+        return url.startsWith('safari-web-extension://') ||
+               url.startsWith('yomitan-bridge://') ||
+               window.location.hostname === '127.0.0.1' ||
+               window.location.protocol === 'yomitan-bridge:';
+    }
+
+    /**
+     * @returns {boolean}
+     */
+    _isBridgeMode() {
+        return window.location.hostname === '127.0.0.1' ||
+               window.location.protocol === 'yomitan-bridge:';
     }
 
     /**
@@ -948,6 +975,10 @@ export class Frontend {
      */
     async _restoreSafariInlineScanEnabled() {
         if (!this._isSafariInlinePopupMode()) { return; }
+        if (this._isBridgeMode()) {
+            this._safariInlineScanEnabled = true;
+            return;
+        }
         try {
             this._safariInlineScanEnabled = await this._application.api.getSafariInlineScanEnabled();
         } catch (e) {
@@ -959,7 +990,7 @@ export class Frontend {
      * @returns {Promise<void>}
      */
     async _persistSafariInlineScanEnabled() {
-        if (!this._isSafariInlinePopupMode()) { return; }
+        if (!this._isSafariInlinePopupMode() || this._isBridgeMode()) { return; }
         try {
             await this._application.api.setSafariInlineScanEnabled(this._safariInlineScanEnabled);
         } catch (e) {
@@ -971,7 +1002,7 @@ export class Frontend {
      * @returns {Promise<void>}
      */
     async _syncSafariInlineScanEnabledState() {
-        if (!this._isSafariInlinePopupMode()) { return; }
+        if (!this._isSafariInlinePopupMode() || this._isBridgeMode()) { return; }
         await this._restoreSafariInlineScanEnabled();
         this._updateTextScannerEnabled();
         if (!this._safariInlineScanEnabled) {
@@ -1249,11 +1280,12 @@ export class Frontend {
      * @returns {void}
      */
     _updateTextScannerEnabled() {
+        const isBridge = (window.location.hostname === '127.0.0.1' || window.location.protocol === 'yomitan-bridge:');
         const enabled = (
             this._options !== null &&
             this._options.general.enable &&
             !this._disabledOverride &&
-            (!this._isSafariInlinePopupMode() || this._safariInlineScanEnabled)
+            (!this._isSafariInlinePopupMode() || this._safariInlineScanEnabled || isBridge)
         );
         if (enabled === this._textScanner.isEnabled()) { return; }
         this._textScanner.setEnabled(enabled);
@@ -1369,15 +1401,11 @@ export class Frontend {
      * @returns {boolean}
      */
     _isScanHighlightSupported() {
-        if (this._scanHighlightSupported !== null) { return this._scanHighlightSupported; }
-        const supported = (
-            typeof CSS !== 'undefined' &&
-            typeof CSS.highlights !== 'undefined' &&
-            typeof Highlight === 'function'
-        );
-        if (supported) { this._ensureScanHighlightStyle(); }
-        this._scanHighlightSupported = supported;
-        return supported;
+        // In Safari transparent overlay mode, the CSS Custom Highlight API fails to invalidate
+        // damage rects across transparent backing buffers in WebKit, causing previous highlights
+        // to linger and accumulate. Returning false ensures Yomitan uses the DOM overlay text
+        // indicator which cleanly replaces children on every word scan.
+        return false;
     }
 
     /**

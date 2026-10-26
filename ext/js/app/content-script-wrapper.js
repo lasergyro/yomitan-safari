@@ -17,7 +17,12 @@
  */
 
 (async () => {
-    const src = chrome.runtime.getURL('js/app/content-script-main.js');
-    // eslint-disable-next-line no-unsanitized/method
-    await import(src);
+    try {
+        const src = chrome.runtime.getURL('js/app/content-script-main.js');
+        document.documentElement.dataset.wrapperSrc = src;
+        await import(src);
+        document.documentElement.dataset.wrapperImportOk = 'true';
+    } catch (e) {
+        document.documentElement.dataset.wrapperError = String(e) + ' ' + (e ? e.stack : '');
+    }
 })();

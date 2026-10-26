@@ -542,7 +542,7 @@ export class Popup extends EventDispatcher {
         // so use the regular src-based path there.
         const useSecurePopupFrameUrl = (
             this._useSecureFrameUrl &&
-            !this._targetOrigin.startsWith('safari-web-extension://')
+            (!this._targetOrigin.startsWith('safari-web-extension://') && !this._targetOrigin.startsWith('yomitan-bridge://'))
         );
 
         await this._setUpContainer(this._useShadowDom);

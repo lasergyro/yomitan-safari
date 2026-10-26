@@ -109,10 +109,17 @@ display code, stays in the extension by that rule), the `_injectAnkiNoteMedia` o
 (N6, **deferred to last by direction**). Audio resolution, download, playback bytes **and TTS** are now
 native — see [audio-service.md](audio-service.md). TTS moved because Safari's `speechSynthesis` exposes
 only **one** voice (`Anna`), so the extension renders through `AVSpeechSynthesizer` instead, which sees
-all 183; this **reversed** the earlier "TTS stays browser-side" call. **Known open issue, and the next
-task:** audio does not play in the in-page **pop-up** (the search page works). The native seams are
-proven by `npm run test:safari:e2e` (6/6, including TTS), so the gap is **display-side and specific to
-the pop-up** — see [audio-service.md](audio-service.md) → _Open_. Two settings affordances — "Check for
+all 183; this **reversed** the earlier "TTS stays browser-side" call. **The in-page pop-up now has
+audio** (previously it had none: the Safari in-page pop-up is **`PopupInline`**, not the iframe `Popup`
+— it renders in the host-page content-script context with **no `DisplayAudio`**, and its play-audio
+button was CSS-hidden). It plays **off-page**: the pop-up un-hides the button and drives a hidden
+extension-origin `inline-audio-player.html` iframe (carrying `allow="autoplay"`) that walks the sources
+and plays under the extension's own CSP, immune to the host page's. The native seams are proven by
+`npm run test:safari:e2e` (6/6, including TTS), and **`npm run test:safari:audio`** drives the real
+player on a real page and machine-verifies the off-page playback pipeline (muted, since a gesture-free
+run can't produce audible autoplay); **audible sound from a real click stays a listening test**. See
+[audio-service.md](audio-service.md) → _The in-page pop-up had no audio_ and [DEV.md](../DEV.md) →
+_Automated inline-pop-up audio check_. Two settings affordances — "Check for
 Updates" and the recommended dictionaries list — offer `.zip` archives this build cannot consume and
 now fail
 at install with a clear message rather than having been removed.
